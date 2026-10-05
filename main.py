@@ -1,4 +1,4 @@
-"""SportyTips - football ticket bot (no external APIs, no AI chat).
+"""SportyTips - football ticket bot.
 
 Everything is driven by SportyBet's own data when USE_SPORTYBET=1.
 When SportyBet is off, the bot still runs but has no odds source.
@@ -286,23 +286,42 @@ RISKY_WORDS = (
     r")\b"
 )
 
+
 # Recognizes:
 #   straight win
 #   straight winning
+#   straight wins
 STRAIGHT_WIN_RE = re.compile(
-    r"\bstraight\s*-?\s*(?:win|winning)\b",
+    r"\bstraight\s*-?\s*(?:win|winning|wins)\b",
     re.I,
 )
 
 STRAIGHT_LONG_RE = re.compile(
-    r"\blong\b",
+    r"\b(?:long|longer|extended)\b",
     re.I,
 )
 
 
 def parse_request(text):
+    """
+    Understand natural-language betting requests.
 
-    message = text.lower()
+    Examples:
+
+        safe 5 odds
+        today's 10 odds
+        give me 20 odds
+        20 odds today
+        20 odds tomorrow
+        safe 30 odds
+        5 picks today
+        straight win 30 odds
+        straight winning 20 odds tomorrow
+    """
+
+    message = (
+        text or ""
+    ).strip().lower()
 
     now = datetime.now(
         timezone.utc
@@ -321,6 +340,19 @@ def parse_request(text):
         )
     )
 
+    # --------------------------------------------------------
+    # DEFAULT WINDOW
+    #
+    # If the user does NOT specify a date:
+    #
+    # "20 odds"
+    # "safe 5 odds"
+    #
+    # start with the next available period.
+    # smart_ticket.py can extend the search window when
+    # necessary to reach the requested combined odds.
+    # --------------------------------------------------------
+
     start = (
         now
         + timedelta(
@@ -337,8 +369,12 @@ def parse_request(text):
 
     label = "next 24 hours"
 
+    # --------------------------------------------------------
+    # DATE / WINDOW DETECTION
+    # --------------------------------------------------------
+
     days_match = re.search(
-        r"(\d+)\s*days?\b",
+        r"\b(?:next\s+)?(\d+)\s*days?\b",
         message,
     )
 
@@ -493,10 +529,27 @@ def parse_request(text):
 
         label = "next 7 days"
 
+    # --------------------------------------------------------
+    # TARGET ODDS
+    #
+    # Understands:
+    #
+    # 5 odds
+    # 10 odds
+    # 20 odds
+    # 30 total odds
+    # odds 20
+    # odds of 20
+    # odds = 20
+    #
+    # IMPORTANT:
+    # This means COMBINED ODDS, not number of picks.
+    # --------------------------------------------------------
+
     target_odds = None
 
     odds_match = re.search(
-        r"(\d+(?:\.\d+)?)\s*"
+        r"\b(\d+(?:\.\d+)?)\s*"
         r"(?:total\s+)?odds?\b",
         message,
     )
@@ -523,10 +576,22 @@ def parse_request(text):
         ):
             target_odds = value
 
+    # --------------------------------------------------------
+    # NUMBER OF PICKS
+    #
+    # Only interpret a number as picks when the user actually
+    # says picks/games/matches/selections/etc.
+    #
+    # Therefore:
+    #
+    # "5 odds"   -> 5.00 combined odds
+    # "5 picks"  -> 5 selections
+    # --------------------------------------------------------
+
     picks = None
 
     picks_match = re.search(
-        r"(\d+)\s*"
+        r"\b(\d+)\s*"
         r"(?:picks?|games?|matches|"
         r"match|selections?|"
         r"predictions?|tips?|"
@@ -546,6 +611,10 @@ def parse_request(text):
             <= 60
         ):
             picks = value
+
+    # --------------------------------------------------------
+    # RISK
+    # --------------------------------------------------------
 
     risk = "normal"
 
@@ -620,6 +689,9 @@ def describe_request(req):
 def prediction_ticket_flow(
     chat_id,
     text,
+    search_days=None,
+    target_override=None,
+    count_override=None,
 ):
     """Run the real SportyTips ticket builder."""
 
@@ -642,6 +714,9 @@ def prediction_ticket_flow(
         smart_ticket.flow(
             chat_id,
             text,
+            search_days=search_days,
+            target_override=target_override,
+            count_override=count_override,
         )
 
     except Exception as exc:
@@ -798,12 +873,103 @@ def _run_ticket(
     chat_id,
     req_text,
 ):
+    """
+    Send the user's complete natural-language request
+    to smart_ticket.py.
+
+    This preserves:
+        target odds
+        number of picks
+        date
+        risk level
+        straight-win mode
+    """
 
     try:
+
+        req = parse_request(
+            req_text
+        )
+
+        # ----------------------------------------------------
+        # Convert recognised date labels into the exact
+        # search_days values supported by smart_ticket.py.
+        # ----------------------------------------------------
+
+        search_days = None
+
+        if req["label"] == "today":
+
+            search_days = 1
+
+        elif req["label"] == "tomorrow":
+
+            search_days = 2
+
+        elif req["label"] == "next 7 days":
+
+            search_days = 7
+
+        elif req["label"] == "this weekend":
+
+            search_days = 3
+
+        elif req["label"].startswith(
+            "next "
+        ):
+
+            match = re.search(
+                r"next\s+(\d+)\s+days?",
+                req["label"],
+            )
+
+            if match:
+
+                days = int(
+                    match.group(1)
+                )
+
+                # smart_ticket.py supports:
+                # 1, 2, 3, 5, 7, 14
+                supported = (
+                    1,
+                    2,
+                    3,
+                    5,
+                    7,
+                    14,
+                )
+
+                if days in supported:
+
+                    search_days = days
+
+                elif days < 5:
+
+                    search_days = 3
+
+                elif days < 7:
+
+                    search_days = 5
+
+                elif days < 14:
+
+                    search_days = 7
+
+                else:
+
+                    search_days = 14
 
         prediction_ticket_flow(
             chat_id,
             req_text,
+            search_days=search_days,
+            target_override=req[
+                "target_odds"
+            ],
+            count_override=req[
+                "picks"
+            ],
         )
 
     except Exception as exc:
@@ -927,7 +1093,10 @@ def handle_text(
     text,
 ):
 
-    message = text.strip()
+    message = (
+        text or ""
+    ).strip()
+
     lowered = message.lower()
 
     if lowered.startswith("/"):
@@ -1081,22 +1250,21 @@ def handle_text(
     # STRAIGHT WIN / STRAIGHT WINNING
     #
     # IMPORTANT:
-    # Straight Win is handled directly by smart_ticket.py.
+    # Send the user's ORIGINAL message.
     #
-    # It allows ONLY:
-    #   1UP
-    #   2UP
+    # This means:
     #
-    # It does NOT allow:
-    #   1X2
-    #   Double Chance
-    #   Over/Under
-    #   BTTS
-    #   Team Goals
-    #   Corners
-    #   Handicap
-    #   Asian Handicap
-    #   DNB
+    # straight win 30 odds
+    #
+    # stays:
+    #
+    # straight win 30 odds
+    #
+    # instead of becoming only:
+    #
+    # straight win today
+    #
+    # smart_ticket.py will then detect the 30 odds.
     # ========================================================
 
     if (
@@ -1106,23 +1274,9 @@ def handle_text(
         )
     ):
 
-        window = (
-            "long"
-            if STRAIGHT_LONG_RE.search(
-                lowered
-            )
-            else "today"
-        )
-
-        request = (
-            "straight win long ticket"
-            if window == "long"
-            else "straight win today"
-        )
-
         _run_ticket(
             chat_id,
-            request,
+            message,
         )
 
         return
@@ -1160,7 +1314,7 @@ def handle_text(
 
         _run_ticket(
             chat_id,
-            lowered,
+            message,
         )
 
         return
@@ -1225,9 +1379,9 @@ def looks_like_request(
 SMALLTALK = [
     (
         r"\b("
-        r"how are you|how r u|how you dey|"
-        r"how far|how body|wetin dey|"
-        r"what'?s up|whats up|sup"
+        r"how are you|how r u|"
+        r"how far|what'?s up|"
+        r"whats up|sup"
         r")\b",
         "I'm good. Ready when you are.",
     ),
@@ -1285,12 +1439,14 @@ def smalltalk_reply(
 
 START_TEXT = (
     f"⚽ <b>Welcome to {BRAND}!</b>\n\n"
-    "Ask me in simple words.\n\n"
+    "Ask me naturally. You don't need to use "
+    "a special format.\n\n"
     "<b>Examples:</b>\n"
-    "• best 10 odds today\n"
-    "• 50 odds tomorrow\n"
-    "• straight win today\n"
-    "• straight win long ticket\n\n"
+    "• safe 5 odds\n"
+    "• today's 10 odds\n"
+    "• give me 20 odds\n"
+    "• 20 odds tomorrow\n"
+    "• straight win 30 odds\n\n"
     "<b>Commands:</b>\n"
     "/status — check SportyBet mode\n"
     "/markets sr:match:12345678 — inspect a match\n"
@@ -1301,15 +1457,22 @@ START_TEXT = (
 HELP_TEXT = (
     f"⚽ <b>{BRAND} Help</b>\n\n"
     "<b>Normal ticket:</b>\n"
-    "• best 10 odds today\n"
-    "• 50 odds tomorrow\n"
-    "• safe 20 odds 2 days\n\n"
+    "• safe 5 odds\n"
+    "• today's 10 odds\n"
+    "• give me 20 odds\n"
+    "• safe 30 odds tomorrow\n"
+    "• 5 picks today\n\n"
     "<b>Straight-win mode (1UP / 2UP only):</b>\n"
     "• straight win today\n"
+    "• straight win 20 odds\n"
+    "• straight win 30 odds tomorrow\n"
     "• straight win long ticket\n\n"
-    "<b>Straight Win uses only 1UP or 2UP.</b>\n"
-    "No 1X2, DNB, handicap, corners, "
-    "goals or BTTS.\n\n"
+    "<b>Important:</b>\n"
+    "• 5 odds means about 5.00 total odds.\n"
+    "• 5 picks means 5 selections.\n"
+    "• Straight Win uses only 1UP or 2UP.\n"
+    "• No 1X2, DNB, handicap, corners, "
+    "goals or BTTS in Straight Win mode.\n\n"
     "/status — check SportyBet mode\n"
     "/markets sr:match:12345678 — list markets for a match\n"
     "/reset — clear state"
@@ -1319,8 +1482,11 @@ HELP_TEXT = (
 UNKNOWN_TEXT = (
     f"⚽ <b>{BRAND}</b>\n\n"
     "I didn't understand that.\n\n"
-    "Try: best 10 odds today, "
-    "straight win today, or /help."
+    "Try something like:\n"
+    "• safe 5 odds\n"
+    "• today's 10 odds\n"
+    "• give me 20 odds\n"
+    "• straight win 30 odds"
 )
 
 

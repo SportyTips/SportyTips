@@ -1404,4 +1404,1408 @@ def _football_probability(c, facts):
         "dnb",
     ):
 
-        win
+        win_p = _football_1x2_probability(
+            side,
+            facts,
+        )
+
+        if win_p is None:
+            return None
+
+        # 1UP:
+        # A team can win the 1UP condition without
+        # eventually winning the match.
+        #
+        # We therefore give it a modest uplift over
+        # outright win probability, but keep the uplift
+        # conservative.
+        if kind == "up":
+
+            label = str(
+                c.get("label")
+                or ""
+            ).upper()
+
+            if "2UP" in label:
+                return _clamp(
+                    win_p + 0.07
+                )
+
+            return _clamp(
+                win_p + 0.12
+            )
+
+        # Either-half is usually easier than outright win.
+        if kind == "either_half":
+            return _clamp(
+                win_p + 0.12
+            )
+
+        # DNB is not preferred by the user's system,
+        # but keep this mathematically available.
+        if kind == "dnb":
+            return _clamp(
+                win_p
+                /
+                max(
+                    0.001,
+                    1
+                    - (
+                        _football_draw_probability(
+                            facts
+                        )
+                        or 0
+                    ),
+                )
+            )
+
+        return win_p
+
+    # --------------------------------------------------------
+    # DOUBLE CHANCE
+    # --------------------------------------------------------
+
+    if kind == "dc":
+
+        win_p = _football_1x2_probability(
+            side,
+            facts,
+        )
+
+        draw_p = _football_draw_probability(
+            facts
+        )
+
+        if win_p is None:
+            return None
+
+        if draw_p is None:
+            draw_p = 0.25
+
+        return _clamp(
+            win_p + draw_p
+        )
+
+    # --------------------------------------------------------
+    # GOALS
+    # --------------------------------------------------------
+
+    lam_h = facts.get(
+        "lam_h"
+    )
+
+    lam_a = facts.get(
+        "lam_a"
+    )
+
+    if kind in (
+        "over",
+        "over15",
+        "under",
+    ):
+
+        if None in (
+            lam_h,
+            lam_a,
+        ):
+            return None
+
+        total_lam = (
+            lam_h + lam_a
+        )
+
+        line = c.get(
+            "line"
+        )
+
+        if line is None:
+            return None
+
+        over_p = _poisson_over(
+            line,
+            total_lam,
+        )
+
+        if kind == "under":
+            return _clamp(
+                1 - over_p
+            )
+
+        return over_p
+
+    # --------------------------------------------------------
+    # BTTS
+    # --------------------------------------------------------
+
+    if kind == "btts":
+
+        btts_p = _poisson_btts(
+            lam_h,
+            lam_a,
+        )
+
+        if btts_p is None:
+            return None
+
+        label = str(
+            c.get("label")
+            or ""
+        ).lower()
+
+        if (
+            "not"
+            in label
+            or "no"
+            in label
+        ):
+            return _clamp(
+                1 - btts_p
+            )
+
+        return btts_p
+
+    # --------------------------------------------------------
+    # TEAM GOALS
+    # --------------------------------------------------------
+
+    if kind == "team_goals":
+
+        line = c.get(
+            "line"
+        )
+
+        if line is None:
+            return None
+
+        lam = (
+            lam_h
+            if side == "home"
+            else lam_a
+        )
+
+        if lam is None:
+            return None
+
+        return _poisson_over(
+            line,
+            lam,
+        )
+
+    # --------------------------------------------------------
+    # HANDICAP
+    #
+    # Positive handicap is difficult to model perfectly
+    # from final-score Poisson alone. We use a conservative
+    # score-margin calculation.
+    # --------------------------------------------------------
+
+    if kind in (
+        "handicap",
+        "asian_handicap",
+    ):
+
+        line = c.get(
+            "line"
+        )
+
+        if line is None:
+            return None
+
+        return _handicap_probability(
+            side,
+            float(line),
+            lam_h,
+            lam_a,
+        )
+
+    # --------------------------------------------------------
+    # CORNERS
+    #
+    # API-Football predictions data does not provide enough
+    # corner information here to claim a reliable corner
+    # probability.
+    #
+    # Therefore return None instead of pretending.
+    # --------------------------------------------------------
+
+    if kind in (
+        "corners",
+        "corners_1h",
+    ):
+        return None
+
+    return None
+
+
+def _football_draw_probability(facts):
+    """
+    Football-only draw probability.
+    """
+
+    poisson = _poisson_win_probs(
+        facts.get("lam_h"),
+        facts.get("lam_a"),
+    )
+
+    if poisson:
+        poisson_draw = poisson.get(
+            "draw"
+        )
+    else:
+        poisson_draw = None
+
+    api_draw = (
+        facts.get("api") or {}
+    ).get("draw")
+
+    values = []
+    weights = []
+
+    if poisson_draw is not None:
+        values.append(
+            poisson_draw
+        )
+        weights.append(
+            0.65
+        )
+
+    if api_draw is not None:
+        values.append(
+            api_draw
+        )
+        weights.append(
+            0.35
+        )
+
+    if not values:
+        return None
+
+    return _clamp(
+        sum(
+            v * w
+            for v, w
+            in zip(
+                values,
+                weights,
+            )
+        )
+        /
+        sum(weights)
+    )
+
+
+def _handicap_probability(
+    side,
+    line,
+    lam_h,
+    lam_a,
+):
+    """
+    Approximate probability that a positive handicap survives.
+
+    Example:
+        Home +1.5
+
+    We calculate the probability that the adjusted
+    final score remains in favour of that selection.
+    """
+
+    if None in (
+        lam_h,
+        lam_a,
+    ):
+        return None
+
+    probability = 0.0
+
+    for hg in range(11):
+
+        ph = _poisson_probability(
+            hg,
+            lam_h,
+        )
+
+        for ag in range(11):
+
+            pa = _poisson_probability(
+                ag,
+                lam_a,
+            )
+
+            p = ph * pa
+
+            if side == "home":
+                adjusted = (
+                    hg + line
+                ) - ag
+            else:
+                adjusted = (
+                    ag + line
+                ) - hg
+
+            if adjusted > 0:
+                probability += p
+
+            elif abs(adjusted) < 1e-9:
+                # Half/whole Asian handicap pushes are treated
+                # conservatively as half probability.
+                probability += (
+                    p * 0.5
+                )
+
+    return _clamp(
+        probability,
+        0.02,
+        0.97,
+    )
+
+
+# ============================================================
+# PUBLIC PROBABILITY FUNCTION
+# ============================================================
+
+def adjusted_p(c, facts):
+    """
+    Compatibility function used by smart_ticket.py.
+
+    IMPORTANT:
+        c["p"] is deliberately NOT used as the starting
+        probability anymore.
+
+    The old code did:
+
+        p = c["p"]
+
+    That meant SportyBet odds controlled the prediction.
+
+    This version does:
+
+        football evidence -> football probability
+
+    If football evidence cannot support the market, we return
+    the original candidate probability only as a last-resort
+    compatibility value, but mark the candidate as having
+    no football evidence.
+
+    The ticket builder should therefore prefer candidates with
+    has_data=True.
+    """
+
+    if not facts:
+        return None
+
+    probability = _football_probability(
+        c,
+        facts,
+    )
+
+    if probability is None:
+        return None
+
+    return _clamp(
+        probability
+    )
+
+
+# ============================================================
+# REASONS
+# ============================================================
+
+def _cap(text):
+    return (
+        text[:1].upper() + text[1:]
+        if text
+        else text
+    )
+
+
+def _win_like(
+    c,
+    facts,
+    home,
+    away,
+):
+    side = c.get(
+        "side"
+    )
+
+    if side not in (
+        "home",
+        "away",
+    ):
+        return None
+
+    team, opp = (
+        (home, away)
+        if side == "home"
+        else (away, home)
+    )
+
+    form = (
+        facts["form_h"]
+        if side == "home"
+        else facts["form_a"]
+    )
+
+    opp_form = (
+        facts["form_a"]
+        if side == "home"
+        else facts["form_h"]
+    )
+
+    rec = (
+        facts["rec_h"]
+        if side == "home"
+        else facts["rec_a"]
+    )
+
+    h2h = facts["h2h"]
+
+    pieces = []
+
+    if form:
+        wins = form.count("W")
+        losses = form.count("L")
+
+        pieces.append(
+            f"{team} have won {wins} "
+            f"and lost {losses} of their last "
+            f"{len(form)} matches ({form})"
+        )
+
+    if rec and rec.get("played"):
+
+        pieces.append(
+            f"{'at home' if side == 'home' else 'away'} "
+            f"they have won {rec.get('w', 0)} "
+            f"of {rec.get('played', 0)}"
+        )
+
+    gf = (
+        facts["gf_h"]
+        if side == "home"
+        else facts["gf_a"]
+    )
+
+    ga = (
+        facts["ga_h"]
+        if side == "home"
+        else facts["ga_a"]
+    )
+
+    if (
+        gf is not None
+        and ga is not None
+    ):
+        pieces.append(
+            f"they average {gf:.1f} goals scored "
+            f"and {ga:.1f} conceded over their last 5"
+        )
+
+    text = (
+        _cap(
+            "; ".join(pieces)
+        )
+        + "."
+        if pieces
+        else ""
+    )
+
+    if h2h["n"] >= 3:
+
+        mine = (
+            h2h["home_w"]
+            if side == "home"
+            else h2h["away_w"]
+        )
+
+        text += (
+            f" In the last {h2h['n']} meetings "
+            f"they won {mine}."
+        )
+
+    elif opp_form:
+
+        text += (
+            f" {opp} have won only "
+            f"{opp_form.count('W')} of their last "
+            f"{len(opp_form)}."
+        )
+
+    kind = c.get(
+        "kind"
+    )
+
+    if kind == "up":
+
+        label = str(
+            c.get("label")
+            or ""
+        ).upper()
+
+        if "2UP" in label:
+            text += (
+                " The model prefers the 2UP "
+                "line because the football evidence "
+                "points strongly toward this side."
+            )
+        else:
+            text += (
+                " The model prefers 1UP because "
+                "the evidence supports the side without "
+                "requiring a full-match win."
+            )
+
+    elif kind == "either_half":
+
+        text += (
+            " The market only requires the team "
+            "to win one half."
+        )
+
+    elif kind == "dnb":
+
+        text += (
+            " This market is not preferred by the "
+            "SportyTips selection rules."
+        )
+
+    return text.strip() or None
+
+
+def _dc_like(
+    c,
+    facts,
+    home,
+    away,
+):
+    side = c.get(
+        "side"
+    )
+
+    if side not in (
+        "home",
+        "away",
+    ):
+        return None
+
+    team = (
+        home
+        if side == "home"
+        else away
+    )
+
+    form = (
+        facts["form_h"]
+        if side == "home"
+        else facts["form_a"]
+    )
+
+    pieces = []
+
+    if form:
+        pieces.append(
+            f"{team} lost only "
+            f"{form.count('L')} of their last "
+            f"{len(form)} matches ({form})"
+        )
+
+    rec = (
+        facts["rec_h"]
+        if side == "home"
+        else facts["rec_a"]
+    )
+
+    if rec.get("played"):
+        pieces.append(
+            f"they have lost only "
+            f"{rec.get('l', 0)} of "
+            f"{rec.get('played', 0)} "
+            f"{'at home' if side == 'home' else 'away'}"
+        )
+
+    h2h = facts["h2h"]
+
+    if h2h["n"] >= 3:
+
+        lost = (
+            h2h["away_w"]
+            if side == "home"
+            else h2h["home_w"]
+        )
+
+        pieces.append(
+            f"they lost {lost} of the last "
+            f"{h2h['n']} meetings"
+        )
+
+    if not pieces:
+        return None
+
+    return (
+        _cap(
+            "; ".join(pieces)
+        )
+        + "."
+    )
+
+
+def _goals_like(
+    c,
+    facts,
+    home,
+    away,
+):
+    kind = c.get(
+        "kind"
+    )
+
+    gf_h = facts.get(
+        "gf_h"
+    )
+
+    ga_h = facts.get(
+        "ga_h"
+    )
+
+    gf_a = facts.get(
+        "gf_a"
+    )
+
+    ga_a = facts.get(
+        "ga_a"
+    )
+
+    h2h = facts.get(
+        "h2h"
+    ) or {}
+
+    if kind in (
+        "over",
+        "over15",
+    ):
+
+        if None in (
+            gf_h,
+            gf_a,
+        ):
+            return None
+
+        text = (
+            f"{home} average {gf_h:.1f} goals "
+            f"and {away} average {gf_a:.1f} "
+            "over their last 5."
+        )
+
+        if (
+            h2h.get("n", 0) >= 3
+            and h2h.get("avg_goals") is not None
+        ):
+            text += (
+                f" Their last {h2h['n']} "
+                f"meetings averaged "
+                f"{h2h['avg_goals']:.1f} goals."
+            )
+
+        return text
+
+    if kind == "under":
+
+        if None in (
+            ga_h,
+            ga_a,
+        ):
+            return None
+
+        text = (
+            f"{home} concede {ga_h:.1f} "
+            f"and {away} concede {ga_a:.1f} "
+            "goals per game over their last 5."
+        )
+
+        if (
+            h2h.get("n", 0) >= 3
+            and h2h.get("avg_goals") is not None
+        ):
+            text += (
+                f" Their last {h2h['n']} "
+                f"meetings averaged "
+                f"{h2h['avg_goals']:.1f} goals."
+            )
+
+        return text
+
+    if kind == "btts":
+
+        if None in (
+            gf_h,
+            gf_a,
+            ga_h,
+            ga_a,
+        ):
+            return None
+
+        btts = (
+            h2h.get("btts", 0)
+        )
+
+        text = (
+            f"{home} average {gf_h:.1f} scored "
+            f"/ {ga_h:.1f} conceded and "
+            f"{away} average {gf_a:.1f} scored "
+            f"/ {ga_a:.1f} conceded over their last 5."
+        )
+
+        if h2h.get("n", 0) >= 3:
+            text += (
+                f" BTTS landed in "
+                f"{btts} of the last "
+                f"{h2h['n']} meetings."
+            )
+
+        return text
+
+    return None
+
+
+def reason_for(
+    c,
+    facts,
+    home,
+    away,
+):
+    """
+    Honest football-based explanation.
+
+    Never claim certainty.
+    """
+
+    if not facts:
+        return NO_DATA
+
+    kind = c.get(
+        "kind"
+    )
+
+    if kind in (
+        "up",
+        "either_half",
+        "dnb",
+        "win",
+        "handicap",
+        "asian_handicap",
+    ):
+        text = _win_like(
+            c,
+            facts,
+            home,
+            away,
+        )
+
+        if kind in (
+            "handicap",
+            "asian_handicap",
+        ) and text:
+            text += (
+                " The football evidence also "
+                "supports the positive handicap."
+            )
+
+        return text or NO_DATA
+
+    text = _goals_like(
+        c,
+        facts,
+        home,
+        away,
+    )
+
+    return text or NO_DATA
+
+
+# ============================================================
+# FOR TICKETS THE USER PASTES
+# ============================================================
+
+def event_for(
+    provider,
+    event_id,
+):
+    try:
+        events = provider._load_events()
+    except Exception:
+        return None
+
+    for event in events:
+
+        if event.get(
+            "eventId"
+        ) == event_id:
+            return event
+
+    return None
+
+
+def classify_leg(leg):
+    """
+    Turn a leg of a pasted code into the same
+    kind/side/line used by the builder.
+    """
+
+    mid, spec, oid = leg["key"]
+
+    mname = str(
+        leg.get("market_name")
+        or ""
+    ).lower()
+
+    oname = str(
+        leg.get("outcome_name")
+        or ""
+    ).lower()
+
+    out = {
+        "label": sp.leg_label(leg),
+        "side": None,
+        "line": None,
+    }
+
+    if mid == sp.M_1X2:
+
+        out["kind"] = "win"
+
+        out["side"] = {
+            "1": "home",
+            "3": "away",
+        }.get(oid)
+
+    elif mid == sp.M_DC:
+
+        out["kind"] = "dc"
+
+        out["side"] = {
+            "9": "home",
+            "11": "away",
+        }.get(oid)
+
+    elif mid == sp.M_TOTAL:
+
+        out["line"] = sp._float(
+            spec.replace(
+                "total=",
+                "",
+            )
+        )
+
+        out["kind"] = (
+            "over"
+            if oid == sp.OUT_TOTAL["over"]
+            else "under"
+        )
+
+    elif mid == sp.M_BTTS:
+
+        out["kind"] = "btts"
+
+    elif "either half" in mname:
+
+        out["kind"] = "either_half"
+
+        out["side"] = (
+            "away"
+            if "away" in oname
+            else "home"
+        )
+
+    elif (
+        "1x2" in mname
+        and "up" in mname
+    ):
+
+        out["kind"] = "up"
+
+        out["side"] = (
+            "away"
+            if (
+                oname.startswith("away")
+                or oid == "3"
+            )
+            else "home"
+        )
+
+    elif "corner" in mname:
+
+        out["kind"] = "corners"
+
+    elif "handicap" in mname:
+
+        out["kind"] = "handicap"
+
+        out["side"] = (
+            "away"
+            if (
+                oname.startswith("away")
+                or oid == "2"
+            )
+            else "home"
+        )
+
+    elif "draw no bet" in mname:
+
+        out["kind"] = "dnb"
+
+        out["side"] = (
+            "away"
+            if (
+                oname.startswith("away")
+                or oid == "5"
+            )
+            else "home"
+        )
+
+    else:
+
+        out["kind"] = "other"
+
+    return out
+
+
+def why(
+    provider,
+    code,
+    index,
+):
+    """
+    Explain one pick of a pasted code.
+    """
+
+    reset_diag()
+
+    legs = provider.load_code(
+        code
+    )
+
+    if not (
+        0 <= index < len(legs)
+    ):
+        raise sp.SportyBetError(
+            "That pick is no longer on the ticket."
+        )
+
+    leg = legs[index]
+
+    event = event_for(
+        provider,
+        leg["event_id"],
+    )
+
+    facts = None
+
+    if event is not None:
+
+        fixture = find_fixture(
+            event
+        )
+
+        facts = get_facts(
+            fixture
+        )
+
+    c = classify_leg(
+        leg
+    )
+
+    text = reason_for(
+        c,
+        facts,
+        leg["home"],
+        leg["away"],
+    )
+
+    if not facts and diag_summary():
+
+        text += (
+            f" (Why: {diag_summary()}.)"
+        )
+
+    return {
+        "reason": text,
+        "has_data": bool(facts),
+    }
+
+
+# ============================================================
+# RANK MARKETS FOR A MATCH
+# ============================================================
+
+def _rank(
+    provider,
+    event,
+    use_data,
+):
+    """
+    Rank the available SportyBet markets using football evidence.
+
+    IMPORTANT:
+        SportyBet odds are only checked after the football model
+        has calculated probability.
+
+    A market that cannot be supported by football data is removed.
+    """
+
+    import smart_ticket
+
+    try:
+        markets = (
+            provider
+            ._event_markets_cached(
+                event["eventId"]
+            )
+        )
+
+    except Exception:
+        markets = None
+
+    markets = (
+        markets
+        or event.get("markets")
+        or []
+    )
+
+    facts = (
+        get_facts(
+            find_fixture(event)
+        )
+        if use_data
+        else None
+    )
+
+    ranked = []
+
+    allowed = smart_ticket.MODE_KINDS[
+        "mixed"
+    ]
+
+    for original in smart_ticket.event_candidates(
+        event,
+        markets,
+    ):
+
+        # Never allow DNB into the normal
+        # evidence-first ticket.
+        if original.get(
+            "kind"
+        ) == "dnb":
+            continue
+
+        if original.get(
+            "kind"
+        ) not in allowed:
+            continue
+
+        # Make a copy so we don't accidentally
+        # modify SmartTicket's original object.
+        c = dict(
+            original
+        )
+
+        football_p = adjusted_p(
+            c,
+            facts,
+        )
+
+        # If the football model cannot calculate
+        # this market reliably, do NOT manufacture
+        # a probability from the odds.
+        if football_p is None:
+            continue
+
+        c["p"] = football_p
+
+        c["football_p"] = football_p
+
+        c["has_data"] = True
+
+        c["evidence"] = facts_digest(
+            facts
+        )
+
+        if (
+            c.get("odd", 0)
+            >= MIN_ODDS
+        ):
+            ranked.append(
+                c
+            )
+
+    # Football probability is the PRIMARY ranking.
+    #
+    # Odds have NO role in the ranking.
+    ranked.sort(
+        key=lambda c: c["p"],
+        reverse=True,
+    )
+
+    return ranked, facts
+
+
+def safest_for_leg(
+    provider,
+    leg,
+):
+    """
+    Return the strongest evidence-supported
+    alternative for a match.
+    """
+
+    event = event_for(
+        provider,
+        leg["event_id"],
+    )
+
+    if event is None:
+        return None
+
+    ranked, facts = _rank(
+        provider,
+        event,
+        True,
+    )
+
+    if not ranked:
+        return None
+
+    best = ranked[0]
+
+    current = (
+        min(
+            0.95 / (
+                leg.get("odd")
+                or 1.0
+            ),
+            0.97,
+        )
+        if (
+            leg.get("odd")
+            or 0
+        ) > 1
+        else 0.97
+    )
+
+    # The comparison below is deliberately based
+    # on football probability, not bookmaker probability.
+    if (
+        best["key"]
+        == leg["key"]
+        or best["p"]
+        <= current
+    ):
+        return None
+
+    return (
+        best["key"],
+        best["odd"],
+        best["label"],
+        reason_for(
+            best,
+            facts,
+            leg["home"],
+            leg["away"],
+        ),
+    )
+
+
+# ============================================================
+# REBUILD A TICKET
+# ============================================================
+
+def rebuild_safer(
+    provider,
+    code,
+):
+    """
+    Rebuild a ticket using football evidence.
+
+    For every match:
+        1. Pull football facts.
+        2. Calculate probabilities.
+        3. Find the strongest supported market.
+        4. Check that SportyBet actually offers it.
+        5. Drop the match if evidence is not strong enough.
+
+    No bookmaker probability is used.
+    """
+
+    reset_diag()
+
+    legs = provider.load_code(
+        code
+    )
+
+    started = time.time()
+
+    studied = 0
+    new_legs = []
+    dropped = []
+
+    for leg in legs:
+
+        event = event_for(
+            provider,
+            leg["event_id"],
+        )
+
+        match = (
+            f"{leg['home']} vs "
+            f"{leg['away']}"
+        )
+
+        if event is None:
+
+            dropped.append(
+                {
+                    "match": match,
+                    "why": (
+                        "this match is no longer "
+                        "on SportyBet's list"
+                    ),
+                }
+            )
+
+            continue
+
+        use_data = (
+            studied < ENRICH_MAX
+            and (
+                time.time()
+                - started
+            ) < ENRICH_SECONDS
+        )
+
+        ranked, facts = _rank(
+            provider,
+            event,
+            use_data,
+        )
+
+        if use_data:
+            studied += 1
+
+        best = (
+            ranked[0]
+            if ranked
+            else None
+        )
+
+        # IMPORTANT:
+        # Never call a bookmaker-only pick "sure".
+        if best is None:
+
+            dropped.append(
+                {
+                    "match": match,
+                    "why": (
+                        "the football evidence "
+                        "did not support a reliable "
+                        "available market"
+                    ),
+                }
+            )
+
+            continue
+
+        needed = (
+            SURE_P_DATA
+            if facts
+            else SURE_P_NODATA
+        )
+
+        if (
+            not facts
+            or best["p"] < needed
+        ):
+
+            dropped.append(
+                {
+                    "match": match,
+                    "why": (
+                        "football evidence was "
+                        "not strong enough"
+                    ),
+                }
+            )
+
+            continue
+
+        new_legs.append(
+            {
+                "event_id": event[
+                    "eventId"
+                ],
+
+                "home": leg[
+                    "home"
+                ],
+
+                "away": leg[
+                    "away"
+                ],
+
+                "key": best[
+                    "key"
+                ],
+
+                "odd": best[
+                    "odd"
+                ],
+
+                "label_override": best[
+                    "label"
+                ],
+
+                "reason": reason_for(
+                    best,
+                    facts,
+                    leg["home"],
+                    leg["away"],
+                ),
+
+                "football_probability": best[
+                    "p"
+                ],
+            }
+        )
+
+    if not new_legs:
+
+        raise sp.SportyBetError(
+            "None of those matches had "
+            "strong enough football evidence. "
+            "Try a different code."
+        )
+
+    new_code = provider._save_code(
+        [
+            (
+                leg["event_id"],
+                leg["key"],
+            )
+            for leg in new_legs
+        ]
+    )
+
+    result = sp.summarize_legs(
+        new_legs
+    )
+
+    result.update(
+        {
+            "code": new_code,
+            "changed": True,
+            "dropped": dropped,
+            "studied": studied,
+            "data_note": diag_summary(),
+        }
+    )
+
+    return result

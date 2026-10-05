@@ -25,13 +25,13 @@ import importlib
 import math
 import os
 import re
+import threading
 import time
+import traceback
 from concurrent.futures import ThreadPoolExecutor, as_completed
 from concurrent.futures import TimeoutError as FutureTimeout
 from datetime import datetime, timedelta, timezone
-from urllib.error import HTTPError, URLError
 from urllib.request import Request, urlopen
-import json
 
 import main as bot
 import sportybet_provider as sp
@@ -44,15 +44,20 @@ BRAND = "SPORTYTIPS"
 MIN_LEG_PROB = {"safe": 0.72, "normal": 0.62, "risky": 0.50}
 MAX_LEG_ODDS = {"safe": 1.90, "normal": 2.40, "risky": 3.50}
 MAX_LEGS = 60
-MAX_DETAIL_EVENTS = 120
-DETAIL_WORKERS = 6
-DETAIL_SECONDS = 120
+MAX_DETAIL_EVENTS = 150
+DETAIL_WORKERS = 12
+DETAIL_SECONDS = 90
 OVERSHOOT = 0.06
 GROUP_LIMIT = 400
 DATA_BONUS = 0.0
 USE_AI_REVIEW = False
 WEB_SEARCHES = 0
 MAX_DROPS = 0
+
+# Straight-win (1UP/2UP) mode uses looser probability limits because
+# 1UP/2UP odds are mostly 1.30 - 2.50.
+STRAIGHT_MIN_PROB = 0.40
+STRAIGHT_MAX_ODDS = 2.60
 
 # Per-kind floors
 MIN_ODDS = {
@@ -103,6 +108,9 @@ KIND_NAME = {
     "team_goals": "Team goals", "streak": "Team 3+ streak (No)",
 }
 
+UP_RE = re.compile(r"1x2\W+([12])\s*-?\s*up\b", re.I)
+UP_LOOSE_RE = re.compile(r"\b([12])\s*-?\s*up\b", re.I)
+
 
 # ------------------------------------------------------------
 # PICKS FROM ONE MATCH
@@ -140,6 +148,33 @@ def _side_of(outcome, two_way=False):
     return None
 
 
+def _up_candidates(markets, home, away, add):
+    """1UP / 2UP win picks (the market named like '1X2 - 1UP' / '1X2 - 2UP')."""
+    for market in markets or []:
+        text = f"{market.get('desc') or ''} {market.get('name') or ''}"
+        found = UP_RE.search(text) or UP_LOOSE_RE.search(text)
+        if not found:
+            continue
+        outs = market.get("outcomes", [])
+        if len(outs) != 3:          # real 1UP/2UP markets are 3-way
+            continue
+        n = int(found.group(1))
+        spec = market.get("specifier") or ""
+        for o in outs:
+            if o.get("isActive") is False:
+                continue
+            side = _side_of(o)
+            if side not in ("home", "away"):
+                continue
+            odd = _f(o.get("odds"))
+            if not odd:
+                continue
+            team = home if side == "home" else away
+            add("up", f"{team} to win ({n}UP)", odd, _single(odd),
+                (str(market.get("id")), spec, str(o.get("id"))),
+                side=side, up_n=n)
+
+
 def event_candidates(event, markets):
     """All picks this match offers: dicts with kind, label, odd, p, key."""
     home = event.get("homeTeamName", "Home")
@@ -163,6 +198,9 @@ def event_candidates(event, markets):
         inv = [1 / h, 1 / d, 1 / a]
         total = sum(inv)
         ph, pd, pa = (x / total for x in inv)
+
+    # --- 1UP / 2UP wins
+    _up_candidates(markets, home, away, add)
 
     # --- double chance (12 only)
     if ALLOW_DC_12:
@@ -296,8 +334,6 @@ def event_candidates(event, markets):
             line = float(spec.replace("hcp=", "").split(":")[0]) if ":" not in spec else float(spec.replace("hcp=", "").split(":")[1])
         except (ValueError, IndexError):
             continue
-        # positive only means the *side's* handicap is >= 0
-        name = f"{market.get('desc') or ''} {market.get('name') or ''}".lower()
         outs = [o for o in market.get("outcomes", []) if o.get("isActive") is not False]
         kind = "asian_handicap" if mid == sp.M_ASIAN_HANDICAP else "handicap"
         for o in outs:
@@ -346,25 +382,34 @@ def gather(provider, start, end, risk, floor, exclude,
     details = {}
     wanted = [event for _, event in rated[:MAX_DETAIL_EVENTS]]
     if wanted:
-        with ThreadPoolExecutor(DETAIL_WORKERS) as pool:
-            futures = {pool.submit(provider._event_markets_cached, e["eventId"]): e for e in wanted}
-            try:
-                for future in as_completed(futures, timeout=DETAIL_SECONDS):
-                    try:
-                        details[futures[future]["eventId"]] = future.result()
-                    except Exception:
-                        pass
-            except FutureTimeout:
-                pass
+        pool = ThreadPoolExecutor(DETAIL_WORKERS)
+        futures = {pool.submit(provider._event_markets_cached, e["eventId"]): e for e in wanted}
+        try:
+            for future in as_completed(futures, timeout=DETAIL_SECONDS):
+                try:
+                    details[futures[future]["eventId"]] = future.result()
+                except Exception:
+                    pass
+        except FutureTimeout:
+            print(f"Detail fetch timed out: got {len(details)} of {len(wanted)} matches")
+        finally:
+            pool.shutdown(wait=False, cancel_futures=True)
 
     min_p = MIN_LEG_PROB.get(risk, 0.62) - min_p_shift
     max_odd = MAX_LEG_ODDS.get(risk, 2.40)
+    if straight_only:
+        min_p = min(min_p, STRAIGHT_MIN_PROB)
+        max_odd = max(max_odd, STRAIGHT_MAX_ODDS)
+
     groups = []
+    up_seen = 0
     for event in events:
         markets = details.get(event["eventId"]) or event.get("markets") or []
         fixture = sp.sporty_fixture(event)
         kept, seen = [], set()
         for c in event_candidates(event, markets):
+            if c["kind"] == "up":
+                up_seen += 1
             if straight_only and c["kind"] != "up":
                 continue
             floor_kind = MIN_ODDS.get(c["kind"], 1.30)
@@ -391,6 +436,9 @@ def gather(provider, start, end, risk, floor, exclude,
 
     groups.sort(key=lambda g: max(c["p"] for c in g), reverse=True)
     groups = groups[:GROUP_LIMIT]
+    print(f"gather: {len(events)} matches in window, {len(details)} with details, "
+          f"{up_seen} 1UP/2UP picks found, {len(groups)} usable matches"
+          f"{' (straight win)' if straight_only else ''}")
     return groups, len(events), len(details), 0
 
 
@@ -481,7 +529,8 @@ def _kind_counts(chosen):
     return counts
 
 
-def choose_target(groups, target):
+def choose_target(groups, target, caps=True):
+    """caps=False is used for straight-win mode, where every pick is the same kind."""
     all_w = sorted(math.log(c["odd"]) for g in groups for c in g)
     if not all_w:
         return [], False
@@ -492,13 +541,15 @@ def choose_target(groups, target):
     for _ in range(5):
         chosen = None
         for _ in range(3):
-            pruned = _prune(groups, legs, scale)
+            pruned = _prune(groups, legs, scale) if caps else groups
             chosen = _dp_exact(pruned, target) if pruned else None
             if chosen:
                 break
             scale *= 1.6
         if not chosen:
             break
+        if not caps:
+            return chosen, True
         counts = _kind_counts(chosen)
         if all(counts.get(k, 0) <= max(1, math.ceil(s * len(chosen) * scale))
                for k, s in KIND_CAP.items() if s > 0):
@@ -511,7 +562,7 @@ def choose_target(groups, target):
     return best[:MAX_LEGS], False
 
 
-def choose_count(groups, count):
+def choose_count(groups, count, caps=True):
     ranked = sorted((c for g in groups for c in g),
                     key=lambda c: c["p"] + KIND_BONUS.get(c["kind"], 0.0),
                     reverse=True)
@@ -519,9 +570,10 @@ def choose_count(groups, count):
     for c in ranked:
         if c["event_id"] in used:
             continue
-        cap = max(1, math.ceil(KIND_CAP.get(c["kind"], 0.3) * count * 1.6))
-        if counts.get(c["kind"], 0) >= cap:
-            continue
+        if caps:
+            cap = max(1, math.ceil(KIND_CAP.get(c["kind"], 0.3) * count * 1.6))
+            if counts.get(c["kind"], 0) >= cap:
+                continue
         chosen.append(c)
         used.add(c["event_id"])
         counts[c["kind"]] = counts.get(c["kind"], 0) + 1
@@ -593,14 +645,50 @@ def _confidence(p):
     return "🟢" if p >= 0.80 else ("🟡" if p >= 0.70 else "🟠")
 
 
+def _telegram_send_photo(chat_id, png, caption=""):
+    """Direct Telegram sendPhoto (used if the launcher has no send_photo)."""
+    if not getattr(bot, "BOT_TOKEN", None):
+        raise RuntimeError("no Telegram token")
+    if isinstance(png, str):
+        with open(png, "rb") as fh:
+            png = fh.read()
+    boundary = "----sportytips" + str(int(time.time() * 1000))
+    parts = []
+    for name, value in (("chat_id", str(chat_id)), ("caption", caption or "")):
+        parts.append(f"--{boundary}\r\nContent-Disposition: form-data; "
+                     f"name=\"{name}\"\r\n\r\n{value}\r\n".encode("utf-8"))
+    parts.append(f"--{boundary}\r\nContent-Disposition: form-data; name=\"photo\"; "
+                 f"filename=\"ticket.png\"\r\nContent-Type: image/png\r\n\r\n".encode("utf-8"))
+    parts.append(png)
+    parts.append(f"\r\n--{boundary}--\r\n".encode("utf-8"))
+    request = Request(
+        f"https://api.telegram.org/bot{bot.BOT_TOKEN}/sendPhoto",
+        data=b"".join(parts), method="POST",
+        headers={"Content-Type": f"multipart/form-data; boundary={boundary}"})
+    with urlopen(request, timeout=40) as response:
+        response.read()
+
+
 def _launcher_send_photo(chat_id, png, caption=""):
+    send = None
     try:
         launcher = importlib.import_module(os.getenv("LAUNCHER_MODULE", "launcher"))
         send = getattr(launcher, "send_photo", None)
-        if send:
-            send(chat_id, png, caption)
+        if send is None:
+            print("Ticket picture: launcher has no send_photo(), trying Telegram directly.")
     except Exception as exc:
-        print(f"Ticket picture not sent: {exc}")
+        print(f"Ticket picture: could not import launcher ({exc}), trying Telegram directly.")
+    if send:
+        try:
+            send(chat_id, png, caption)
+            return
+        except Exception:
+            print("Ticket picture: launcher.send_photo failed:")
+            traceback.print_exc()
+    try:
+        _telegram_send_photo(chat_id, png, caption)
+    except Exception as exc:
+        print(f"Ticket picture could not be sent: {exc}")
 
 
 def build_ticket(provider, req, target, count, risk,
@@ -626,7 +714,9 @@ def build_ticket(provider, req, target, count, risk,
         def select(pool):
             if not pool:
                 return [], False
-            return choose_target(pool, target) if target else choose_count(pool, count)
+            if target:
+                return choose_target(pool, target, caps=not straight_only)
+            return choose_count(pool, count, caps=not straight_only)
 
         chosen, reached = select(groups)
         if reached or extra_days >= hard_limit:
@@ -639,6 +729,14 @@ def build_ticket(provider, req, target, count, risk,
     return {"chosen": chosen, "reached": reached, "note": note,
             "events": total_events, "detailed": detailed, "floor": floor,
             "days_used": extra_days + 1}
+
+
+def _reset_straight():
+    try:
+        import upgrades
+        upgrades.STRAIGHT_WIN_ONLY = False
+    except Exception:
+        pass
 
 
 def flow(chat_id, text):
@@ -654,7 +752,6 @@ def flow(chat_id, text):
     straight_only = bool(re.search(r"straight\s*-?\s*win", text, re.I))
     straight_today = straight_only and bool(re.search(r"\btoday\b", text, re.I)) \
         and not re.search(r"\blong\b", text, re.I)
-    straight_long = straight_only and bool(re.search(r"\blong\b", text, re.I))
 
     target = req.get("target_odds")
     count = req.get("picks")
@@ -663,7 +760,7 @@ def flow(chat_id, text):
         count = 5
 
     wait = "about a minute" if (target or 0) >= 20 else "a few seconds"
-    intro = f"⏳ Going through SportyBet's matches"
+    intro = "⏳ Going through SportyBet's matches"
     if straight_only:
         intro = f"⏳ Straight win only{' for ' + _fmt(target) + ' odds' if target else ''}"
     elif target:
@@ -684,8 +781,12 @@ def flow(chat_id, text):
             max_days=0 if straight_today else None,
         )
     except Exception as exc:
-        print(f"Smart ticket failed, using the old builder: {exc}")
-        return _orig_flow(chat_id, text)
+        traceback.print_exc()
+        _reset_straight()
+        bot.send_message(chat_id,
+                         f"❌ I could not read SportyBet right now: {html.escape(str(exc)[:200])}\n"
+                         "Please try again in a minute.")
+        return
 
     chosen = built["chosen"]
     local_now = datetime.now(timezone.utc).astimezone(bot.LOCAL_TZ)
@@ -697,28 +798,17 @@ def flow(chat_id, text):
         else:
             bot.send_message(chat_id,
                              "❌ I could not find strong enough picks on SportyBet in that window.")
-        if straight_only:
-            try:
-                import upgrades
-                upgrades.STRAIGHT_WIN_ONLY = False
-            except Exception:
-                pass
+        _reset_straight()
         return
 
     if straight_only and straight_today and target and not built["reached"]:
-        actual = 1.0
-        for c in chosen:
-            actual *= c["odd"]
+        actual = _product(chosen)
         bot.send_message(
             chat_id,
             f"❌ Today only reaches about {actual:.1f} odds, not {_fmt(target)}.\n"
             f"Try 'straight long ticket' to extend across days."
         )
-        try:
-            import upgrades
-            upgrades.STRAIGHT_WIN_ONLY = False
-        except Exception:
-            pass
+        _reset_straight()
         return
 
     chosen.sort(key=lambda c: c["kickoff"])
@@ -777,16 +867,82 @@ def flow(chat_id, text):
         png = ticket_image_lite.make_ticket_image(
             rows, title, req["label"].capitalize(), total_odds, chance, code)
         _launcher_send_photo(chat_id, png, "")
-    except Exception as exc:
-        print(f"Ticket picture failed: {exc}")
-
-    try:
-        import upgrades
-        upgrades.STRAIGHT_WIN_ONLY = False
     except Exception:
-        pass
+        print("Ticket picture failed:")
+        traceback.print_exc()
+
+    _reset_straight()
+
+
+# ------------------------------------------------------------
+# FASTER MATCH LOADING (all pages at once instead of one by one)
+# ------------------------------------------------------------
+def _fast_load_events(self):
+    if self._events and time.time() - self._events_time < sp.EVENTS_CACHE_SECONDS:
+        return self._events
+
+    def fetch(page):
+        result = self._request(sp.UPCOMING_PATH, {
+            "sportId": "sr:sport:1",
+            "marketId": f"{sp.M_1X2},{sp.M_DC},{sp.M_TOTAL},{sp.M_BTTS}",
+            "pageSize": 100,
+            "pageNum": page,
+            "todayGames": "false",
+        })
+        return list(sp._walk_events(result.get("data")))
+
+    pages = {}
+    with ThreadPoolExecutor(8) as pool:
+        futures = {pool.submit(fetch, p): p for p in range(1, sp.MAX_EVENT_PAGES + 1)}
+        for future in as_completed(futures):
+            page = futures[future]
+            try:
+                pages[page] = future.result()
+            except Exception as exc:
+                print(f"SportyBet page {page} failed: {exc}")
+                pages[page] = None
+
+    if pages.get(1) is None:
+        if self._events:
+            print("SportyBet refresh failed, using the older match list.")
+            return self._events
+        raise sp.SportyBetError("Could not load SportyBet matches (page 1 failed).")
+
+    events, seen_ids = [], set()
+    for page in sorted(pages):
+        for event in pages[page] or []:
+            event_id = event.get("eventId")
+            if event_id in seen_ids or sp.is_virtual(event):
+                continue
+            seen_ids.add(event_id)
+            events.append(event)
+    if events:
+        self._events, self._events_time = events, time.time()
+    return events or self._events
+
+
+sp.SportyBetProvider._load_events = _fast_load_events
+
+
+def _start_warmer():
+    """Keeps the match list fresh in the background so tickets start fast."""
+    provider = getattr(bot, "SPORTYBET_PROVIDER", None)
+    if provider is None:
+        return
+
+    def loop():
+        while True:
+            try:
+                provider._events_time = 0
+                provider._load_events()
+            except Exception as exc:
+                print(f"Background refresh failed: {exc}")
+            time.sleep(max(60, sp.EVENTS_CACHE_SECONDS - 30))
+
+    threading.Thread(target=loop, daemon=True, name="sportybet-warmer").start()
 
 
 _orig_flow = bot.prediction_ticket_flow
 bot.prediction_ticket_flow = flow
 bot.MAX_DAYS_AHEAD = max(getattr(bot, "MAX_DAYS_AHEAD", 2), 3)
+_start_warmer()

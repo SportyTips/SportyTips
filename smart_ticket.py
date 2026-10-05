@@ -44,11 +44,12 @@ BRAND = "SPORTYTIPS"
 MIN_LEG_PROB = {"safe": 0.72, "normal": 0.62, "risky": 0.50}
 MAX_LEG_ODDS = {"safe": 1.90, "normal": 2.40, "risky": 3.50}
 MAX_LEGS = 60
-MAX_DETAIL_EVENTS = 80
+MAX_DETAIL_EVENTS = 50
 DETAIL_WORKERS = 10
 DETAIL_SECONDS = 90
 OVERSHOOT = 0.06
-GROUP_LIMIT = 400
+GROUP_LIMIT = 150
+MAX_OPTIONS_PER_MATCH = 5
 DATA_BONUS = 0.0
 USE_AI_REVIEW = False
 WEB_SEARCHES = 0
@@ -370,7 +371,7 @@ def favourite_strength(event):
 # GATHER
 # ------------------------------------------------------------
 def gather(provider, start, end, risk, floor, exclude,
-           min_p_shift=0.0, notify=None, straight_only=False):
+           min_p_shift=0.0, notify=None, straight_only=False, max_groups=GROUP_LIMIT):
     events = provider.get_upcoming(start, end)
     rated = []
     for event in events:
@@ -432,10 +433,11 @@ def gather(provider, start, end, risk, floor, exclude,
             })
             kept.append(c)
         if kept:
-            groups.append(kept)
+            kept.sort(key=lambda c: c["p"] + KIND_BONUS.get(c["kind"], 0.0), reverse=True)
+            groups.append(kept[:MAX_OPTIONS_PER_MATCH])
 
     groups.sort(key=lambda g: max(c["p"] for c in g), reverse=True)
-    groups = groups[:GROUP_LIMIT]
+    groups = groups[:max_groups]
     print(f"gather: {len(events)} matches in window, {len(details)} with details, "
           f"{up_seen} 1UP/2UP picks found, {len(groups)} usable matches"
           f"{' (straight win)' if straight_only else ''}")
@@ -446,7 +448,7 @@ def gather(provider, start, end, risk, floor, exclude,
 # PICK COMBINATION
 # ------------------------------------------------------------
 def _dp(groups, target):
-    S = 200
+    S = 100
     tw = math.ceil(math.log(target) * S)
     wm = max(tw, int(math.log(target * (1 + OVERSHOOT)) * S))
     INF = float("inf")
@@ -706,6 +708,11 @@ def build_ticket(provider, req, target, count, risk,
     if risk == "risky":
         floor = max(floor, 1.35)
 
+    if target:
+        max_groups = max(40, min(GROUP_LIMIT, int(math.log(target) * 25)))
+    else:
+        max_groups = max(40, min(GROUP_LIMIT, (count or 5) * 8))
+
     extra_days = 0
     note = ""
     hard_limit = max_days if max_days is not None else 30
@@ -714,7 +721,7 @@ def build_ticket(provider, req, target, count, risk,
         groups, total_events, detailed, studied = gather(
             provider, req["start"], end, risk, floor, exclude,
             0.05 if (target and target <= 20) else 0.0, notify,
-            straight_only=straight_only)
+            straight_only=straight_only, max_groups=max_groups)
 
         def select(pool):
             if not pool:
@@ -779,6 +786,7 @@ def flow(chat_id, text):
         except Exception:
             pass
 
+    started = time.time()
     try:
         built = build_ticket(
             provider, req, target, count, risk,
@@ -794,6 +802,7 @@ def flow(chat_id, text):
         return
 
     chosen = built["chosen"]
+    print(f"Ticket built in {time.time() - started:.1f}s: {len(chosen)} picks, target={target}, straight={straight_only}")
     local_now = datetime.now(timezone.utc).astimezone(bot.LOCAL_TZ)
     if not chosen:
         if straight_today:
@@ -950,6 +959,7 @@ def _fast_load_events(self):
 
 
 sp.SportyBetProvider._load_events = _fast_load_events
+sp.MAX_EVENT_PAGES = min(sp.MAX_EVENT_PAGES, 10)
 
 
 # Each match has 100+ markets; keep only the ones the bot uses, so the server

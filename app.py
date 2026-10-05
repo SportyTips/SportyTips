@@ -86,8 +86,6 @@ except Exception as exc:
 # LOAD SMART TICKET BUILDER
 # ===============================================================
 #
-# This is VERY important.
-#
 # smart_ticket.py replaces main.prediction_ticket_flow with the
 # real SportyTips ticket-building logic.
 # ===============================================================
@@ -302,10 +300,22 @@ def run_turn(session, text, q):
 
     except Exception as exc:
 
+        # Print the COMPLETE traceback to Render logs.
+        # This is temporary debugging so we can see exactly
+        # what is failing when a ticket is requested.
+        import traceback
+
+        print("❌ CHAT ERROR:")
+        traceback.print_exc()
+
+        # Also send the actual exception type/message to the
+        # browser instead of only "Server error".
         q.put(
             {
                 "type": "text",
-                "html": "❌ " + html.escape(str(exc)),
+                "html": "❌ " + html.escape(
+                    f"{type(exc).__name__}: {exc}"
+                ),
             }
         )
 

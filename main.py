@@ -1,5 +1,4 @@
-“”“SportyTips - football ticket bot.
-
+"""SportyTips - football ticket bot.
 Everything is driven by SportyBet’s own data when USE_SPORTYBET=1.
 When SportyBet is off, the bot still runs but has no odds source.
 

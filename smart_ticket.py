@@ -777,6 +777,20 @@ def flow(chat_id, text):
         intro += f" for {_fmt(target)} odds"
     bot.send_message(chat_id, f"{intro}. This can take {wait}...")
 
+    # ---- keep-alive: ping the browser every 8s so Render does not time out ----
+    stop_ping = threading.Event()
+
+    def _ping_loop():
+        n = 0
+        while not stop_ping.wait(8):
+            n += 1
+            try:
+                bot.send_message(chat_id, f"⏳ Still working... ({n * 8}s)")
+            except Exception:
+                pass
+
+    threading.Thread(target=_ping_loop, daemon=True).start()
+
     if straight_only:
         try:
             import upgrades
@@ -792,6 +806,7 @@ def flow(chat_id, text):
             max_days=0 if straight_today else None,
         )
     except Exception as exc:
+        stop_ping.set()
         traceback.print_exc()
         _reset_straight()
         bot.send_message(chat_id,
@@ -799,6 +814,7 @@ def flow(chat_id, text):
                          "Please try again in a minute.")
         return
 
+    stop_ping.set()
     chosen = built["chosen"]
     print(f"Ticket built in {time.time() - started:.1f}s: {len(chosen)} picks, target={target}, straight={straight_only}")
     local_now = datetime.now(timezone.utc).astimezone(bot.LOCAL_TZ)

@@ -79,7 +79,7 @@ import main as bot
 import sportybet_provider as sp
 
 try:
-    import Football_data as fd
+    import football_data as fd
 except Exception as e:
     fd = None
     print("FOOTBALL_DATA IMPORT ERROR:", repr(e))

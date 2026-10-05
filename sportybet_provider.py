@@ -35,7 +35,6 @@ EVENTS_CACHE_SECONDS = 300
 MAX_EVENT_PAGES = 15
 MIN_SAFER_ODDS = 1.05
 
-# ---------- Sportradar market + outcome ids (all VERIFIED) ----------
 M_1X2 = "1"
 M_DC = "10"
 M_TOTAL = "18"
@@ -51,19 +50,19 @@ M_ASIAN_HANDICAP = "66"
 M_GOALS_BY_MINUTE = "900313"
 
 OUT_1X2 = {"home": "1", "draw": "2", "away": "3"}
-OUT_DCfoot = {"1x": "9", "12ball": "10", "x2":| "11"}
-OUT_TOTAL = {"over":es "12", "under": "13"}
-OUTports_BTTS = {"yes": "74", "no": "76"}
+OUT_DC = {"1x": "9", "12": "10", "x2": "11"}
+OUT_TOTAL = {"over": "12", "under": "13"}
+OUT_BTTS = {"yes": "74", "no": "76"}
 OUT_STREAK = {"yes": "74", "no": "76"}
 OUT_TEAM_GOALS = {"over": "12", "under": "13"}
 OUT_DNB = {"home": "4", "away": "5"}
 
 PREFER_EITHER_HALF = True
-MIN_UP_ODDS_DEFAULT = 1.20
+MIN_UP_ODDS_DEFAULT = 1.       20
 UP_MARKETS_CACHE_SECONDS = 600
 
 VIRTUAL_RE = re.compile(
-    r"\bsrl\b|simulated|virtual|e-?soccer|e-??|cyber|volta|"
+    r"\bsrl\b|simulated|virtual|e-?soccer|e-?football|esports?|cyber|volta|"
     r"battle\s*-?\s*\d+\s*min",
     re.I,
 )
@@ -114,7 +113,6 @@ def is_virtual(event):
 
 
 def find_up_market(markets, spec):
-    """Find '1X2 - 1UP' or '1X2 - 2UP' by NAME. Returns (key, odds) or None."""
     n = spec.get("up")
     side = spec.get("side")
     if n not in (1, 2) or side not in ("home", "away"):
@@ -142,37 +140,37 @@ def find_either_half(markets, side):
         text = f"{market.get('desc') or ''} {market.get('name') or ''}".lower()
         if "either half" not in text or "both" in text or "1st" in text or "2nd" in text:
             continue
-        specifier = market.get("specifier") or ""
+ specifier = market.get("specifier") or ""
         for outcome in market.get("outcomes", []):
             label = str(outcome.get("desc") or outcome.get("name") or "").strip().lower()
             if not (side in label or (side in text and label == "yes")):
                 continue
             if outcome.get("isActive") is False:
                 return None
-            odd = _float'](outcome.get("odds"))
+            odd = _float(outcome.get("odds"))
             if odd:
-:                return (str(market.get("id")),g specifier, str(outcome.get("id"))), odd}",
+                return (str(market.get("id")), specifier, str(outcome.get("id"))), odd
     return None
 
 
-def spec_to_key OUT(spec):
-    if spec.get_T("resolved_key"):
+def spec_to_key(spec):
+    if spec.get("resolved_key"):
         return spec["resolved_key"]
     kind, side = spec.get("kind"), spec.get("side")
     if kind == "dc":
         return M_DC, "", OUT_DC[side]
     if kind == "goals":
-        return M_TOTAL, f"total={spec['line']:g}", OUT_TOTAL[side]
+        return M_TOTAL, "total=" + format(spec["line"], "g"), OUT_TOTAL[side]
     if kind == "btts":
         return M_BTTS, "", OUT_BTTS[side]
     if kind == "team_goals":
         mid = M_HOME_TEAM_GOALS if side == "home" else M_AWAY_TEAM_GOALS
-        return mid, f"total={spec['lineEAM_GOALS["over"]
+        return mid, "total=" + format(spec["line"], "g"), OUT_TEAM_GOALS["over"]
     if kind == "streak":
         return M_STREAK_3, "", OUT_STREAK[spec.get("side", "no")]
     if kind == "corners":
         mid = M_CORNERS_1H if spec.get("half") else M_CORNERS
-        return mid, f"total={spec['line']:g}", OUT_TOTAL["over"]
+        return mid, "total=" + format(spec["line"], "g"), OUT_TOTAL["over"]
     if kind == "dnb":
         return M_DNB, "", OUT_DNB[side]
     return None
@@ -181,29 +179,29 @@ def spec_to_key OUT(spec):
 def key_to_label(key, home, away):
     market, specifier, outcome = key
     if market == M_DC:
-        return {"9": f"{home} or Draw", "10": f"{home} or {away}",
-                "11": f"Draw or {away}"}.get(outcome, "Double chance")
+        return {"9": home + " or Draw", "10": home + " or " + away,
+                "11": "Draw or " + away}.get(outcome, "Double chance")
     if market == M_TOTAL:
         line = specifier.replace("total=", "")
-        return f"{'Over' if outcome == OUT_TOTAL['over'] else 'Under'} {line} goals"
+        return ("Over " if outcome == OUT_TOTAL["over"] else "Under ") + line + " goals"
     if market == M_BTTS:
         return "Both teams to score" if outcome == OUT_BTTS["yes"] else "Both teams NOT to score"
     if market in (M_HOME_TEAM_GOALS, M_AWAY_TEAM_GOALS):
         line = specifier.replace("total=", "")
         team = home if market == M_HOME_TEAM_GOALS else away
-        return f"{team} to score {line}+"
+        return team + " to score " + line + "+"
     if market == M_STREAK_3:
         return "No team to score 3+ in a row" if outcome == OUT_STREAK["no"] else "Any team to score 3+ in a row"
     if market == M_CORNERS:
         line = specifier.replace("total=", "")
-        return f"Over {line} corners"
+        return "Over " + line + " corners"
     if market == M_CORNERS_1H:
         line = specifier.replace("total=", "")
-        return f"1st half Over {line} corners"
+        return "1st half Over " + line + " corners"
     if market == M_DNB:
         team = home if outcome == OUT_DNB["home"] else away
-        return f"{team} (draw no bet)"
-    return f"Market {market} ({specifier}) outcome {outcome}"
+        return team + " (draw no bet)"
+    return "Market " + market + " (" + specifier + ") outcome " + outcome
 
 
 def find_odds(markets, key):
@@ -291,7 +289,7 @@ def summarize_legs(legs):
             straight += 1
         rows.append({
             "index": index,
-            "match": f"{leg['home']} vs {leg['away']}",
+            "match": leg["home"] + " vs " + leg["away"],
             "pick": leg_label(leg),
             "odd": odd,
             "risk": leg_risk(leg),
@@ -299,9 +297,9 @@ def summarize_legs(legs):
             "reason": leg.get("reason"),
         })
     health = "Safe" if chance >= 0.45 else ("Medium" if chance >= 0.20 else "Risky")
-    reason = f"{len(rows)} pick{'s' if len(rows) != 1 else ''}, total odds {total:.2f}."
+    reason = str(len(rows)) + " pick" + ("s" if len(rows) != 1 else "") + ", total odds " + format(total, ".2f") + "."
     if straight:
-        reason += f" {straight} straight win{'s' if straight != 1 else ''}."
+        reason += " " + str(straight) + " straight win" + ("s" if straight != 1 else "") + "."
     return {"rows": rows, "total_odds": total, "chance": round(chance * 100),
             "health": health, "reason": reason, "straight": straight}
 
@@ -331,11 +329,11 @@ class SportyBetProvider:
             with urlopen(request, timeout=TIMEOUT) as response:
                 result = json.loads(response.read().decode("utf-8"))
         except HTTPError as exc:
-            raise SportyBetError(f"HTTP {exc.code} on {path}")
+            raise SportyBetError("HTTP " + str(exc.code) + " on " + path)
         except (URLError, ValueError) as exc:
-            raise SportyBetError(f"{path}: {exc}")
+            raise SportyBetError(path + ": " + str(exc))
         if result.get("bizCode") not in (None, 10000):
-            raise SportyBetError(f"{path}: {result.get('message') or result.get('bizCode')}")
+            raise SportyBetError(path + ": " + str(result.get("message") or result.get("bizCode")))
         return result
 
     def _load_events(self):
@@ -345,7 +343,7 @@ class SportyBetProvider:
         for page in range(1, MAX_EVENT_PAGES + 1):
             result = self._request(UPCOMING_PATH, {
                 "sportId": "sr:sport:1",
-                "marketId": f"{M_1X2},{M_DC},{M_TOTAL},{M_BTTS}",
+                "marketId": M_1X2 + "," + M_DC + "," + M_TOTAL + "," + M_BTTS,
                 "pageSize": 100,
                 "pageNum": page,
                 "todayGames": "false",
@@ -402,7 +400,7 @@ class SportyBetProvider:
         for event, spec in selections:
             key = spec_to_key(spec)
             if key is None:
-                raise SportyBetError(f"Unsupported market for booking: {spec.get('kind')}")
+                raise SportyBetError("Unsupported market for booking: " + str(spec.get("kind")))
             keys.append((event["eventId"], key))
         return self._save_code(keys)
 
@@ -526,7 +524,7 @@ class SportyBetProvider:
             duplicate = (leg["event_id"], new_key) in seen
             if duplicate:
                 rows.append({
-                    "match": f"{leg['home']} vs {leg['away']}",
+                    "match": leg["home"] + " vs " + leg["away"],
                     "old": key_to_label(old_key, leg["home"], leg["away"]),
                     "old_odd": old_odd,
                     "new": "removed (already covered by another pick)",
@@ -538,7 +536,7 @@ class SportyBetProvider:
             new_total *= new_odd
             new_keys.append((leg["event_id"], new_key))
             rows.append({
-                "match": f"{leg['home']} vs {leg['away']}",
+                "match": leg["home"] + " vs " + leg["away"],
                 "old": key_to_label(old_key, leg["home"], leg["away"]),
                 "old_odd": old_odd,
                 "new": key_to_label(new_key, leg["home"], leg["away"]),

@@ -9,6 +9,7 @@ import math
 import os
 import re
 import time
+import traceback
 from datetime import datetime, timedelta, timezone
 from html import escape
 from urllib.error import HTTPError, URLError
@@ -20,7 +21,7 @@ BRAND = "SportyTips"
 # ============================================================
 # SETTINGS
 # ============================================================
-BOT_TOKEN = os.getenv("TELEGRAM_BOT_TOKEN")
+BOT_TOKEN = (os.getenv("TELEGRAM_BOT_TOKEN") or "").strip().strip("\"'")
 TELEGRAM_TIMEOUT = 40
 MAX_MESSAGE_LENGTH = 3500
 
@@ -41,14 +42,38 @@ RISK_PROFILES = {
               "markets": None, "extra_matches": 0},
 }
 
-USE_SPORTYBET = os.getenv("USE_SPORTYBET", "0") == "1"
+
+# ============================================================
+# SPORTYBET SWITCH (tolerant of "1", true, yes, on, quotes, spaces)
+# ============================================================
+def _flag(name):
+    value = os.getenv(name, "0").strip().strip("\"'").strip().lower()
+    return value in ("1", "true", "yes", "on")
+
+
+USE_SPORTYBET = _flag("USE_SPORTYBET")
 SPORTYBET_PROVIDER = None
+SPORTYBET_ERROR = None
+
 if USE_SPORTYBET:
     try:
         from sportybet_provider import SportyBetProvider
         SPORTYBET_PROVIDER = SportyBetProvider()
     except Exception as exc:
-        print(f"SportyBet provider failed to load: {exc}")
+        SPORTYBET_ERROR = f"{type(exc).__name__}: {exc}"
+        print(f"SportyBet provider failed to load: {SPORTYBET_ERROR}")
+        traceback.print_exc()
+else:
+    print("SportyBet is OFF: USE_SPORTYBET is not set to 1 in this process.")
+
+
+def sportybet_off_reason():
+    """Plain-text reason why SPORTYBET_PROVIDER is None."""
+    if not USE_SPORTYBET:
+        return "USE_SPORTYBET is not set to 1 on this server."
+    if SPORTYBET_ERROR:
+        return f"Provider failed to load: {SPORTYBET_ERROR}"
+    return "Provider is not available."
 
 
 class BotError(Exception):
@@ -215,7 +240,7 @@ def prediction_ticket_flow(chat_id, text):
     """Fallback when smart_ticket.py is not present."""
     if SPORTYBET_PROVIDER is None:
         send_message(chat_id,
-                     "❌ SportyBet mode is off. Set USE_SPORTYBET=1 to enable tickets.")
+                     f"❌ SportyBet mode is off. {escape(sportybet_off_reason())}")
         return
     send_message(chat_id, "❌ Ticket builder is not loaded. Check smart_ticket.py.")
 
@@ -225,13 +250,13 @@ def prediction_ticket_flow(chat_id, text):
 # ============================================================
 def markets_message(event_id):
     if SPORTYBET_PROVIDER is None:
-        return "❌ SportyBet mode is off."
+        return f"❌ SportyBet mode is off. {escape(sportybet_off_reason())}"
     try:
         markets = SPORTYBET_PROVIDER.get_event_markets(event_id)
     except Exception as exc:
         return f"❌ Could not read that event: {escape(str(exc))}"
     if not markets:
-        return f"❌ No markets returned for `{escape(event_id)}`."
+        return f"❌ No markets returned for <code>{escape(event_id)}</code>."
     lines = [f"📋 <b>Markets for</b> <code>{escape(event_id)}</code>", ""]
     seen = set()
     for market in markets:
@@ -256,6 +281,14 @@ def _is_cancel(text):
     return text.strip().lower() in ("cancel", "stop", "never mind", "forget it")
 
 
+def _run_ticket(chat_id, req_text):
+    try:
+        prediction_ticket_flow(chat_id, req_text)
+    except Exception as exc:
+        traceback.print_exc()
+        send_message(chat_id, f"❌ Error:\n{escape(str(exc))}")
+
+
 def _handle_pending(chat_id, text):
     state = _pending.get(chat_id)
     if state is None:
@@ -276,11 +309,7 @@ def _handle_pending(chat_id, text):
         window = state.get("window", "today")
         _pending.pop(chat_id, None)
         tag = "straight win long ticket" if window == "long" else "straight win today"
-        req_text = f"{tag} {format_odds(odds)} odds"
-        try:
-            prediction_ticket_flow(chat_id, req_text)
-        except Exception as exc:
-            send_message(chat_id, f"❌ Error:\n{escape(str(exc))}")
+        _run_ticket(chat_id, f"{tag} {format_odds(odds)} odds")
         return True
     return False
 
@@ -290,11 +319,7 @@ def _start_straight_win(chat_id, window, text):
     if m:
         odds = float(m.group(1))
         tag = "straight win long ticket" if window == "long" else "straight win today"
-        req_text = f"{tag} {format_odds(odds)} odds"
-        try:
-            prediction_ticket_flow(chat_id, req_text)
-        except Exception as exc:
-            send_message(chat_id, f"❌ Error:\n{escape(str(exc))}")
+        _run_ticket(chat_id, f"{tag} {format_odds(odds)} odds")
         return
     _pending[chat_id] = {"stage": "odds", "window": window}
     label = "long" if window == "long" else "today"
@@ -326,6 +351,12 @@ def handle_text(chat_id, text):
         _pending.pop(chat_id, None)
         send_message(chat_id, "🧹 Cleared.")
         return
+    if command == "/status":
+        if SPORTYBET_PROVIDER is not None:
+            send_message(chat_id, "✅ SportyBet mode is ON.")
+        else:
+            send_message(chat_id, f"❌ SportyBet mode is off. {escape(sportybet_off_reason())}")
+        return
     if command == "/markets":
         if not args.strip():
             send_message(chat_id, "Usage: /markets sr:match:12345678")
@@ -333,10 +364,7 @@ def handle_text(chat_id, text):
         send_message(chat_id, markets_message(args.strip()))
         return
     if command == "/ticket":
-        try:
-            prediction_ticket_flow(chat_id, args if args else "5 picks today")
-        except Exception as exc:
-            send_message(chat_id, f"❌ Error:\n{escape(str(exc))}")
+        _run_ticket(chat_id, args if args else "5 picks today")
         return
 
     if not command and _handle_pending(chat_id, message):
@@ -353,10 +381,7 @@ def handle_text(chat_id, text):
         return
 
     if not command and looks_like_request(lowered):
-        try:
-            prediction_ticket_flow(chat_id, lowered)
-        except Exception as exc:
-            send_message(chat_id, f"❌ Error:\n{escape(str(exc))}")
+        _run_ticket(chat_id, lowered)
         return
 
     send_message(chat_id, UNKNOWN_TEXT)
@@ -407,6 +432,7 @@ START_TEXT = (
     "• straight win today\n"
     "• straight win long ticket\n\n"
     "<b>Commands:</b>\n"
+    "/status — check SportyBet mode\n"
     "/markets sr:match:12345678 — inspect a match\n"
     "/reset — clear state"
 )
@@ -421,6 +447,7 @@ HELP_TEXT = (
     "• straight win today\n"
     "• straight win long ticket\n"
     "(the bot asks for the odds target)\n\n"
+    "/status — check SportyBet mode\n"
     "/markets sr:match:12345678 — list markets for a match\n"
     "/reset — clear state"
 )
@@ -448,7 +475,8 @@ def main():
         print("ERROR: TELEGRAM_BOT_TOKEN is missing.")
         return
 
-    print(f"{BRAND} is running.")
+    print(f"{BRAND} is running. SportyBet mode: "
+          f"{'ON' if SPORTYBET_PROVIDER is not None else 'OFF - ' + sportybet_off_reason()}")
     offset = None
 
     while True:
@@ -463,7 +491,11 @@ def main():
                 text = message.get("text")
                 if not chat_id or not text:
                     continue
-                handle_text(chat_id, text)
+                try:
+                    handle_text(chat_id, text)
+                except Exception as exc:
+                    traceback.print_exc()
+                    print(f"Handler error: {exc}")
         except KeyboardInterrupt:
             print(f"{BRAND} stopped.")
             break

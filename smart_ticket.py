@@ -1,35 +1,65 @@
-"""SportyTips Smart SportyBet ticket builder.
+"""
+SportyTips Smart SportyBet ticket builder.
 
-Uses SportyBet's own fixtures, markets and odds.
+ARCHITECTURE
+------------
 
-Important:
-- No API-Football.
+OLD:
+    SportyBet odds
+        ↓
+    implied probability
+        ↓
+    pick
+
+NEW:
+    SportyBet fixtures
+        ↓
+    Football_data.py
+        ↓
+    football evidence
+        ↓
+    football probability
+        ↓
+    evidence quality / disagreement checks
+        ↓
+    reject weak selections
+        ↓
+    SportyBet market availability
+        ↓
+    SportyBet odds
+        ↓
+    ticket
+        ↓
+    REAL SportyBet booking code
+
+IMPORTANT
+---------
 - No fake booking codes.
 - Booking codes come from SportyBet provider.
 - No DNB.
 - No negative handicaps.
 - No Under selections.
-- Supports 1UP / 2UP.
-- Supports Over goals.
-- Supports BTTS.
-- Supports team goals.
-- Supports corners.
-- Supports positive handicap.
-- Supports Asian handicap.
+- No yellow-card selections.
+- No odds-derived football probability.
+- Football_data.py is the prediction engine.
+- SportyBet is only used for market availability, odds and booking codes.
 
-STRAIGHT WIN RULE:
-- Straight Win = 1UP + 2UP only.
-- 1UP is allowed.
-- 2UP is allowed.
-- 1X2 is excluded.
-- Double Chance is excluded.
-- Over/Under is excluded.
-- BTTS is excluded.
-- Team Goals are excluded.
-- Corners are excluded.
-- Handicap is excluded.
-- Asian Handicap is excluded.
-- Every other market is excluded.
+SUPPORTED
+---------
+- 1UP / 2UP
+- Over 0.5 / 1.5 / 2.5 / 3.5 goals
+- BTTS Yes
+- Team Goals Over 0.5 / 1.5
+- Corners when Football_data.py can support them
+- Positive handicap
+- Positive Asian handicap
+- Double Chance 12 only when explicitly allowed by the football model
+
+STRAIGHT WIN
+------------
+Straight Win = 1UP + 2UP only.
+
+The ticket builder NEVER creates a prediction from SportyBet odds.
 """
 
 import html
@@ -43,38 +73,71 @@ from concurrent.futures import (
     as_completed,
     TimeoutError as FutureTimeout,
 )
-from datetime import (
-    datetime,
-    timedelta,
-    timezone,
-)
+from datetime import datetime, timedelta, timezone
 
 import main as bot
 import sportybet_provider as sp
+
+try:
+    import Football_data as fd
+except Exception as exc:
+    fd = None
+    print("Football_data import failed:", exc)
 
 
 BRAND = "SPORTYTIPS"
 
 
 # ============================================================
-# SPEED SETTINGS
+# SPEED / SAFETY SETTINGS
 # ============================================================
 
 MAX_DETAIL_EVENTS = 10
-DETAIL_WORKERS = 6
-DETAIL_SECONDS = 7
+STRAIGHT_DETAIL_EVENTS = 40
+
+DETAIL_WORKERS = 5
+DETAIL_SECONDS = 10
+
 MAX_CACHED_MATCHES = 150
 MAX_PAGES = 4
+
 MAX_LEGS = 30
 MAX_OPTIONS_PER_MATCH = 5
+
 GROUP_LIMIT = 80
 OVERSHOOT = 0.06
 
+# Football-data enrichment controls.
+#
+# Football_data.py itself has ENRICH_MAX / ENRICH_SECONDS.
+# These limits stop smart_ticket from hammering the API.
+FOOTBALL_MAX_STUDIED = 10
+FOOTBALL_STUDY_SECONDS = 45
 
-# ============================================================
-# MARKET SETTINGS
-# ============================================================
+# Minimum football probability before a selection is allowed.
+#
+# These are intentionally higher than the old 45-55% thresholds.
+MIN_FOOTBALL_PROB = {
+    "safe": 0.72,
+    "normal": 0.68,
+    "risky": 0.64,
+}
 
+# Evidence quality threshold.
+MIN_EVIDENCE_QUALITY = {
+    "safe": 0.78,
+    "normal": 0.70,
+    "risky": 0.64,
+}
+
+# Maximum odds for individual selections.
+MAX_SELECTION_ODDS = {
+    "safe": 2.00,
+    "normal": 2.40,
+    "risky": 2.80,
+}
+
+# Minimum odds.
 MIN_ODDS = {
     "up": 1.30,
     "dc": 1.30,
@@ -89,35 +152,43 @@ MIN_ODDS = {
     "asian_handicap": 1.30,
 }
 
+# Corners are deliberately capped because Football_data.py
+# currently does not have the same depth of corner information
+# as its goal model.
 MAX_ODDS_KIND = {
     "corners": 1.50,
     "corners_1h": 1.50,
 }
 
+# Small diversification preference.
+# These DO NOT create probability.
 KIND_BONUS = {
-    "up": 0.04,
-    "team_goals": 0.04,
-    "corners": 0.03,
-    "corners_1h": 0.03,
-    "handicap": 0.03,
-    "asian_handicap": 0.03,
-    "btts": 0.02,
-    "streak": 0.03,
-    "dc": 0.01,
+    "up": 0.010,
+    "team_goals": 0.010,
+    "corners": 0.005,
+    "corners_1h": 0.005,
+    "handicap": 0.005,
+    "asian_handicap": 0.005,
+    "btts": 0.005,
+    "streak": 0.005,
+    "dc": 0.002,
+    "over15": 0.005,
+    "over": 0.005,
 }
 
+# Diversification caps.
 KIND_CAP = {
-    "over15": 0.20,
+    "over15": 0.35,
     "over": 0.30,
     "btts": 0.30,
-    "dc": 0.30,
+    "dc": 0.20,
     "up": 0.40,
-    "corners": 0.30,
-    "corners_1h": 0.20,
-    "handicap": 0.30,
+    "corners": 0.20,
+    "corners_1h": 0.15,
+    "handicap": 0.25,
     "asian_handicap": 0.25,
     "team_goals": 0.35,
-    "streak": 0.25,
+    "streak": 0.20,
 }
 
 KIND_NAME = {
@@ -136,17 +207,59 @@ KIND_NAME = {
 
 
 # ============================================================
-# HELPERS
+# FOOTBALL ENGINE STATUS
+# ============================================================
+
+def football_engine_available():
+    return fd is not None
+
+
+def _football_diag():
+    if fd is None:
+        return ""
+
+    try:
+        return str(
+            fd.diag_summary()
+        )
+    except Exception:
+        return ""
+
+
+# ============================================================
+# BASIC HELPERS
 # ============================================================
 
 def _f(value):
     try:
         return sp._float(value)
     except Exception:
+        try:
+            return float(value)
+        except Exception:
+            return None
+
+
+def _clamp(value, low=0.0, high=0.99):
+    try:
+        value = float(value)
+    except Exception:
         return None
+
+    return max(
+        low,
+        min(high, value),
+    )
 
 
 def _single(odd):
+    """
+    Used ONLY as a fallback market-side value.
+
+    This is NOT used as football probability.
+
+    Football probability must come from Football_data.py.
+    """
     if not odd:
         return None
 
@@ -157,21 +270,36 @@ def _single(odd):
 
 
 def _two_way(odd, other):
+    """
+    Market-side fallback only.
+
+    Never used as the final football prediction when
+    Football_data.py has evidence.
+    """
     if not odd:
         return None
 
     if other:
-        a = 1 / odd
-        b = 1 / other
-        total = a + b
+        try:
+            a = 1 / odd
+            b = 1 / other
+            total = a + b
 
-        if total:
-            return a / total
+            if total:
+                return a / total
+        except Exception:
+            pass
 
     return min(
         0.95 / odd,
         0.97,
     )
+
+
+def _clean(value):
+    return str(
+        value or ""
+    ).strip()
 
 
 # ============================================================
@@ -232,9 +360,12 @@ def _up_candidates(
     add,
 ):
     """
-    Collect ONLY SportyBet 1UP and 2UP outcomes.
+    Collect ONLY SportyBet 1UP / 2UP markets.
 
-    Both 1UP and 2UP are valid for Straight Win mode.
+    IMPORTANT:
+    The probability here is deliberately None.
+
+    Football_data.py must calculate it.
     """
 
     for market in markets or []:
@@ -260,9 +391,12 @@ def _up_candidates(
         if len(outcomes) != 3:
             continue
 
-        up_number = int(
-            found.group(1)
-        )
+        try:
+            up_number = int(
+                found.group(1)
+            )
+        except Exception:
+            continue
 
         if up_number not in (1, 2):
             continue
@@ -316,7 +450,7 @@ def _up_candidates(
                     f"({up_number}UP)"
                 ),
                 odd,
-                _single(odd),
+                None,
                 (
                     str(
                         market.get(
@@ -343,6 +477,18 @@ def event_candidates(
     event,
     markets,
 ):
+    """
+    Extract available SportyBet markets.
+
+    This function ONLY answers:
+
+        "What can SportyBet currently offer?"
+
+    It does NOT decide which market is good.
+
+    Football_data.py decides probability later.
+    """
+
     home = event.get(
         "homeTeamName",
         "Home",
@@ -365,7 +511,6 @@ def event_candidates(
     ):
         if (
             not odd
-            or not probability
             or odd <= 1
         ):
             return
@@ -374,7 +519,8 @@ def event_candidates(
             "kind": kind,
             "label": label,
             "odd": odd,
-            "p": probability,
+            "market_p": probability,
+            "p": None,
             "key": key,
         }
 
@@ -415,22 +561,6 @@ def event_candidates(
         ),
     )
 
-    ph = None
-    pa = None
-
-    if h and d and a:
-        inv = [
-            1 / h,
-            1 / d,
-            1 / a,
-        ]
-
-        total = sum(inv)
-
-        if total:
-            ph = inv[0] / total
-            pa = inv[2] / total
-
     # ========================================================
     # 1UP / 2UP
     # ========================================================
@@ -443,32 +573,33 @@ def event_candidates(
     )
 
     # ========================================================
-    # DOUBLE CHANCE
+    # DOUBLE CHANCE 12
     # ========================================================
 
-    if ph is not None and pa is not None:
-
-        key = (
+    odd = sp.find_odds(
+        markets,
+        (
             sp.M_DC,
             "",
             sp.OUT_DC["12"],
-        )
+        ),
+    )
 
-        odd = sp.find_odds(
-            markets,
-            key,
-        )
-
+    if odd:
         add(
             "dc",
             f"{home} or {away}",
             odd,
-            ph + pa,
-            key,
+            None,
+            (
+                sp.M_DC,
+                "",
+                sp.OUT_DC["12"],
+            ),
         )
 
     # ========================================================
-    # OVER GOALS ONLY
+    # TOTAL GOALS — OVER ONLY
     # ========================================================
 
     for market in markets or []:
@@ -575,7 +706,7 @@ def event_candidates(
         )
 
     # ========================================================
-    # BTTS
+    # BTTS YES
     # ========================================================
 
     yes_key = (
@@ -1031,72 +1162,10 @@ def event_candidates(
                     ),
                 ),
                 side=side,
+                handicap_label=label.strip(),
             )
 
     return candidates
-
-
-# ============================================================
-# FAVOURITE STRENGTH
-# ============================================================
-
-def favourite_strength(event):
-    markets = (
-        event.get(
-            "markets"
-        )
-        or []
-    )
-
-    h = sp.find_odds(
-        markets,
-        (
-            sp.M_1X2,
-            "",
-            sp.OUT_1X2["home"],
-        ),
-    )
-
-    d = sp.find_odds(
-        markets,
-        (
-            sp.M_1X2,
-            "",
-            sp.OUT_1X2["draw"],
-        ),
-    )
-
-    a = sp.find_odds(
-        markets,
-        (
-            sp.M_1X2,
-            "",
-            sp.OUT_1X2["away"],
-        ),
-    )
-
-    if not (
-        h
-        and d
-        and a
-    ):
-        return None
-
-    inv = [
-        1 / h,
-        1 / d,
-        1 / a,
-    ]
-
-    total = sum(inv)
-
-    if not total:
-        return None
-
-    return max(
-        inv[0],
-        inv[2],
-    ) / total
 
 
 # ============================================================
@@ -1109,25 +1178,27 @@ _DETAIL_LOCK = threading.Lock()
 def _slim_markets(markets):
     keep = []
 
+    wanted_ids = {
+        str(sp.M_1X2),
+        str(sp.M_DC),
+        str(sp.M_TOTAL),
+        str(sp.M_BTTS),
+        str(sp.M_HOME_TEAM_GOALS),
+        str(sp.M_AWAY_TEAM_GOALS),
+        str(sp.M_CORNERS),
+        str(sp.M_CORNERS_1H),
+        str(sp.M_STREAK_3),
+        str(sp.M_HANDICAP),
+        str(sp.M_ASIAN_HANDICAP),
+    }
+
     for market in markets or []:
 
         market_id = str(
             market.get("id")
         )
 
-        if market_id in {
-            str(sp.M_1X2),
-            str(sp.M_DC),
-            str(sp.M_TOTAL),
-            str(sp.M_BTTS),
-            str(sp.M_HOME_TEAM_GOALS),
-            str(sp.M_AWAY_TEAM_GOALS),
-            str(sp.M_CORNERS),
-            str(sp.M_CORNERS_1H),
-            str(sp.M_STREAK_3),
-            str(sp.M_HANDICAP),
-            str(sp.M_ASIAN_HANDICAP),
-        }:
+        if market_id in wanted_ids:
             keep.append(
                 market
             )
@@ -1167,6 +1238,7 @@ def _event_markets_cached(
     )
 
     if cached:
+
         timestamp, markets = cached
 
         if (
@@ -1194,6 +1266,7 @@ def _event_markets_cached(
         len(cache)
         > MAX_CACHED_MATCHES
     ):
+
         oldest = sorted(
             cache,
             key=lambda key:
@@ -1222,6 +1295,564 @@ sp.SportyBetProvider._event_markets_cached = (
 
 
 # ============================================================
+# FOOTBALL EVIDENCE
+# ============================================================
+
+def _get_fixture(event):
+    """
+    Match the SportyBet event against API-Football.
+    """
+
+    if fd is None:
+        return None
+
+    try:
+        return fd.find_fixture(
+            event
+        )
+    except Exception as exc:
+        print(
+            "Football fixture matching failed:",
+            exc,
+        )
+        return None
+
+
+def _get_facts(fixture):
+    if fd is None or not fixture:
+        return None
+
+    try:
+        return fd.get_facts(
+            fixture
+        )
+    except Exception as exc:
+        print(
+            "Football facts failed:",
+            exc,
+        )
+        return None
+
+
+def _football_probability(
+    candidate,
+    facts,
+):
+    """
+    Ask Football_data.py for the actual football probability.
+
+    No bookmaker probability is used.
+    """
+
+    if fd is None or facts is None:
+        return None
+
+    try:
+
+        probability = fd.adjusted_p(
+            candidate,
+            facts,
+        )
+
+        if probability is None:
+            return None
+
+        return _clamp(
+            probability,
+            0.01,
+            0.97,
+        )
+
+    except Exception as exc:
+
+        print(
+            "Football probability failed:",
+            exc,
+        )
+
+        return None
+
+
+def _facts_quality(facts):
+    """
+    Estimate how complete the football evidence is.
+
+    This is intentionally conservative.
+    """
+
+    if not facts:
+        return 0.0
+
+    scores = []
+
+    # Recent form.
+    home_form = facts.get(
+        "home_form"
+    )
+
+    away_form = facts.get(
+        "away_form"
+    )
+
+    if home_form and away_form:
+        scores.append(1.0)
+    elif home_form or away_form:
+        scores.append(0.55)
+
+    # Goal averages.
+    required_goal_fields = (
+        "home_gf",
+        "home_ga",
+        "away_gf",
+        "away_ga",
+    )
+
+    present_goals = sum(
+        1
+        for key in required_goal_fields
+        if facts.get(key) is not None
+    )
+
+    if present_goals == 4:
+        scores.append(1.0)
+    elif present_goals >= 2:
+        scores.append(0.65)
+
+    # Venue.
+    venue_fields = (
+        "home_home",
+        "away_away",
+    )
+
+    venue_present = sum(
+        1
+        for key in venue_fields
+        if facts.get(key)
+    )
+
+    if venue_present == 2:
+        scores.append(1.0)
+    elif venue_present:
+        scores.append(0.60)
+
+    # H2H.
+    if facts.get(
+        "h2h_count"
+    ):
+        scores.append(0.90)
+
+    # API model.
+    api_model = facts.get(
+        "api_model"
+    )
+
+    if api_model:
+        scores.append(1.0)
+
+    if not scores:
+        return 0.0
+
+    return _clamp(
+        sum(scores) / len(scores),
+        0.0,
+        1.0,
+    )
+
+
+def _model_disagreement_penalty(
+    candidate,
+    facts,
+    football_p,
+):
+    """
+    Detect situations where the football model is weak or
+    internally uncertain.
+
+    We deliberately DO NOT compare against SportyBet odds.
+
+    The bookmaker must not be allowed to validate the model.
+    """
+
+    if not facts:
+        return 0.0
+
+    api_model = facts.get(
+        "api_model"
+    )
+
+    if not api_model:
+        return 0.0
+
+    kind = candidate.get(
+        "kind"
+    )
+
+    side = candidate.get(
+        "side"
+    )
+
+    api_p = None
+
+    try:
+
+        if kind in (
+            "up",
+            "dc",
+            "handicap",
+            "asian_handicap",
+        ):
+
+            if side == "home":
+                api_p = (
+                    api_model.get(
+                        "home"
+                    )
+                )
+
+            elif side == "away":
+                api_p = (
+                    api_model.get(
+                        "away"
+                    )
+                )
+
+        elif kind == "btts":
+
+            api_p = (
+                api_model.get(
+                    "btts"
+                )
+            )
+
+        elif kind in (
+            "over",
+            "over15",
+        ):
+
+            line = candidate.get(
+                "line"
+            )
+
+            key = (
+                f"over_{line:g}"
+                if line is not None
+                else "over"
+            )
+
+            api_p = api_model.get(
+                key
+            )
+
+    except Exception:
+        api_p = None
+
+    if api_p is None:
+        return 0.0
+
+    try:
+        disagreement = abs(
+            float(
+                football_p
+            )
+            - float(
+                api_p
+            )
+        )
+    except Exception:
+        return 0.0
+
+    # Only penalise meaningful disagreement.
+    if disagreement <= 0.08:
+        return 0.0
+
+    if disagreement <= 0.15:
+        return 0.025
+
+    if disagreement <= 0.22:
+        return 0.05
+
+    return 0.08
+
+
+def _apply_evidence_score(
+    candidate,
+    facts,
+    risk,
+):
+    """
+    Convert Football_data probability into the final internal
+    selection probability.
+
+    This is still football-only.
+
+    Evidence quality and disagreement can LOWER confidence.
+    They can NEVER increase probability.
+    """
+
+    raw_p = _football_probability(
+        candidate,
+        facts,
+    )
+
+    if raw_p is None:
+        return None
+
+    quality = _facts_quality(
+        facts
+    )
+
+    disagreement = (
+        _model_disagreement_penalty(
+            candidate,
+            facts,
+            raw_p,
+        )
+    )
+
+    # Incomplete data gets penalised.
+    missing_penalty = max(
+        0.0,
+        (0.78 - quality)
+        * 0.12,
+    )
+
+    final_p = (
+        raw_p
+        - missing_penalty
+        - disagreement
+    )
+
+    final_p = _clamp(
+        final_p,
+        0.01,
+        0.97,
+    )
+
+    candidate[
+        "football_p"
+    ] = raw_p
+
+    candidate[
+        "evidence_quality"
+    ] = quality
+
+    candidate[
+        "model_disagreement"
+    ] = disagreement
+
+    candidate[
+        "p"
+    ] = final_p
+
+    return final_p
+
+
+# ============================================================
+# EVIDENCE REASON
+# ============================================================
+
+def _football_reason(
+    candidate,
+    facts,
+):
+    """
+    Prefer Football_data.py's reason_for().
+
+    If unavailable, create a compact evidence summary.
+    """
+
+    if fd is not None:
+
+        try:
+
+            reason = fd.reason_for(
+                candidate,
+                facts,
+            )
+
+            if reason:
+                return str(
+                    reason
+                )
+
+        except Exception:
+            pass
+
+    if not facts:
+        return (
+            "Football evidence unavailable."
+        )
+
+    parts = []
+
+    try:
+
+        home_form = facts.get(
+            "home_form"
+        )
+
+        away_form = facts.get(
+            "away_form"
+        )
+
+        if home_form:
+            parts.append(
+                f"{candidate.get('home')} form "
+                f"{home_form}"
+            )
+
+        if away_form:
+            parts.append(
+                f"{candidate.get('away')} form "
+                f"{away_form}"
+            )
+
+        hgf = facts.get(
+            "home_gf"
+        )
+
+        hga = facts.get(
+            "home_ga"
+        )
+
+        agf = facts.get(
+            "away_gf"
+        )
+
+        aga = facts.get(
+            "away_ga"
+        )
+
+        if all(
+            value is not None
+            for value in (
+                hgf,
+                hga,
+                agf,
+                aga,
+            )
+        ):
+            parts.append(
+                "recent goal profile supports "
+                "the selection"
+            )
+
+    except Exception:
+        pass
+
+    if not parts:
+        return (
+            "Football evidence supports "
+            "the selection."
+        )
+
+    return (
+        "; ".join(parts)
+        + "."
+    )
+
+
+def _reason_for(candidate):
+    """
+    Final human-readable reason.
+
+    Football evidence is preferred.
+    """
+
+    evidence_reason = candidate.get(
+        "football_reason"
+    )
+
+    probability = candidate.get(
+        "p"
+    )
+
+    quality = candidate.get(
+        "evidence_quality"
+    )
+
+    if evidence_reason:
+
+        suffix = ""
+
+        if probability is not None:
+            suffix += (
+                f" Model confidence "
+                f"{round(probability * 100)}%."
+            )
+
+        if quality is not None:
+            suffix += (
+                f" Evidence quality "
+                f"{round(quality * 100)}%."
+            )
+
+        return (
+            str(evidence_reason)
+            + suffix
+        )
+
+    return (
+        f"Football model supports "
+        f"this selection at "
+        f"{round((probability or 0) * 100)}%."
+    )
+
+
+# ============================================================
+# CANDIDATE ENRICHMENT
+# ============================================================
+
+def _enrich_candidate(
+    candidate,
+    event,
+    facts,
+):
+    probability = _apply_evidence_score(
+        candidate,
+        facts,
+        "normal",
+    )
+
+    if probability is None:
+        return False
+
+    candidate[
+        "football_reason"
+    ] = _football_reason(
+        candidate,
+        facts,
+    )
+
+    candidate[
+        "reason"
+    ] = _reason_for(
+        candidate
+    )
+
+    candidate[
+        "football_data"
+    ] = facts
+
+    return True
+
+
+# ============================================================
+# DEDUPLICATION
+# ============================================================
+
+def _candidate_identity(candidate):
+    return (
+        candidate.get(
+            "event_id"
+        ),
+        candidate.get(
+            "key"
+        ),
+    )
+
+
+# ============================================================
 # GATHER
 # ============================================================
 
@@ -1237,7 +1868,25 @@ def gather(
     straight_only=False,
     max_groups=GROUP_LIMIT,
 ):
+    """
+    Main evidence-first selection engine.
+    """
+
     started = time.time()
+
+    if fd is None:
+
+        print(
+            "Football_data.py unavailable. "
+            "Evidence-first mode cannot continue."
+        )
+
+        return (
+            [],
+            0,
+            0,
+            0,
+        )
 
     events = provider.get_upcoming(
         start,
@@ -1245,6 +1894,7 @@ def gather(
     )
 
     if not events:
+
         print(
             "SportyBet returned 0 events."
         )
@@ -1256,60 +1906,38 @@ def gather(
             0,
         )
 
-    rated = []
+    # --------------------------------------------------------
+    # DO NOT RANK MATCHES BY ODDS.
+    #
+    # We only prioritize events by whether they are likely to
+    # be enrichable. This is NOT a betting probability.
+    # --------------------------------------------------------
+
+    wanted = []
 
     for event in events:
 
-        strength = favourite_strength(
+        if not event.get(
+            "eventId"
+        ):
+            continue
+
+        wanted.append(
             event
         )
 
-        if strength is not None:
-            rated.append(
-                (
-                    strength,
-                    event,
-                )
-            )
-
-    rated.sort(
-        key=lambda item:
-            item[0],
-        reverse=True,
-    )
-
-    # ========================================================
-    # STRAIGHT WIN CHECKS UP TO 40 MATCHES
-    # NORMAL TICKETS REMAIN AT 10
-    # ========================================================
-
-    if straight_only:
-        detail_limit = min(
-            len(events),
-            40,
+        limit = (
+            STRAIGHT_DETAIL_EVENTS
+            if straight_only
+            else MAX_DETAIL_EVENTS
         )
-    else:
-        detail_limit = MAX_DETAIL_EVENTS
 
-    if rated:
-        wanted = [
-            event
-            for _, event
-            in rated[
-                :detail_limit
-            ]
-        ]
+        if len(wanted) >= limit:
+            break
 
-    else:
-        wanted = [
-            event
-            for event in events[
-                :detail_limit
-            ]
-            if event.get(
-                "eventId"
-            )
-        ]
+    # --------------------------------------------------------
+    # SPORTYBET MARKET LOADING
+    # --------------------------------------------------------
 
     details = {}
 
@@ -1322,9 +1950,7 @@ def gather(
         futures = {
             pool.submit(
                 provider._event_markets_cached,
-                event[
-                    "eventId"
-                ],
+                event["eventId"],
             ): event
             for event in wanted
         }
@@ -1360,8 +1986,7 @@ def gather(
         except FutureTimeout:
 
             print(
-                "Detailed market loading "
-                "timed out."
+                "Detailed market loading timed out."
             )
 
         finally:
@@ -1371,34 +1996,45 @@ def gather(
                 cancel_futures=True,
             )
 
+    # --------------------------------------------------------
+    # MINIMUM PROBABILITY
+    # --------------------------------------------------------
+
     min_p = (
-        {
-            "safe": 0.65,
-            "normal": 0.55,
-            "risky": 0.45,
-        }.get(
+        MIN_FOOTBALL_PROB.get(
             risk,
-            0.55,
+            MIN_FOOTBALL_PROB[
+                "normal"
+            ],
         )
         - min_p_shift
     )
 
-    max_odd = (
-        {
-            "safe": 2.20,
-            "normal": 2.40,
-            "risky": 2.60,
-        }.get(
+    quality_floor = (
+        MIN_EVIDENCE_QUALITY.get(
             risk,
-            2.40,
+            MIN_EVIDENCE_QUALITY[
+                "normal"
+            ],
         )
     )
 
+    max_odd = (
+        MAX_SELECTION_ODDS.get(
+            risk,
+            MAX_SELECTION_ODDS[
+                "normal"
+            ],
+        )
+    )
+
+    # Straight win is allowed to search slightly wider,
+    # but it still cannot bypass the football model.
     if straight_only:
 
-        min_p = min(
-            min_p,
-            0.40,
+        min_p = max(
+            0.62,
+            min_p - 0.02,
         )
 
         max_odd = max(
@@ -1408,14 +2044,31 @@ def gather(
 
     groups = []
 
-    for event in events:
+    # ========================================================
+    # FOOTBALL EVIDENCE PASS
+    # ========================================================
+
+    football_studied = 0
+    football_started = time.time()
+
+    for event in wanted:
+
+        if (
+            football_studied
+            >= FOOTBALL_MAX_STUDIED
+        ):
+            break
+
+        if (
+            time.time()
+            - football_started
+            >= FOOTBALL_STUDY_SECONDS
+        ):
+            break
 
         event_id = event.get(
             "eventId"
         )
-
-        if not event_id:
-            continue
 
         markets = (
             details.get(
@@ -1430,9 +2083,25 @@ def gather(
         if not markets:
             continue
 
-        fixture = sp.sporty_fixture(
+        # ----------------------------------------------------
+        # Match SportyBet event to API-Football.
+        # ----------------------------------------------------
+
+        fixture = _get_fixture(
             event
         )
+
+        if not fixture:
+            continue
+
+        facts = _get_facts(
+            fixture
+        )
+
+        if not facts:
+            continue
+
+        football_studied += 1
 
         candidates = event_candidates(
             event,
@@ -1440,16 +2109,34 @@ def gather(
         )
 
         kept = []
-
         labels = set()
+
+        # SportyBet fixture metadata.
+        sporty_fixture = (
+            sp.sporty_fixture(
+                event
+            )
+        )
+
+        league_name = (
+            sporty_fixture
+            .get(
+                "league",
+                {},
+            )
+            .get(
+                "name",
+                "Football",
+            )
+        )
+
+        # ----------------------------------------------------
+        # Calculate football probability for every candidate.
+        # ----------------------------------------------------
 
         for candidate in candidates:
 
-            # =================================================
-            # STRAIGHT WIN:
-            # ONLY 1UP / 2UP
-            # =================================================
-
+            # Straight Win = ONLY 1UP / 2UP.
             if straight_only:
 
                 if candidate.get(
@@ -1465,27 +2152,27 @@ def gather(
                 ):
                     continue
 
-            floor_kind = MIN_ODDS.get(
-                candidate[
-                    "kind"
-                ],
-                1.30,
-            )
-
-            cap_kind = (
-                MAX_ODDS_KIND.get(
-                    candidate[
-                        "kind"
-                    ]
-                )
-            )
+            kind = candidate[
+                "kind"
+            ]
 
             odd = candidate[
                 "odd"
             ]
 
+            # Minimum SportyBet price.
+            floor_kind = MIN_ODDS.get(
+                kind,
+                1.30,
+            )
+
             if odd < floor_kind:
                 continue
+
+            # Maximum price for corners.
+            cap_kind = MAX_ODDS_KIND.get(
+                kind
+            )
 
             if (
                 cap_kind
@@ -1493,14 +2180,11 @@ def gather(
             ):
                 continue
 
-            if candidate[
-                "p"
-            ] < min_p:
-                continue
-
+            # Global price safety.
             if odd > max_odd:
                 continue
 
+            # Excluded selection.
             if (
                 event_id,
                 candidate[
@@ -1509,6 +2193,33 @@ def gather(
             ) in exclude:
                 continue
 
+            # ------------------------------------------------
+            # FOOTBALL MODEL
+            # ------------------------------------------------
+
+            probability = _apply_evidence_score(
+                candidate,
+                facts,
+                risk,
+            )
+
+            if probability is None:
+                continue
+
+            quality = candidate.get(
+                "evidence_quality",
+                0.0,
+            )
+
+            # Evidence quality gate.
+            if quality < quality_floor:
+                continue
+
+            # Football probability gate.
+            if probability < min_p:
+                continue
+
+            # Duplicate labels.
             if candidate[
                 "label"
             ] in labels:
@@ -1519,6 +2230,10 @@ def gather(
                     "label"
                 ]
             )
+
+            # ------------------------------------------------
+            # MATCH METADATA
+            # ------------------------------------------------
 
             timestamp = (
                 event.get(
@@ -1557,34 +2272,49 @@ def gather(
                         "Away",
                     ),
                     "kickoff": kickoff,
-                    "league": (
-                        fixture.get(
-                            "league",
-                            {},
-                        ).get(
-                            "name",
-                            "Football",
-                        )
-                    ),
+                    "league": league_name,
+                    "fixture": fixture,
+                    "facts": facts,
                 }
+            )
+
+            candidate[
+                "football_reason"
+            ] = _football_reason(
+                candidate,
+                facts,
+            )
+
+            candidate[
+                "reason"
+            ] = _reason_for(
+                candidate
             )
 
             kept.append(
                 candidate
             )
 
+        # ----------------------------------------------------
+        # Keep only the strongest football-supported markets
+        # from each match.
+        # ----------------------------------------------------
+
         if kept:
 
             kept.sort(
                 key=lambda candidate:
-                    candidate[
-                        "p"
-                    ]
-                    + KIND_BONUS.get(
-                        candidate[
-                            "kind"
-                        ],
-                        0,
+                    (
+                        candidate.get(
+                            "p",
+                            0,
+                        )
+                        + KIND_BONUS.get(
+                            candidate.get(
+                                "kind"
+                            ),
+                            0,
+                        )
                     ),
                 reverse=True,
             )
@@ -1595,12 +2325,17 @@ def gather(
                 ]
             )
 
+    # ========================================================
+    # GLOBAL SORT
+    # ========================================================
+
     groups.sort(
         key=lambda group:
             max(
-                candidate[
-                    "p"
-                ]
+                candidate.get(
+                    "p",
+                    0,
+                )
                 for candidate in group
             ),
         reverse=True,
@@ -1616,13 +2351,15 @@ def gather(
     )
 
     print(
-        "gather:",
+        "evidence-first gather:",
         len(events),
-        "matches,",
+        "SportyBet matches,",
         len(details),
-        "detailed,",
+        "market details,",
+        football_studied,
+        "football matches studied,",
         len(groups),
-        "usable,",
+        "usable groups,",
         f"{elapsed:.1f}s",
     )
 
@@ -1630,7 +2367,7 @@ def gather(
         groups,
         len(events),
         len(details),
-        0,
+        football_studied,
     )
 
 
@@ -1657,6 +2394,16 @@ def _dp(
     groups,
     target,
 ):
+    """
+    Find a combination reaching target odds.
+
+    IMPORTANT:
+    The DP uses football probability as its cost.
+
+    SportyBet odds only determine whether the target can
+    physically be reached.
+    """
+
     SCALE = 80
 
     if target <= 1:
@@ -1683,9 +2430,7 @@ def _dp(
         ),
     )
 
-    INF = float(
-        "inf"
-    )
+    INF = float("inf")
 
     dp = [
         INF
@@ -1713,16 +2458,18 @@ def _dp(
             group
         ):
 
-            odd = candidate[
+            odd = candidate.get(
                 "odd"
-            ]
+            )
 
-            probability = candidate[
+            probability = candidate.get(
                 "p"
-            ]
+            )
 
             if (
-                odd <= 1
+                not odd
+                or odd <= 1
+                or not probability
                 or probability <= 0
             ):
                 continue
@@ -1740,17 +2487,28 @@ def _dp(
             ):
                 continue
 
+            # ------------------------------------------------
+            # FOOTBALL MODEL COST
+            #
+            # Higher football probability = lower cost.
+            #
+            # This is the opposite of the old odds-driven
+            # engine.
+            # ------------------------------------------------
+
             cost = (
                 -math.log(
                     probability
                 )
-                - KIND_BONUS.get(
-                    candidate[
-                        "kind"
-                    ],
-                    0,
+                - (
+                    KIND_BONUS.get(
+                        candidate.get(
+                            "kind"
+                        ),
+                        0,
+                    )
+                    * 0.10
                 )
-                + 0.06
             )
 
             for x in range(
@@ -1767,22 +2525,23 @@ def _dp(
                     + cost
                 )
 
+                destination = (
+                    x + weight
+                )
+
                 if (
                     value
                     < new[
-                        x
-                        + weight
+                        destination
                     ]
                 ):
 
                     new[
-                        x
-                        + weight
+                        destination
                     ] = value
 
                     choice[
-                        x
-                        + weight
+                        destination
                     ] = (
                         index,
                         x,
@@ -1853,7 +2612,32 @@ def _dp(
 
     picked.reverse()
 
-    return picked
+    # --------------------------------------------------------
+    # Safety:
+    # One match = one selection.
+    # --------------------------------------------------------
+
+    used = set()
+    final = []
+
+    for pick in picked:
+
+        event_id = pick.get(
+            "event_id"
+        )
+
+        if event_id in used:
+            continue
+
+        used.add(
+            event_id
+        )
+
+        final.append(
+            pick
+        )
+
+    return final
 
 
 def _dp_exact(
@@ -1864,7 +2648,7 @@ def _dp_exact(
 
     aim = target
 
-    for _ in range(3):
+    for _ in range(4):
 
         picks = _dp(
             groups,
@@ -1898,6 +2682,9 @@ def _dp_exact(
         ):
 
             return picks
+
+        if actual <= 1:
+            break
 
         aim = max(
             target,
@@ -1957,6 +2744,14 @@ def choose_target(
             True,
         )
 
+    # --------------------------------------------------------
+    # Target cannot be reached.
+    #
+    # Do NOT force weak selections.
+    #
+    # Return the strongest football-supported picks instead.
+    # --------------------------------------------------------
+
     ranked = []
 
     for group in groups:
@@ -1964,14 +2759,17 @@ def choose_target(
         best = max(
             group,
             key=lambda candidate:
-                candidate[
-                    "p"
-                ]
-                + KIND_BONUS.get(
-                    candidate[
-                        "kind"
-                    ],
-                    0,
+                (
+                    candidate.get(
+                        "p",
+                        0,
+                    )
+                    + KIND_BONUS.get(
+                        candidate.get(
+                            "kind"
+                        ),
+                        0,
+                    )
                 ),
         )
 
@@ -1981,14 +2779,14 @@ def choose_target(
 
     ranked.sort(
         key=lambda candidate:
-            candidate[
-                "p"
-            ],
+            candidate.get(
+                "p",
+                0,
+            ),
         reverse=True,
     )
 
     result = []
-
     used = set()
 
     for candidate in ranked:
@@ -2037,22 +2835,23 @@ def choose_count(
             for candidate in group
         ),
         key=lambda candidate:
-            candidate[
-                "p"
-            ]
-            + KIND_BONUS.get(
-                candidate[
-                    "kind"
-                ],
-                0,
+            (
+                candidate.get(
+                    "p",
+                    0,
+                )
+                + KIND_BONUS.get(
+                    candidate.get(
+                        "kind"
+                    ),
+                    0,
+                )
             ),
         reverse=True,
     )
 
     chosen = []
-
     used_events = set()
-
     counts = {}
 
     for candidate in candidates:
@@ -2120,138 +2919,7 @@ def choose_count(
 
 
 # ============================================================
-# REASONS
-# ============================================================
-
-def _reason_for(candidate):
-    kind = candidate[
-        "kind"
-    ]
-
-    odd = candidate[
-        "odd"
-    ]
-
-    home = candidate[
-        "home"
-    ]
-
-    away = candidate[
-        "away"
-    ]
-
-    side = candidate.get(
-        "side"
-    )
-
-    if kind == "up":
-
-        team = (
-            home
-            if side == "home"
-            else away
-        )
-
-        number = candidate.get(
-            "up_n",
-            2,
-        )
-
-        return (
-            f"{team} to win "
-            f"({number}UP) at "
-            f"{odd:.2f}."
-        )
-
-    if kind == "dc":
-
-        return (
-            f"{home} or {away} "
-            f"at {odd:.2f}."
-        )
-
-    if kind in (
-        "over15",
-        "over",
-    ):
-
-        line = candidate.get(
-            "line",
-            1.5,
-        )
-
-        return (
-            f"Over {line:g} goals "
-            f"at {odd:.2f}."
-        )
-
-    if kind == "btts":
-
-        return (
-            "Both teams to score "
-            f"at {odd:.2f}."
-        )
-
-    if kind == "team_goals":
-
-        line = candidate.get(
-            "line",
-            0.5,
-        )
-
-        team = (
-            home
-            if side == "home"
-            else away
-        )
-
-        return (
-            f"{team} to score "
-            f"{line:g}+ at "
-            f"{odd:.2f}."
-        )
-
-    if kind == "streak":
-
-        return (
-            "No team to score "
-            f"3+ in a row at "
-            f"{odd:.2f}."
-        )
-
-    if kind == "corners":
-
-        line = candidate.get(
-            "line",
-            7.5,
-        )
-
-        return (
-            f"Over {line:g} corners "
-            f"at {odd:.2f}."
-        )
-
-    if kind == "corners_1h":
-
-        line = candidate.get(
-            "line",
-            3.5,
-        )
-
-        return (
-            f"1st half Over "
-            f"{line:g} corners "
-            f"at {odd:.2f}."
-        )
-
-    return (
-        f"{candidate['label']} "
-        f"at {odd:.2f}."
-    )
-
-
-# ============================================================
-# DISPLAY
+# DISPLAY HELPERS
 # ============================================================
 
 def _time_text(
@@ -2278,14 +2946,33 @@ def _time_text(
 
 
 def _confidence(probability):
+    """
+    More honest confidence labels.
+
+    85+ = Elite
+    80-84 = Very strong
+    75-79 = Strong
+    70-74 = Acceptable
+    65-69 = Weak
+    below 65 = Reject
+    """
+
+    if probability >= 0.85:
+        return "🟢 Elite"
 
     if probability >= 0.80:
-        return "🟢"
+        return "🟢 Very strong"
+
+    if probability >= 0.75:
+        return "🟡 Strong"
 
     if probability >= 0.70:
-        return "🟡"
+        return "🟡 Acceptable"
 
-    return "🟠"
+    if probability >= 0.65:
+        return "🟠 Weak"
+
+    return "🔴 Reject"
 
 
 def _fmt(value):
@@ -2334,7 +3021,7 @@ def build_ticket(
 
         floor = max(
             floor,
-            1.35,
+            1.30,
         )
 
     if target:
@@ -2372,9 +3059,7 @@ def build_ticket(
     )
 
     chosen = []
-
     reached = False
-
     note = ""
 
     while True:
@@ -2398,7 +3083,7 @@ def build_ticket(
             risk,
             floor,
             exclude,
-            0.05
+            0.02
             if target
             and target <= 20
             else 0.0,
@@ -2449,6 +3134,7 @@ def build_ticket(
         "note": note,
         "events": total_events,
         "detailed": detailed,
+        "studied": studied,
         "floor": floor,
         "days_used": (
             extra_days + 1
@@ -2496,6 +3182,20 @@ def flow(
             text,
         )
 
+    if fd is None:
+
+        bot.send_message(
+            chat_id,
+            (
+                "❌ The football evidence engine "
+                "is unavailable right now. "
+                "I won't generate a prediction "
+                "from SportyBet odds alone."
+            ),
+        )
+
+        return
+
     try:
 
         req = bot.parse_request(
@@ -2517,18 +3217,19 @@ def flow(
     # CUSTOM BUILDER OVERRIDES
     # ========================================================
 
-    # Target odds override.
     if target_override is not None:
 
         try:
+
             target_override = float(
                 target_override
             )
 
             if target_override > 0:
-                req["target_odds"] = (
-                    target_override
-                )
+
+                req[
+                    "target_odds"
+                ] = target_override
 
         except (
             TypeError,
@@ -2536,18 +3237,19 @@ def flow(
         ):
             pass
 
-    # Number-of-picks override.
     if count_override is not None:
 
         try:
+
             count_override = int(
                 count_override
             )
 
             if count_override > 0:
-                req["picks"] = (
-                    count_override
-                )
+
+                req[
+                    "picks"
+                ] = count_override
 
         except (
             TypeError,
@@ -2555,13 +3257,14 @@ def flow(
         ):
             pass
 
-    # Search-day override.
-    #
-    # Supported exact windows:
-    # 1 / 2 / 3 / 5 / 7 / 14 days
+    # ========================================================
+    # SEARCH WINDOW
+    # ========================================================
+
     if search_days is not None:
 
         try:
+
             search_days = int(
                 search_days
             )
@@ -2570,6 +3273,7 @@ def flow(
             TypeError,
             ValueError,
         ):
+
             search_days = None
 
         if search_days not in (
@@ -2580,17 +3284,12 @@ def flow(
             7,
             14,
         ):
-            search_days = None
 
-    # ========================================================
-    # APPLY EXACT SEARCH WINDOW
-    # ========================================================
+            search_days = None
 
     if search_days is not None:
 
         if search_days == 1:
-            # TODAY = from the current eligible time
-            # until the end of today's window.
 
             local_now = datetime.now(
                 timezone.utc
@@ -2605,17 +3304,24 @@ def flow(
                     second=0,
                     microsecond=0,
                 )
-                + timedelta(days=1)
+                + timedelta(
+                    days=1
+                )
             )
 
-            req["end"] = (
+            req[
+                "end"
+            ] = (
                 tomorrow_midnight.astimezone(
                     timezone.utc
                 )
             )
 
         else:
-            req["end"] = (
+
+            req[
+                "end"
+            ] = (
                 req["start"]
                 + timedelta(
                     days=search_days - 1
@@ -2623,7 +3329,7 @@ def flow(
             )
 
     # ========================================================
-    # GET FINAL TARGET / COUNT
+    # FINAL TARGET / COUNT
     # ========================================================
 
     target = req.get(
@@ -2635,7 +3341,9 @@ def flow(
     )
 
     risk = (
-        req.get("risk")
+        req.get(
+            "risk"
+        )
         or "normal"
     )
 
@@ -2643,11 +3351,7 @@ def flow(
         count = 5
 
     # ========================================================
-    # STRAIGHT WIN DETECTION
-    #
-    # Straight Win means ONLY:
-    #   1UP
-    #   2UP
+    # STRAIGHT WIN
     # ========================================================
 
     straight_only = bool(
@@ -2704,24 +3408,23 @@ def flow(
     if straight_only:
 
         intro = (
-            "⏳ Checking SportyBet "
-            "1UP / 2UP matches..."
+            "🧠 Checking football evidence "
+            "for SportyBet 1UP / 2UP..."
         )
 
     elif target:
 
         intro = (
-            "⏳ Checking SportyBet "
-            f"matches for "
+            "🧠 Analysing football evidence "
+            f"before checking "
             f"{_fmt(target)} odds..."
         )
 
     else:
 
         intro = (
-            "⏳ Checking SportyBet "
-            f"matches for "
-            f"{count} picks..."
+            "🧠 Analysing football evidence "
+            f"for the best {count} picks..."
         )
 
     bot.send_message(
@@ -2730,10 +3433,6 @@ def flow(
     )
 
     started = time.time()
-
-    # ========================================================
-    # STRAIGHT WIN MODE
-    # ========================================================
 
     if straight_only:
 
@@ -2778,8 +3477,8 @@ def flow(
         bot.send_message(
             chat_id,
             (
-                "❌ SportyBet could not "
-                "be read right now.\n"
+                "❌ The prediction engine "
+                "could not complete the analysis.\n"
                 + html.escape(
                     str(exc)[:200]
                 )
@@ -2788,10 +3487,10 @@ def flow(
 
         return
 
-    # Make the displayed day count match the
-    # custom builder's exact search window.
     if search_days is not None:
-        built["days_used"] = search_days
+        built[
+            "days_used"
+        ] = search_days
 
     elapsed = (
         time.time()
@@ -2803,8 +3502,8 @@ def flow(
     ]
 
     print(
-        f"Ticket built in "
-        f"{elapsed:.1f}s: "
+        f"Evidence-first ticket built "
+        f"in {elapsed:.1f}s: "
         f"{len(chosen)} picks, "
         f"target={target}, "
         f"straight={straight_only}, "
@@ -2820,9 +3519,12 @@ def flow(
         bot.send_message(
             chat_id,
             (
-                "❌ I couldn't find "
-                "enough usable SportyBet "
-                "selections in that window."
+                "❌ I couldn't find enough "
+                "football-supported selections "
+                "in that window.\n\n"
+                "I rejected the weak matches "
+                "instead of using SportyBet odds "
+                "to manufacture confidence."
             ),
         )
 
@@ -2831,71 +3533,42 @@ def flow(
         return
 
     # ========================================================
-    # FINAL STRAIGHT WIN SAFETY CHECK
+    # FINAL STRAIGHT WIN SAFETY
     # ========================================================
 
     if straight_only:
 
-        invalid = []
-
-        for candidate in chosen:
-
+        chosen = [
+            candidate
+            for candidate in chosen
             if (
                 candidate.get(
                     "kind"
                 )
-                != "up"
-                or candidate.get(
+                == "up"
+                and candidate.get(
                     "up_n"
                 )
-                not in (
+                in (
                     1,
                     2,
                 )
-            ):
-                invalid.append(
-                    candidate
-                )
+            )
+        ]
 
-        if invalid:
+        if not chosen:
 
-            print(
-                "STRAIGHT WIN SAFETY: "
-                "invalid market detected; "
-                "removing it."
+            bot.send_message(
+                chat_id,
+                (
+                    "❌ No valid football-supported "
+                    "1UP / 2UP selections were found."
+                ),
             )
 
-            chosen = [
-                candidate
-                for candidate in chosen
-                if (
-                    candidate.get(
-                        "kind"
-                    )
-                    == "up"
-                    and candidate.get(
-                        "up_n"
-                    )
-                    in (
-                        1,
-                        2,
-                    )
-                )
-            ]
+            _reset_straight()
 
-            if not chosen:
-
-                bot.send_message(
-                    chat_id,
-                    (
-                        "❌ No valid 1UP / 2UP "
-                        "selections were found."
-                    ),
-                )
-
-                _reset_straight()
-
-                return
+            return
 
     # ========================================================
     # TODAY STRAIGHT TARGET
@@ -2917,11 +3590,11 @@ def flow(
         bot.send_message(
             chat_id,
             (
-                f"❌ Today only reaches "
-                f"about {actual:.1f} odds, "
-                f"not {_fmt(target)}.\n\n"
-                "Try a long straight-win "
-                "ticket to search more days."
+                f"❌ Today only reaches about "
+                f"{actual:.1f} odds.\n"
+                f"Target: {_fmt(target)}.\n\n"
+                "I won't add weak 1UP / 2UP picks "
+                "just to force the target."
             ),
         )
 
@@ -2930,7 +3603,7 @@ def flow(
         return
 
     # ========================================================
-    # SORT
+    # FINAL SORT
     # ========================================================
 
     chosen.sort(
@@ -2940,8 +3613,11 @@ def flow(
             ]
     )
 
-    total_odds = 1.0
+    # ========================================================
+    # FINAL PROBABILITY
+    # ========================================================
 
+    total_odds = 1.0
     chance = 1.0
 
     for candidate in chosen:
@@ -2950,9 +3626,14 @@ def flow(
             "odd"
         ]
 
-        chance *= candidate[
+        probability = candidate.get(
             "p"
-        ]
+        )
+
+        if probability is None:
+            probability = 0.0
+
+        chance *= probability
 
         candidate[
             "reason"
@@ -2965,7 +3646,6 @@ def flow(
     # ========================================================
 
     code = None
-
     errors = []
 
     try:
@@ -3044,6 +3724,8 @@ def flow(
             f"{html.escape(req['label'].capitalize())}"
             f" • {bot.LOCAL_TZ_NAME}"
         ),
+        "",
+        "🧠 <b>Football evidence first</b>",
     ]
 
     # ========================================================
@@ -3065,19 +3747,45 @@ def flow(
         )
 
         league_text = html.escape(
-            candidate["league"]
+            candidate[
+                "league"
+            ]
         )
 
         home_text = html.escape(
-            candidate["home"]
+            candidate[
+                "home"
+            ]
         )
 
         away_text = html.escape(
-            candidate["away"]
+            candidate[
+                "away"
+            ]
         )
 
         label_text = html.escape(
-            candidate["label"]
+            candidate[
+                "label"
+            ]
+        )
+
+        probability = (
+            candidate.get(
+                "p",
+                0,
+            )
+        )
+
+        quality = (
+            candidate.get(
+                "evidence_quality",
+                0,
+            )
+        )
+
+        confidence = _confidence(
+            probability
         )
 
         lines.append(
@@ -3098,9 +3806,16 @@ def flow(
             f"{label_text}"
             f"</b> • 💰 "
             f"{candidate['odd']:.2f}"
-            f" • "
-            f"{_confidence(candidate['p'])} "
-            f"{round(candidate['p'] * 100)}%"
+        )
+
+        lines.append(
+            f"🧠 {confidence} "
+            f"• {round(probability * 100)}%"
+        )
+
+        lines.append(
+            f"📚 Evidence quality: "
+            f"{round(quality * 100)}%"
         )
 
         lines.append(
@@ -3122,9 +3837,9 @@ def flow(
             ),
             (
                 f"📊 Estimated combined "
-                f"probability: "
+                f"football probability: "
                 f"<b>"
-                f"{chance * 100:.1f}%"
+                f"{chance * 100:.2f}%"
                 f"</b>"
             ),
         ]
@@ -3138,7 +3853,7 @@ def flow(
     ):
 
         lines.append(
-            f"⚠️ Could not safely reach "
+            f"⚠️ I could not safely reach "
             f"{_fmt(target)} odds."
         )
 
@@ -3192,6 +3907,11 @@ def flow(
         f"{built['events']} SportyBet "
         f"matches across "
         f"{built['days_used']} day(s)."
+    )
+
+    lines.append(
+        f"🧠 Football matches actually "
+        f"studied: {built.get('studied', 0)}"
     )
 
     if (
@@ -3253,7 +3973,7 @@ bot.MAX_DAYS_AHEAD = max(
 
 
 # ============================================================
-# BACKGROUND WARMER
+# BACKGROUND SPORTYBET WARMER
 # ============================================================
 
 _WARM_LOCK = threading.Lock()

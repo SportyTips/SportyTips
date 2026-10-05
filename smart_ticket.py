@@ -41,12 +41,10 @@ BRAND = "SPORTYTIPS"
 # ------------------------------------------------------------
 # SETTINGS
 # ------------------------------------------------------------
-MIN_LEG_PROB = {"safe": 0.72, "normal": 0.62, "risky": 0.50}
-MAX_LEG_ODDS = {"safe": 1.90, "normal": 2.40, "risky": 3.50}
-MAX_LEGS = 60
-MAX_DETAIL_EVENTS = 50
-DETAIL_WORKERS = 10
-DETAIL_SECONDS = 90
+MAX_LEGS = 40
+MAX_DETAIL_EVENTS = 35
+DETAIL_WORKERS = 8
+DETAIL_SECONDS = 15
 OVERSHOOT = 0.06
 GROUP_LIMIT = 150
 MAX_OPTIONS_PER_MATCH = 5

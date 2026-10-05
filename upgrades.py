@@ -1,12 +1,10 @@
-"""Upgrades for SportyTips. Does NOT edit main.py.
+"""Upgrades for SamuelBet AI. Does NOT edit main.py.
 
-1) Straight-win mode uses SportyBet's "1X2 - 1UP" or "1X2 - 2UP" market:
-   - the bot picks 2UP when it is quite sure, 1UP otherwise
-   - if SportyBet does not offer 1UP/2UP for a match AND straight-win mode is on,
-     the pick is dropped completely (no fallback to plain win)
-2) Straight-win mode is toggled at runtime by smart_ticket.flow()
-3) The AI chat is removed entirely -- keyword matching handles messages.
-4) No external stats -- every reason comes from SportyBet's own odds.
+1) Straight wins use SportyBet's "1X2 - 1UP" or "1X2 - 2UP" market:
+   - bot is quite sure (chance >= UP_2UP_MIN_PROB)  -> 2UP (better odds)
+   - bot is less sure                               -> 1UP (safer, lower odds)
+   - SportyBet does not offer it for that match     -> normal Home/Away pick
+2) The AI chat talks like a real person.
 
 Put this file next to main.py and import it in app.py AFTER the launcher.
 """
@@ -15,15 +13,13 @@ import threading
 
 import main as bot
 
-CTX = threading.local()
+CTX = threading.local()     # app.py sets CTX.pidgin for each chat turn
 
 USE_UP_MARKETS = True
-UP_2UP_MIN_PROB = 0.68       # >= this -> 2UP, otherwise 1UP
-STRAIGHT_WIN_ONLY = False    # toggled by smart_ticket.flow()
-
+UP_2UP_MIN_PROB = 0.70      # lower this to use 2UP more often, raise it for more 1UP
 
 # ------------------------------------------------------------
-# 1) 1UP / 2UP substitution
+# 1) 1UP / 2UP
 # ------------------------------------------------------------
 _orig_build_options = bot.build_options
 
@@ -47,38 +43,78 @@ _orig_filter_available = bot.filter_available
 
 def filter_available(*args, **kwargs):
     kept = _orig_filter_available(*args, **kwargs)
-    out = []
     for option in kept:
         spec = option.get("spec") or {}
-        # Straight-win mode: drop any win pick that did not resolve to 1UP/2UP
-        if STRAIGHT_WIN_ONLY and option.get("kind") == "win":
-            if not spec.get("up_used"):
-                continue
         if spec.get("up_used") and not option.get("up_applied"):
-            n = spec.get("up", 1)
-            option["label"] = f"{option['label']} ({n}UP)"
+            option["label"] = f"{option['label']} ({spec['up']}UP)"
+            # 1UP / 2UP pay early, so they are safer than the plain win
             option["prob"] = max(option["prob"], min(0.95 / option["odd"], 0.97))
             option["up_applied"] = True
-        out.append(option)
-    return out
+    return kept
 
 
 bot.build_options = build_options
 bot.filter_available = filter_available
 
+# ------------------------------------------------------------
+# 2) Human-style AI replies
+# ------------------------------------------------------------
+HUMAN_STYLE = """
+
+HOW TO SOUND (this overrides the STYLE rules above and the "ONE short line" rule)
+- Talk like a real friend who knows football, not like a customer-service bot.
+  Use natural wording and contractions. Never start two replies the same way.
+- React to what the person actually said: their mood, their team, their budget,
+  their doubts. If they are joking, joke back a little. If they lost a bet, be kind.
+- For "ticket" and "fixtures", "reply" is 1 to 3 natural sentences. Say what you
+  are doing and why, for example why you went safe, or that big odds are a long shot.
+  Do not use the same phrase every time.
+- For "chat", answer like a person would in a text message: direct first, then the
+  detail if it helps. Ask at most one question, and only when you really need it.
+- No bullet points, no headings, no robotic phrases such as "I'd be happy to assist".
+  Emojis are fine but rare (zero or one per message).
+- If the person writes in pidgin or slang, you can answer in a similar easy tone.
+  Otherwise use plain, warm English.
+- Straight-win picks on SportyBet use the 1UP or 2UP market (the bet pays out early
+  if the team goes 1 or 2 goals ahead). Explain this simply if asked.
+- Stay honest: no pick is guaranteed, and you have no live scores or news.
+
+NEW ABILITIES (these override anything above that says the bot cannot do them)
+- With SportyBet on, the bot builds tickets from SportyBet's own matches. It can reach big targets
+  (50 odds, 100 odds) and mixes 1UP/2UP wins, win either half, draw no bet, corners, handicap,
+  both teams to score and goal lines. Never say it cannot do corners or handicap.
+- It also builds straight-win tickets: "2UP win", "1UP win", "plain win" or "double chance", for home, away or both,
+  for a number of games and/or total odds. For those, put the words 2up, 1up, plain win or double chance, plus
+  home or away, in "request". Every pick is at least 1.30 odds.
+- It studies each team's last 5 games and head-to-head record, for as many matches as the API plan allows.
+- It can look at up to 3 days. A 100 odds ticket needs around 15 to 25 picks, so tell the user honestly
+  that big odds win rarely even with strong picks.
+- Every pick gets a short reason under it. Team news is checked when it can be found.
+"""
+
+_orig_system_prompt = bot.ai_system_prompt
+
+
+PIDGIN_STYLE = """
+
+PIDGIN MODE IS ON
+Write the "reply" text in friendly Nigerian Pidgin English (for example: "No wahala, I don dey build am",
+"This one strong well well"). Keep it easy to read. Keep the JSON keys and the "request" text in plain English.
+"""
+
+
+def ai_system_prompt():
+    extra = PIDGIN_STYLE if getattr(CTX, "pidgin", False) else ""
+    return _orig_system_prompt() + HUMAN_STYLE + extra
+
+
+bot.ai_system_prompt = ai_system_prompt
+
 
 # ------------------------------------------------------------
-# 2) Human-style AI replies -- REMOVED.
-#    No Claude, no Anthropic. Keyword matching in main.py handles everything.
-# ------------------------------------------------------------
-# (ai_system_prompt is not patched -- main.ai_system_prompt stays as-is but is
-#  never called because main.handle_text no longer invokes the AI path.)
-
-
-# ------------------------------------------------------------
-# 3) Load the smart ticket builder (patches bot.prediction_ticket_flow).
+# 3) Smart ticket builder (big odds, mixed markets, reasons)
 # ------------------------------------------------------------
 try:
-    import smart_ticket  # noqa: F401
+    import smart_ticket  # noqa: F401  (patches bot.prediction_ticket_flow)
 except ImportError as exc:
     print(f"smart_ticket.py not found, using the old ticket builder: {exc}")

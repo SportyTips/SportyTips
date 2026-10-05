@@ -1278,33 +1278,38 @@ def gather(
         reverse=True,
     )
 
+    # ========================================================
+    # STRAIGHT WIN CHECKS UP TO 40 MATCHES
+    # NORMAL TICKETS REMAIN AT 10
+    # ========================================================
+
     if straight_only:
-    detail_limit = min(
-        len(events),
-        40,
-    )
-else:
-    detail_limit = MAX_DETAIL_EVENTS
-
-if rated:
-    wanted = [
-        event
-        for _, event
-        in rated[
-            :detail_limit
-        ]
-    ]
-
-else:
-    wanted = [
-        event
-        for event in events[
-            :detail_limit
-        ]
-        if event.get(
-            "eventId"
+        detail_limit = min(
+            len(events),
+            40,
         )
-    ]
+    else:
+        detail_limit = MAX_DETAIL_EVENTS
+
+    if rated:
+        wanted = [
+            event
+            for _, event
+            in rated[
+                :detail_limit
+            ]
+        ]
+
+    else:
+        wanted = [
+            event
+            for event in events[
+                :detail_limit
+            ]
+            if event.get(
+                "eventId"
+            )
+        ]
 
     details = {}
 

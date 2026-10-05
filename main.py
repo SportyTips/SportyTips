@@ -236,6 +236,11 @@ def filter_available(fixture, options, errors, min_odds=None):
     return options
 
 
+def ai_system_prompt(*args, **kwargs):
+    """Legacy stub: the old AI chat is gone, but upgrades.py still looks for this name."""
+    return ""
+
+
 def prediction_ticket_flow(chat_id, text):
     """Fallback when smart_ticket.py is not present."""
     if SPORTYBET_PROVIDER is None:

@@ -355,7 +355,7 @@
     <div class="pane" id="pane"></div>
   </div>
 </div>
-<script>
+ <script>
 const API = "/api/chat";
 const $ = (id) => document.getElementById(id);
 const box = $("messages"), input = $("input"), sendBtn = $("send");
@@ -376,47 +376,104 @@ const ICONS = {
 function esc(s) {
   return String(s).replace(/[&<>"']/g, (c) => ({ "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;", "'": "&#39;" }[c]));
 }
+
 function md(text) {
   const lines = esc(text).split("\n");
   let out = "", inList = false;
+
   for (const line of lines) {
     const bullet = line.match(/^\s*[-•]\s+(.*)$/);
-    if (bullet) { if (!inList) { out += "<ul>"; inList = true; } out += "<li>" + bullet[1] + "</li>"; continue; }
-    if (inList) { out += "</ul>"; inList = false; }
+
+    if (bullet) {
+      if (!inList) {
+        out += "<ul>";
+        inList = true;
+      }
+
+      out += "<li>" + bullet[1] + "</li>";
+      continue;
+    }
+
+    if (inList) {
+      out += "</ul>";
+      inList = false;
+    }
+
     out += line + "<br>";
   }
+
   if (inList) out += "</ul>";
-  return out.replace(/\*\*(.+?)\*\*/g, "<strong>$1</strong>").replace(/(<br>)+$/, "");
+
+  return out
+    .replace(/\*\*(.+?)\*\*/g, "<strong>$1</strong>")
+    .replace(/(<br>)+$/, "");
 }
+
 function clock() {
-  return new Date().toLocaleTimeString([], { hour: "numeric", minute: "2-digit" }).toLowerCase();
+  return new Date()
+    .toLocaleTimeString([], { hour: "numeric", minute: "2-digit" })
+    .toLowerCase();
 }
-function scrollDown() { box.scrollTop = box.scrollHeight; }
+
+function scrollDown() {
+  box.scrollTop = box.scrollHeight;
+}
+
 async function copyText(text, btn) {
-  try { await navigator.clipboard.writeText(text); } catch (e) {
-    const t = document.createElement("textarea"); t.value = text; document.body.appendChild(t); t.select(); document.execCommand("copy"); t.remove();
+  try {
+    await navigator.clipboard.writeText(text);
+  } catch (e) {
+    const t = document.createElement("textarea");
+    t.value = text;
+    document.body.appendChild(t);
+    t.select();
+    document.execCommand("copy");
+    t.remove();
   }
-  if (btn) { const old = btn.innerHTML; btn.textContent = "Copied"; setTimeout(() => (btn.innerHTML = old), 1200); }
+
+  if (btn) {
+    const old = btn.innerHTML;
+    btn.textContent = "Copied";
+    setTimeout(() => (btn.innerHTML = old), 1200);
+  }
 }
+
 function toast(msg) {
   const t = document.createElement("div");
-  t.className = "toast"; t.textContent = msg; document.body.appendChild(t);
+  t.className = "toast";
+  t.textContent = msg;
+  document.body.appendChild(t);
   setTimeout(() => t.remove(), 1800);
 }
+
 async function api(path, body) {
-  const res = await fetch(path, { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify(body) });
+  const res = await fetch(path, {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify(body)
+  });
+
   const data = await res.json().catch(() => ({}));
-  if (!res.ok) throw new Error(data.error || "Server error. Try again.");
+
+  if (!res.ok) {
+    throw new Error(data.error || "Server error. Try again.");
+  }
+
   return data;
 }
 
 function addUser(text) {
   const row = document.createElement("div");
   row.className = "row-user";
-  row.innerHTML = '<div class="bubble">' + esc(text) + '</div>' +
+
+  row.innerHTML =
+    '<div class="bubble">' + esc(text) + '</div>' +
     '<div class="meta"><span>' + clock() + '</span>' +
     '<button title="Copy" data-copy>' + ICONS.copy + '</button></div>';
-  row.querySelector("[data-copy]").onclick = (e) => copyText(text, e.currentTarget);
+
+  row.querySelector("[data-copy]").onclick = (e) =>
+    copyText(text, e.currentTarget);
+
   box.appendChild(row);
   scrollDown();
 }
@@ -425,20 +482,37 @@ function ticketHtml(t) {
   const rows = t.rows.map((r) =>
     '<div class="t-row"><div class="ball"></div>' +
     '<div class="t-main"><div class="t-match">' + esc(r.match) + '</div>' +
-    '<div class="t-pick">' + esc(r.pick) + ' | ' + Math.round(r.prob * 100) + '%</div></div>' +
-    '<div class="t-side"><span class="pill">' + Number(r.odd).toFixed(2) + '</span>' +
-    '<div class="t-time">' + esc(r.time) + '</div></div></div>').join("");
+    '<div class="t-pick">' + esc(r.pick) + ' | ' +
+    Math.round(r.prob * 100) + '%</div></div>' +
+    '<div class="t-side"><span class="pill">' +
+    Number(r.odd).toFixed(2) + '</span>' +
+    '<div class="t-time">' + esc(r.time) + '</div></div></div>'
+  ).join("");
+
   const code = t.code
-    ? '<div class="t-bar"><b>SPORTYBET CODE</b><button class="pill copy-code" data-code="' + esc(t.code) + '">' + esc(t.code) + '</button></div>'
+    ? '<div class="t-bar"><b>SPORTYBET CODE</b>' +
+      '<button class="pill copy-code" data-code="' +
+      esc(t.code) + '">' + esc(t.code) +
+      '</button></div>'
     : "";
+
   return '<div class="ticket">' +
-    '<div class="t-head"><div class="t-brand"><div class="logo">S</div>SAMUELBET AI</div><div class="t-date">' + esc(t.date_text) + '</div></div>' +
+    '<div class="t-head"><div class="t-brand"><div class="logo">S</div>SAMUELBET AI</div>' +
+    '<div class="t-date">' + esc(t.date_text) + '</div></div>' +
     '<div class="t-title"><span>' + esc(t.title) + '</span></div>' +
     '<div class="t-card">' + rows +
-    '<div class="t-bar"><div><b>COMBINED ODDS</b><small>Estimated chance all win: ~' + Math.round(t.win_chance * 100) + '%</small></div>' +
-    '<span class="pill red">' + Number(t.total_odds).toFixed(2) + '</span></div>' + code + '</div>' +
-    '<div class="t-foot"><span>Data-driven picks. Bet smart.</span><span>SamuelBet AI</span></div></div>' +
-    (t.notes && t.notes.length ? '<div class="notes">' + t.notes.map(esc).join("<br>") + '</div>' : "") +
+    '<div class="t-bar"><div><b>COMBINED ODDS</b>' +
+    '<small>Estimated chance all win: ~' +
+    Math.round(t.win_chance * 100) + '%</small></div>' +
+    '<span class="pill red">' +
+    Number(t.total_odds).toFixed(2) + '</span></div>' +
+    code +
+    '</div>' +
+    '<div class="t-foot"><span>Data-driven picks. Bet smart.</span>' +
+    '<span>SamuelBet AI</span></div></div>' +
+    (t.notes && t.notes.length
+      ? '<div class="notes">' + t.notes.map(esc).join("<br>") + '</div>'
+      : "") +
     '<div class="notes">' + esc(t.read || "") + '</div>';
 }
 
@@ -446,83 +520,188 @@ function saferHtml(r) {
   const rows = r.rows.map((x) =>
     '<div class="s-row"><b>' + esc(x.match) + '</b><br>' +
     (x.changed
-      ? '<span class="was">' + esc(x.old) + ' (' + Number(x.old_odd).toFixed(2) + ')</span> &rarr; <b>' + esc(x.new) + ' (' + Number(x.new_odd).toFixed(2) + ')</b>'
-      : 'Kept ' + esc(x.old) + ' (' + Number(x.old_odd).toFixed(2) + ')') + '</div>').join("");
+      ? '<span class="was">' + esc(x.old) + ' (' +
+        Number(x.old_odd).toFixed(2) +
+        ')</span> &rarr; <b>' +
+        esc(x.new) + ' (' +
+        Number(x.new_odd).toFixed(2) +
+        ')</b>'
+      : 'Kept ' + esc(x.old) + ' (' +
+        Number(x.old_odd).toFixed(2) + ')') +
+    '</div>'
+  ).join("");
+
   const code = r.new_code
-    ? '<div class="t-bar" style="margin-top:8px"><b>NEW CODE</b><button class="pill copy-code" data-code="' + esc(r.new_code) + '">' + esc(r.new_code) + '</button></div>'
+    ? '<div class="t-bar" style="margin-top:8px"><b>NEW CODE</b>' +
+      '<button class="pill copy-code" data-code="' +
+      esc(r.new_code) + '">' + esc(r.new_code) +
+      '</button></div>'
     : '<div class="notes">Every pick was already on its safest option.</div>';
-  return '<div class="safer">' + rows +
-    '<div class="s-row"><b>Odds: ' + Number(r.old_total).toFixed(2) + ' &rarr; ' + Number(r.new_total).toFixed(2) + '</b></div>' + code + '</div>';
+
+  return '<div class="safer">' +
+    rows +
+    '<div class="s-row"><b>Odds: ' +
+    Number(r.old_total).toFixed(2) +
+    ' &rarr; ' +
+    Number(r.new_total).toFixed(2) +
+    '</b></div>' +
+    code +
+    '</div>';
 }
 
 let lastUserText = "";
+
 function addBot(payload) {
   const row = document.createElement("div");
   row.className = "row-bot";
-  let html = '<div class="content">' + md(payload.reply || "") + '</div>';
-  if (payload.ticket) html += ticketHtml(payload.ticket);
-  if (payload.safer) html += saferHtml(payload.safer);
-  html += '<div class="actions"><button title="Copy" data-copy>' + ICONS.copy + '</button>' +
-    '<button title="Good" data-up>' + ICONS.up + '</button><button title="Bad" data-down>' + ICONS.down + '</button>' +
-    '<button title="Try again" data-retry>' + ICONS.retry + '</button><span>' + clock() + '</span></div>';
+
+  let html =
+    '<div class="content">' +
+    md(payload.reply || "") +
+    '</div>';
+
+  if (payload.ticket) {
+    html += ticketHtml(payload.ticket);
+  }
+
+  if (payload.safer) {
+    html += saferHtml(payload.safer);
+  }
+
+  html +=
+    '<div class="actions">' +
+    '<button title="Copy" data-copy>' + ICONS.copy + '</button>' +
+    '<button title="Good" data-up>' + ICONS.up + '</button>' +
+    '<button title="Bad" data-down>' + ICONS.down + '</button>' +
+    '<button title="Try again" data-retry>' + ICONS.retry + '</button>' +
+    '<span>' + clock() + '</span></div>';
+
   row.innerHTML = html;
-  const plain = (payload.reply || "") + (payload.ticket && payload.ticket.code ? "\nSportyBet code: " + payload.ticket.code : "");
-  row.querySelector("[data-copy]").onclick = (e) => copyText(plain, e.currentTarget);
-  const up = row.querySelector("[data-up]"), down = row.querySelector("[data-down]");
-  up.onclick = () => { up.classList.toggle("on"); down.classList.remove("on"); };
-  down.onclick = () => { down.classList.toggle("on"); up.classList.remove("on"); };
-  row.querySelector("[data-retry]").onclick = () => { if (lastUserText) send(lastUserText, true); };
-  row.querySelectorAll("[data-code]").forEach((b) => (b.onclick = () => copyText(b.dataset.code, b)));
+
+  const plain =
+    (payload.reply || "") +
+    (payload.ticket && payload.ticket.code
+      ? "\nSportyBet code: " + payload.ticket.code
+      : "");
+
+  row.querySelector("[data-copy]").onclick = (e) =>
+    copyText(plain, e.currentTarget);
+
+  const up = row.querySelector("[data-up]");
+  const down = row.querySelector("[data-down]");
+
+  up.onclick = () => {
+    up.classList.toggle("on");
+    down.classList.remove("on");
+  };
+
+  down.onclick = () => {
+    down.classList.toggle("on");
+    up.classList.remove("on");
+  };
+
+  row.querySelector("[data-retry]").onclick = () => {
+    if (lastUserText) send(lastUserText, true);
+  };
+
+  row.querySelectorAll("[data-code]").forEach((b) =>
+    b.addEventListener("click", () => copyText(b.dataset.code, b))
+  );
+
   box.appendChild(row);
   scrollDown();
+
   return row;
 }
 
 let turn = { img: null };
 
 function b64ToFile(b64) {
-  const bin = atob(b64), bytes = new Uint8Array(bin.length);
-  for (let i = 0; i < bin.length; i++) bytes[i] = bin.charCodeAt(i);
-  return new File([bytes], "samuelbet-ticket.png", { type: "image/png" });
+  const bin = atob(b64);
+  const bytes = new Uint8Array(bin.length);
+
+  for (let i = 0; i < bin.length; i++) {
+    bytes[i] = bin.charCodeAt(i);
+  }
+
+  return new File(
+    [bytes],
+    "samuelbet-ticket.png",
+    { type: "image/png" }
+  );
 }
+
 function downloadImage(b64) {
   const a = document.createElement("a");
-  a.href = "data:image/png;base64," + b64; a.download = "samuelbet-ticket.png";
-  document.body.appendChild(a); a.click(); a.remove();
+  a.href = "data:image/png;base64," + b64;
+  a.download = "samuelbet-ticket.png";
+  document.body.appendChild(a);
+  a.click();
+  a.remove();
 }
+
 async function shareImage(b64) {
   const file = b64ToFile(b64);
+
   try {
     if (navigator.canShare && navigator.canShare({ files: [file] })) {
-      await navigator.share({ files: [file], title: "SamuelBet AI ticket" });
+      await navigator.share({
+        files: [file],
+        title: "SamuelBet AI ticket"
+      });
       return;
     }
-  } catch (e) { if (e && e.name === "AbortError") return; }
+  } catch (e) {
+    if (e && e.name === "AbortError") return;
+  }
+
   downloadImage(b64);
   toast("Saved to your downloads");
 }
 
 function addImage(item) {
   turn.img = item.data;
+
   const row = document.createElement("div");
   row.className = "row-bot imgrow";
-  row.innerHTML = '<img alt="Your ticket" src="data:image/png;base64,' + item.data + '">' +
-    '<div class="imgbtns"><button class="mini red" data-share>Share</button><button class="mini" data-dl>Download</button></div>';
-  row.querySelector("[data-share]").onclick = () => shareImage(item.data);
-  row.querySelector("[data-dl]").onclick = () => downloadImage(item.data);
+
+  row.innerHTML =
+    '<img alt="Your ticket" src="data:image/png;base64,' +
+    item.data + '">' +
+    '<div class="imgbtns">' +
+    '<button class="mini red" data-share>Share</button>' +
+    '<button class="mini" data-dl>Download</button>' +
+    '</div>';
+
+  row.querySelector("[data-share]").onclick = () =>
+    shareImage(item.data);
+
+  row.querySelector("[data-dl]").onclick = () =>
+    downloadImage(item.data);
+
   box.appendChild(row);
   scrollDown();
 }
 
-const CODE_RX = /sportybet code:\s*\**\s*([A-Z0-9]{5,12})/i;
+const CODE_RX =
+  /sportybet code:\s*\**\s*([A-Z0-9]{5,12})/i;
 
 function addItem(item) {
-  if (item.type === "image") { addImage(item); return; }
+  if (item.type === "image") {
+    addImage(item);
+    return;
+  }
+
   const t = String(item.html || "")
-    .replace(/<\/?b>/g, "**").replace(/<[^>]+>/g, "")
-    .replace(/&lt;/g, "<").replace(/&gt;/g, ">").replace(/&amp;/g, "&");
+    .replace(/<\/?b>/g, "**")
+    .replace(/<[^>]+>/g, "")
+    .replace(/&lt;/g, "<")
+    .replace(/&gt;/g, ">")
+    .replace(/&amp;/g, "&");
+
   const row = addBot({ reply: t });
   const m = t.match(CODE_RX);
+
   if (m) {
     const code = m[1].toUpperCase();
     addCopyTag(row, code);
@@ -533,446 +712,1576 @@ function addItem(item) {
 function addCopyTag(row, code) {
   const content = row.querySelector(".content");
   if (!content) return;
+
   const target = "<strong>" + code + "</strong>";
   const html = content.innerHTML;
   const at = html.toUpperCase().lastIndexOf(target.toUpperCase());
+
   if (at < 0) return;
-  const tag = '<span class="codetag"><strong>' + code + '</strong><button class="copytag" data-copytag>Copy</button></span>';
-  content.innerHTML = html.slice(0, at) + tag + html.slice(at + target.length);
+
+  const tag =
+    '<span class="codetag"><strong>' +
+    code +
+    '</strong><button class="copytag" data-copytag>Copy</button></span>';
+
+  content.innerHTML =
+    html.slice(0, at) +
+    tag +
+    html.slice(at + target.length);
+
   const btn = content.querySelector("[data-copytag]");
+
   btn.onclick = async () => {
     await copyText(code);
-    btn.textContent = "Copied"; btn.classList.add("done");
-    setTimeout(() => { btn.textContent = "Copy"; btn.classList.remove("done"); }, 1500);
+    btn.textContent = "Copied";
+    btn.classList.add("done");
+
+    setTimeout(() => {
+      btn.textContent = "Copy";
+      btn.classList.remove("done");
+    }, 1500);
   };
 }
 
 function attachTicketTools(row, code, turnRef) {
   const tools = document.createElement("div");
   tools.className = "ttools";
-  tools.innerHTML = '<span class="badge" data-badge>Checking ticket...</span>' +
-    '<button class="mini red" data-edit>Edit ticket</button><button class="mini" data-save>Save</button>';
+
+  tools.innerHTML =
+    '<span class="badge" data-badge>Checking ticket...</span>' +
+    '<button class="mini red" data-edit>Edit ticket</button>' +
+    '<button class="mini" data-save>Save</button>';
+
   row.insertBefore(tools, row.querySelector(".actions"));
+
   const badge = tools.querySelector("[data-badge]");
   let info = {};
-  tools.querySelector("[data-edit]").onclick = () => openTools("edit", code);
-  tools.querySelector("[data-save]").onclick = () => saveTicket({ code, img: turnRef.img, total: info.total, health: info.health });
-  api("/api/check", { code }).then((d) => {
-    info = { total: d.total_odds, health: d.health };
-    badge.className = "badge " + d.health.toLowerCase();
-    badge.textContent = d.health + " ticket \u00b7 about " + d.chance + "% chance" + (d.straight ? " \u00b7 " + d.straight + " straight win" + (d.straight > 1 ? "s" : "") : "");
-  }).catch(() => badge.remove());
+
+  tools.querySelector("[data-edit]").onclick = () =>
+    openTools("edit", code);
+
+  tools.querySelector("[data-save]").onclick = () =>
+    saveTicket({
+      code,
+      img: turnRef.img,
+      total: info.total,
+      health: info.health
+    });
+
+  api("/api/check", { code })
+    .then((d) => {
+      info = {
+        total: d.total_odds,
+        health: d.health
+      };
+
+      badge.className =
+        "badge " + d.health.toLowerCase();
+
+      badge.textContent =
+        d.health +
+        " ticket · about " +
+        d.chance +
+        "% chance" +
+        (d.straight
+          ? " · " +
+            d.straight +
+            " straight win" +
+            (d.straight > 1 ? "s" : "")
+          : "");
+    })
+    .catch(() => badge.remove());
+
   scrollDown();
 }
 
 function addTyping() {
   const row = document.createElement("div");
-  row.className = "row-bot"; row.id = "typing";
-  row.innerHTML = '<div class="typing"><i></i><i></i><i></i></div>';
-  box.appendChild(row); scrollDown();
+  row.className = "row-bot";
+  row.id = "typing";
+
+  row.innerHTML =
+    '<div class="typing"><i></i><i></i><i></i></div>';
+
+  box.appendChild(row);
+  scrollDown();
 }
-function removeTyping() { const t = $("typing"); if (t) t.remove(); }
+
+function removeTyping() {
+  const t = $("typing");
+  if (t) t.remove();
+}
 
 let busy = false;
+
 async function runStream(path, body) {
   try {
     const ctrl = new AbortController();
     const timer = setTimeout(() => ctrl.abort(), 280000);
+
     const res = await fetch(path, {
-      method: "POST", headers: { "Content-Type": "application/json" },
-      body: JSON.stringify(body), signal: ctrl.signal
+      method: "POST",
+      headers: {
+        "Content-Type": "application/json"
+      },
+      body: JSON.stringify(body),
+      signal: ctrl.signal
     });
+
     if (!res.ok) {
       const d = await res.json().catch(() => ({}));
-      clearTimeout(timer); removeTyping();
-      addBot({ reply: d.error || "Server error. Try again." });
+
+      clearTimeout(timer);
+      removeTyping();
+
+      addBot({
+        reply: d.error || "Server error. Try again."
+      });
+
       return;
     }
+
     const reader = res.body.getReader();
     const dec = new TextDecoder();
     let buf = "";
+
     while (true) {
       const { done, value } = await reader.read();
+
       if (done) break;
+
       buf += dec.decode(value, { stream: true });
+
       let i;
+
       while ((i = buf.indexOf("\n")) >= 0) {
         const line = buf.slice(0, i).trim();
         buf = buf.slice(i + 1);
+
         if (!line) continue;
+
         let item;
-        try { item = JSON.parse(line); } catch (e) { continue; }
-        removeTyping(); addItem(item); addTyping();
+
+        try {
+          item = JSON.parse(line);
+        } catch (e) {
+          continue;
+        }
+
+        removeTyping();
+        addItem(item);
+        addTyping();
       }
     }
+
     clearTimeout(timer);
     removeTyping();
+
   } catch (e) {
     removeTyping();
-    addBot({ reply: "I could not reach the server. Please check your connection and try again." });
+
+    addBot({
+      reply:
+        "I could not reach the server. Please check your connection and try again."
+    });
   }
 }
 
-const BUILD_RX = /(straight\s*wins?|plain\s*wins?|\b[12]\s*-?\s*up\b|\b(home|away)\s*wins?\b|double\s*chance)/i;
-const QUESTION_RX = /^\s*(what|explain|how|why|who|when|is|does|can)\b/i;
+const BUILD_RX =
+  /(straight\s*wins?|plain\s*wins?|\b[12]\s*-?\s*up\b|\b(home|away)\s*wins?\b|double\s*chance)/i;
 
+const QUESTION_RX =
+  /^\s*(what|explain|how|why|who|when|is|does|can)\b/i;
+
+/*
+ * STRAIGHT WIN FIX
+ *
+ * Straight Win must NOT open the normal builder.
+ * It goes directly to /api/chat so the backend can run
+ * its dedicated Straight Win logic.
+ *
+ * Backend rule:
+ * Straight Win = 1UP OR 2UP only.
+ */
 async function send(text, isRetry) {
   text = (text || "").trim();
+
   if (!text || busy) return;
-  if (!isRetry && BUILD_RX.test(text) && !QUESTION_RX.test(text)) {
-    addUser(text); input.value = ""; sendBtn.classList.remove("ready");
+
+  const isStraightWin =
+    /\bstraight\s*-?\s*win(?:s)?\b/i.test(text);
+
+  /*
+   * IMPORTANT:
+   * Do not send Straight Win into askBuilder().
+   *
+   * Other builder requests continue working exactly
+   * the same way as before.
+   */
+  if (
+    !isRetry &&
+    BUILD_RX.test(text) &&
+    !QUESTION_RX.test(text) &&
+    !isStraightWin
+  ) {
+    addUser(text);
+    input.value = "";
+    sendBtn.classList.remove("ready");
+
     askBuilder(text);
     return;
   }
-  busy = true; lastUserText = text; turn = { img: null };
-  if (!isRetry) addUser(text);
-  input.value = ""; sendBtn.classList.remove("ready");
+
+  busy = true;
+  lastUserText = text;
+  turn = { img: null };
+
+  if (!isRetry) {
+    addUser(text);
+  }
+
+  input.value = "";
+  sendBtn.classList.remove("ready");
+
   addTyping();
-  await runStream(API, { message: text, session, pidgin: localStorage.getItem("sb_pidgin") === "1" });
+
+  await runStream(API, {
+    message: text,
+    session,
+    pidgin:
+      localStorage.getItem("sb_pidgin") === "1"
+  });
+
   busy = false;
 }
 
-const MODE_LABEL = { up2: "2UP win", up1: "1UP win", win: "Plain win", dc: "Double chance" };
+const MODE_LABEL = {
+  up2: "2UP win",
+  up1: "1UP win",
+  win: "Plain win",
+  dc: "Double chance"
+};
+
 function askBuilder(text) {
   const t = String(text || "").toLowerCase();
+
   const pick = {
-    mode: /double\s*chance/.test(t) ? "dc" : /\b1\s*-?\s*up\b/.test(t) ? "up1" : /plain/.test(t) ? "win" : "up2",
-    side: /\bhome\b/.test(t) && !/\baway\b/.test(t) ? "home" : /\baway\b/.test(t) && !/\bhome\b/.test(t) ? "away" : "any",
-    window: /tomorrow/.test(t) ? "tomorrow" : /tonight/.test(t) ? "tonight" : "today"
+    mode:
+      /double\s*chance/.test(t)
+        ? "dc"
+        : /\b1\s*-?\s*up\b/.test(t)
+        ? "up1"
+        : /plain/.test(t)
+        ? "win"
+        : "up2",
+
+    side:
+      /\bhome\b/.test(t) && !/\baway\b/.test(t)
+        ? "home"
+        : /\baway\b/.test(t) && !/\bhome\b/.test(t)
+        ? "away"
+        : "any",
+
+    window:
+      /tomorrow/.test(t)
+        ? "tomorrow"
+        : /tonight/.test(t)
+        ? "tonight"
+        : "today"
   };
-  const g = t.match(/(\d+)\s*(?:games?|picks?|matches)/), o = t.match(/(\d+(?:\.\d+)?)\s*odds?/);
+
+  const g = t.match(
+    /(\d+)\s*(?:games?|picks?|matches)/
+  );
+
+  const o = t.match(
+    /(\d+(?:\.\d+)?)\s*odds?/
+  );
+
   const row = document.createElement("div");
   row.className = "row-bot";
-  const opts = (key, list) => '<div class="b-opts" data-key="' + key + '">' + list.map((x) =>
-    '<button class="b-opt' + (pick[key] === x[0] ? " on" : "") + '" data-v="' + x[0] + '">' + x[1] + '</button>').join("") + '</div>';
+
+  const opts = (key, list) =>
+    '<div class="b-opts" data-key="' +
+    key +
+    '">' +
+    list
+      .map(
+        (x) =>
+          '<button class="b-opt' +
+          (pick[key] === x[0] ? " on" : "") +
+          '" data-v="' +
+          x[0] +
+          '">' +
+          x[1] +
+          "</button>"
+      )
+      .join("") +
+    "</div>";
+
   row.innerHTML =
     '<div class="content">Nice. Tell me how you want it and I will build it.</div>' +
     '<div class="builder">' +
-    '<div class="b-label">Ticket type</div>' + opts("mode", [["up2", "2UP win"], ["up1", "1UP win"], ["win", "Plain win"], ["dc", "Double chance"]]) +
-    '<div class="b-label">Side</div>' + opts("side", [["home", "Home"], ["away", "Away"], ["any", "Any"]]) +
-    '<div class="b-label">How many games</div><div class="b-opts"><input class="b-num" data-n="games" type="number" inputmode="numeric" min="1" max="30" placeholder="any" value="' + (g ? g[1] : "5") + '">' +
-    [3, 5, 8, 10].map((n) => '<button class="b-opt" data-fill="games" data-v="' + n + '">' + n + '</button>').join("") + '</div>' +
-    '<div class="b-label">Total odds</div><div class="b-opts"><input class="b-num" data-n="odds" type="number" inputmode="decimal" min="1.01" step="0.01" placeholder="any" value="' + (o ? o[1] : "") + '">' +
-    [2, 3, 5, 10].map((n) => '<button class="b-opt" data-fill="odds" data-v="' + n + '">' + n + '</button>').join("") + '</div>' +
-    '<div class="b-label">When</div>' + opts("window", [["today", "Today"], ["tonight", "Tonight"], ["tomorrow", "Tomorrow"]]) +
+
+    '<div class="b-label">Ticket type</div>' +
+    opts("mode", [
+      ["up2", "2UP win"],
+      ["up1", "1UP win"],
+      ["win", "Plain win"],
+      ["dc", "Double chance"]
+    ]) +
+
+    '<div class="b-label">Side</div>' +
+    opts("side", [
+      ["home", "Home"],
+      ["away", "Away"],
+      ["any", "Any"]
+    ]) +
+
+    '<div class="b-label">How many games</div>' +
+    '<div class="b-opts">' +
+    '<input class="b-num" data-n="games" type="number" inputmode="numeric" min="1" max="30" placeholder="any" value="' +
+    (g ? g[1] : "5") +
+    '">' +
+    [3, 5, 8, 10]
+      .map(
+        (n) =>
+          '<button class="b-opt" data-fill="games" data-v="' +
+          n +
+          '">' +
+          n +
+          "</button>"
+      )
+      .join("") +
+    "</div>" +
+
+    '<div class="b-label">Total odds</div>' +
+    '<div class="b-opts">' +
+    '<input class="b-num" data-n="odds" type="number" inputmode="decimal" min="1.01" step="0.01" placeholder="any" value="' +
+    (o ? o[1] : "") +
+    '">' +
+    [2, 3, 5, 10]
+      .map(
+        (n) =>
+          '<button class="b-opt" data-fill="odds" data-v="' +
+          n +
+          '">' +
+          n +
+          "</button>"
+      )
+      .join("") +
+    "</div>" +
+
+    '<div class="b-label">When</div>' +
+    opts("window", [
+      ["today", "Today"],
+      ["tonight", "Tonight"],
+      ["tomorrow", "Tomorrow"]
+    ]) +
+
     '<button class="b-go">Build my ticket</button>' +
-    '<div class="b-hint">Every pick is at least 1.30 odds. Leave odds empty to just get the strongest games.</div></div>';
-  row.querySelectorAll(".b-opts[data-key]").forEach((grp) => grp.addEventListener("click", (e) => {
-    const b = e.target.closest(".b-opt"); if (!b) return;
-    grp.querySelectorAll(".b-opt").forEach((x) => x.classList.remove("on")); b.classList.add("on"); pick[grp.dataset.key] = b.dataset.v;
-  }));
-  row.querySelectorAll("[data-fill]").forEach((b) => (b.onclick = () => { row.querySelector('[data-n="' + b.dataset.fill + '"]').value = b.dataset.v; }));
+
+    '<div class="b-hint">Every pick is at least 1.30 odds. Leave odds empty to just get the strongest games.</div>' +
+
+    "</div>";
+
+  row
+    .querySelectorAll(".b-opts[data-key]")
+    .forEach((grp) =>
+      grp.addEventListener("click", (e) => {
+        const b = e.target.closest(".b-opt");
+
+        if (!b) return;
+
+        grp
+          .querySelectorAll(".b-opt")
+          .forEach((x) => x.classList.remove("on"));
+
+        b.classList.add("on");
+        pick[grp.dataset.key] = b.dataset.v;
+      })
+    );
+
+  row.querySelectorAll("[data-fill]").forEach(
+    (b) =>
+      (b.onclick = () => {
+        row.querySelector(
+          '[data-n="' + b.dataset.fill + '"]'
+        ).value = b.dataset.v;
+      })
+  );
+
   row.querySelector(".b-go").onclick = (e) => {
-    const games = parseInt(row.querySelector('[data-n="games"]').value, 10) || null;
-    const odds = parseFloat(row.querySelector('[data-n="odds"]').value) || null;
+    const games =
+      parseInt(
+        row.querySelector('[data-n="games"]').value,
+        10
+      ) || null;
+
+    const odds =
+      parseFloat(
+        row.querySelector('[data-n="odds"]').value
+      ) || null;
+
     e.currentTarget.disabled = true;
-    startBuild({ mode: pick.mode, side: pick.side, window: pick.window, games: games || (odds ? null : 5), odds: odds });
+
+    startBuild({
+      mode: pick.mode,
+      side: pick.side,
+      window: pick.window,
+      games: games || (odds ? null : 5),
+      odds: odds
+    });
   };
-  box.appendChild(row); scrollDown();
+
+  box.appendChild(row);
+  scrollDown();
 }
 
 async function startBuild(spec) {
   if (busy) return;
-  busy = true; turn = { img: null };
-  const sideText = spec.side === "any" ? "" : spec.side + " ";
-  addUser(sideText + MODE_LABEL[spec.mode] + " tickets" + (spec.games ? ", " + spec.games + " games" : "") + (spec.odds ? ", " + spec.odds + " odds" : "") + ", " + spec.window);
+
+  busy = true;
+  turn = { img: null };
+
+  const sideText =
+    spec.side === "any"
+      ? ""
+      : spec.side + " ";
+
+  addUser(
+    sideText +
+    MODE_LABEL[spec.mode] +
+    " tickets" +
+    (spec.games
+      ? ", " + spec.games + " games"
+      : "") +
+    (spec.odds
+      ? ", " + spec.odds + " odds"
+      : "") +
+    ", " +
+    spec.window
+  );
+
   addTyping();
-  await runStream("/api/build", Object.assign({ session, pidgin: localStorage.getItem("sb_pidgin") === "1" }, spec));
+
+  await runStream(
+    "/api/build",
+    Object.assign(
+      {
+        session,
+        pidgin:
+          localStorage.getItem("sb_pidgin") === "1"
+      },
+      spec
+    )
+  );
+
   busy = false;
 }
 
-input.addEventListener("input", () => sendBtn.classList.toggle("ready", input.value.trim().length > 0));
-input.addEventListener("keydown", (e) => { if (e.key === "Enter") send(input.value); });
-sendBtn.addEventListener("click", () => send(input.value));
+input.addEventListener("input", () =>
+  sendBtn.classList.toggle(
+    "ready",
+    input.value.trim().length > 0
+  )
+);
 
-function getSaved() { try { return JSON.parse(localStorage.getItem("sb_saved") || "[]"); } catch (e) { return []; } }
-function putSaved(list) {
-  list = list.slice(0, 8).map((x, i) => (i < 4 ? x : Object.assign({}, x, { img: null })));
-  try { localStorage.setItem("sb_saved", JSON.stringify(list)); }
-  catch (e) { try { localStorage.setItem("sb_saved", JSON.stringify(list.map((x) => Object.assign({}, x, { img: null })))); } catch (e2) {} }
+input.addEventListener("keydown", (e) => {
+  if (e.key === "Enter") {
+    send(input.value);
+  }
+});
+
+sendBtn.addEventListener("click", () =>
+  send(input.value)
+);
+
+function getSaved() {
+  try {
+    return JSON.parse(
+      localStorage.getItem("sb_saved") || "[]"
+    );
+  } catch (e) {
+    return [];
+  }
 }
+
+function putSaved(list) {
+  list = list
+    .slice(0, 8)
+    .map((x, i) =>
+      i < 4
+        ? x
+        : Object.assign({}, x, { img: null })
+    );
+
+  try {
+    localStorage.setItem(
+      "sb_saved",
+      JSON.stringify(list)
+    );
+  } catch (e) {
+    try {
+      localStorage.setItem(
+        "sb_saved",
+        JSON.stringify(
+          list.map((x) =>
+            Object.assign({}, x, { img: null })
+          )
+        )
+      );
+    } catch (e2) {}
+  }
+}
+
 function saveTicket(t) {
   if (!t.code) return;
-  const list = getSaved().filter((x) => x.code !== t.code);
-  list.unshift(Object.assign({}, t, { time: Date.now() }));
+
+  const list = getSaved().filter(
+    (x) => x.code !== t.code
+  );
+
+  list.unshift(
+    Object.assign({}, t, { time: Date.now() })
+  );
+
   putSaved(list);
+
   toast("Ticket saved");
 }
 
-const sheet = $("sheet"), pane = $("pane");
+const sheet = $("sheet");
+const pane = $("pane");
+
 let tab = "edit";
-let cur = { code: null, data: null };
-let stakeOdds = "", stakeAmt = "";
+let cur = {
+  code: null,
+  data: null
+};
+
+let stakeOdds = "";
+let stakeAmt = "";
 
 function openTools(which, code) {
   sheet.hidden = false;
-  if (code) { cur = { code: code, data: null }; }
+
+  if (code) {
+    cur = {
+      code: code,
+      data: null
+    };
+  }
+
   setTab(which || "edit");
-  if (code && (which || "edit") === "edit") runCheck(code);
+
+  if (
+    code &&
+    (which || "edit") === "edit"
+  ) {
+    runCheck(code);
+  }
 }
-function closeTools() { sheet.hidden = true; }
+
+function closeTools() {
+  sheet.hidden = true;
+}
+
 function setTab(name) {
   tab = name;
-  document.querySelectorAll(".tab").forEach((b) => b.classList.toggle("on", b.dataset.tab === name));
-  ({ edit: renderEdit, stake: renderStake, saved: renderSaved, settings: renderSettings })[name]();
+
+  document
+    .querySelectorAll(".tab")
+    .forEach((b) =>
+      b.classList.toggle(
+        "on",
+        b.dataset.tab === name
+      )
+    );
+
+  ({
+    edit: renderEdit,
+    stake: renderStake,
+    saved: renderSaved,
+    settings: renderSettings
+  })[name]();
 }
+
 sheet.addEventListener("click", (e) => {
-  if (e.target.closest("[data-close]")) closeTools();
+  if (e.target.closest("[data-close]")) {
+    closeTools();
+  }
+
   const t = e.target.closest("[data-tab]");
-  if (t) setTab(t.dataset.tab);
+
+  if (t) {
+    setTab(t.dataset.tab);
+  }
 });
 
 function validCode(raw) {
-  const code = String(raw || "").trim().replace(/\s+/g, "").toUpperCase();
-  return /^[A-Z0-9]{5,12}$/.test(code) ? code : null;
+  const code = String(raw || "")
+    .trim()
+    .replace(/\s+/g, "")
+    .toUpperCase();
+
+  return /^[A-Z0-9]{5,12}$/.test(code)
+    ? code
+    : null;
 }
 
-const BALL = '<svg viewBox="0 0 36 36"><circle cx="18" cy="18" r="16" fill="#fff"/><polygon points="18,10 25,15 22,24 14,24 11,15" fill="#04111f"/><path d="M18 10V2M25 15l9-3M22 24l6 8M14 24l-6 8M11 15l-9-3" stroke="#04111f" stroke-width="2" fill="none"/></svg>';
+const BALL =
+  '<svg viewBox="0 0 36 36"><circle cx="18" cy="18" r="16" fill="#fff"/><polygon points="18,10 25,15 22,24 14,24 11,15" fill="#04111f"/><path d="M18 10V2M25 15l9-3M22 24l6 8M14 24l-6 8M11 15l-9-3" stroke="#04111f" stroke-width="2" fill="none"/></svg>';
+
 function loaderHtml(title, sub) {
-  return '<div class="roller"><b>' + esc(title) + '</b><small>' + esc(sub || "") + '</small>' +
-    '<div class="lane"><div class="line"></div><div class="trail"></div><div class="ball">' + BALL + '</div></div></div>';
+  return (
+    '<div class="roller"><b>' +
+    esc(title) +
+    "</b><small>" +
+    esc(sub || "") +
+    '</small><div class="lane"><div class="line"></div><div class="trail"></div><div class="ball">' +
+    BALL +
+    "</div></div></div>"
+  );
 }
+
 let syncing = false;
 
 function renderEdit() {
   pane.innerHTML =
     '<h3>Edit a SportyBet ticket</h3>' +
     '<p class="hint">Paste a code. Make one pick safer, remove a pick, or rebuild the whole ticket into sure picks. You get a new code each time.</p>' +
-    '<div class="fixrow"><input id="ecode" type="text" placeholder="SportyBet code" autocomplete="off" autocapitalize="characters" value="' + esc(cur.code || "") + '">' +
-    '<button id="echeck">Check</button></div><div id="eout"></div>';
-  $("echeck").onclick = () => { const c = validCode($("ecode").value); if (!c) return showErr("That does not look like a SportyBet code."); runCheck(c); };
-  $("ecode").addEventListener("keydown", (e) => { if (e.key === "Enter") $("echeck").click(); });
-  if (cur.data) drawTicket();
+    '<div class="fixrow"><input id="ecode" type="text" placeholder="SportyBet code" autocomplete="off" autocapitalize="characters" value="' +
+    esc(cur.code || "") +
+    '">' +
+    '<button id="echeck">Check</button></div>' +
+    '<div id="eout"></div>';
+
+  $("echeck").onclick = () => {
+    const c = validCode($("ecode").value);
+
+    if (!c) {
+      return showErr(
+        "That does not look like a SportyBet code."
+      );
+    }
+
+    runCheck(c);
+  };
+
+  $("ecode").addEventListener(
+    "keydown",
+    (e) => {
+      if (e.key === "Enter") {
+        $("echeck").click();
+      }
+    }
+  );
+
+  if (cur.data) {
+    drawTicket();
+  }
 }
-function showErr(msg) { const o = $("eout"); if (o) o.innerHTML = '<div class="err">' + esc(msg) + '</div>'; }
-function showWorking(title, sub) { const o = $("eout"); if (o) o.innerHTML = loaderHtml(title, sub); }
+
+function showErr(msg) {
+  const o = $("eout");
+
+  if (o) {
+    o.innerHTML =
+      '<div class="err">' +
+      esc(msg) +
+      "</div>";
+  }
+}
+
+function showWorking(title, sub) {
+  const o = $("eout");
+
+  if (o) {
+    o.innerHTML = loaderHtml(
+      title,
+      sub
+    );
+  }
+}
 
 async function runCheck(code) {
-  cur = { code: code, data: null };
-  if (tab !== "edit") setTab("edit");
-  showWorking("Reading your ticket...", "Getting every pick and its odds from SportyBet");
-  try { cur.data = await api("/api/check", { code }); drawTicket(); }
-  catch (e) { showErr(e.message); }
-}
-async function runAction(path, body, okNote, title, sub) {
-  showWorking(title || "Working on it...", sub || "");
-  try {
-    const d = await api(path, body);
-    cur = { code: d.code, data: d };
-    if ($("ecode")) $("ecode").value = d.code;
-    const note = d.changed === false ? "Nothing could be made safer on that ticket." : (typeof okNote === "function" ? okNote(d) : okNote);
-    drawTicket(note);
-  } catch (e) { showErr(e.message); }
-}
-function saferNote(d) {
-  let t = "Rebuilt into sure picks from each match's form and head-to-head. New code ready.";
-  if (d.dropped && d.dropped.length) {
-    const names = d.dropped.slice(0, 3).map((x) => x.match).join(", ");
-    t += " Removed " + d.dropped.length + " match" + (d.dropped.length > 1 ? "es" : "") + " with no sure pick: " + names + (d.dropped.length > 3 ? "..." : "") + ".";
+  cur = {
+    code: code,
+    data: null
+  };
+
+  if (tab !== "edit") {
+    setTab("edit");
   }
+
+  showWorking(
+    "Reading your ticket...",
+    "Getting every pick and its odds from SportyBet"
+  );
+
+  try {
+    cur.data = await api(
+      "/api/check",
+      { code }
+    );
+
+    drawTicket();
+  } catch (e) {
+    showErr(e.message);
+  }
+}
+
+async function runAction(
+  path,
+  body,
+  okNote,
+  title,
+  sub
+) {
+  showWorking(
+    title || "Working on it...",
+    sub || ""
+  );
+
+  try {
+    const d = await api(
+      path,
+      body
+    );
+
+    cur = {
+      code: d.code,
+      data: d
+    };
+
+    if ($("ecode")) {
+      $("ecode").value = d.code;
+    }
+
+    const note =
+      d.changed === false
+        ? "Nothing could be made safer on that ticket."
+        : typeof okNote === "function"
+        ? okNote(d)
+        : okNote;
+
+    drawTicket(note);
+  } catch (e) {
+    showErr(e.message);
+  }
+}
+
+function saferNote(d) {
+  let t =
+    "Rebuilt into sure picks from each match's form and head-to-head. New code ready.";
+
+  if (
+    d.dropped &&
+    d.dropped.length
+  ) {
+    const names = d.dropped
+      .slice(0, 3)
+      .map((x) => x.match)
+      .join(", ");
+
+    t +=
+      " Removed " +
+      d.dropped.length +
+      " match" +
+      (d.dropped.length > 1 ? "es" : "") +
+      " with no sure pick: " +
+      names +
+      (d.dropped.length > 3 ? "..." : "") +
+      ".";
+  }
+
   return t;
 }
+
 function drawTicket(note, isErr) {
-  const d = cur.data, out = $("eout");
+  const d = cur.data;
+  const out = $("eout");
+
   if (!d || !out) return;
-  const dis = syncing ? " disabled" : "";
-  const rows = d.rows.map((r) =>
-    '<div class="e-row" data-i="' + r.index + '"><div class="e-top"><div class="e-main">' +
-    '<div class="t-match">' + esc(r.match) + '</div><div class="t-pick">' + esc(r.pick) + '</div></div>' +
-    '<div class="e-side"><span class="pill">' + Number(r.odd).toFixed(2) + '</span>' +
-    '<span class="risk ' + r.risk.toLowerCase() + '">' + esc(r.risk) + '</span></div></div>' +
-    '<div class="e-btns">' + (r.can_safer ? '<button data-act="swap"' + dis + '>Make safer</button>' : '') +
-    '<button data-act="why">Why this pick?</button><button data-act="remove" class="danger"' + dis + '>Remove</button></div>' +
-    '<div class="why"><div></div></div></div>').join("");
+
+  const dis = syncing
+    ? " disabled"
+    : "";
+
+  const rows = d.rows
+    .map(
+      (r) =>
+        '<div class="e-row" data-i="' +
+        r.index +
+        '">' +
+        '<div class="e-top"><div class="e-main">' +
+        '<div class="t-match">' +
+        esc(r.match) +
+        "</div>" +
+        '<div class="t-pick">' +
+        esc(r.pick) +
+        "</div>" +
+        '</div><div class="e-side">' +
+        '<span class="pill">' +
+        Number(r.odd).toFixed(2) +
+        "</span>" +
+        '<span class="risk ' +
+        r.risk.toLowerCase() +
+        '">' +
+        esc(r.risk) +
+        "</span>" +
+        "</div></div>" +
+        '<div class="e-btns">' +
+        (r.can_safer
+          ? '<button data-act="swap"' +
+            dis +
+            ">Make safer</button>"
+          : "") +
+        '<button data-act="why">Why this pick?</button>' +
+        '<button data-act="remove" class="danger"' +
+        dis +
+        ">Remove</button>" +
+        "</div>" +
+        '<div class="why"><div></div></div>' +
+        "</div>"
+    )
+    .join("");
+
   out.innerHTML =
-    '<div class="health ' + d.health.toLowerCase() + '"><b>' + esc(d.health) + ' ticket</b><span>' + esc(d.reason) + ' About ' + d.chance + '% chance that all win.</span></div>' +
-    (note ? '<div class="' + (isErr ? 'err' : 'note') + '">' + esc(note) + '</div>' : '') + rows +
-    '<div class="t-bar"><div><b>Total odds</b><small>Estimated from the odds</small></div><span class="pill red">' + Number(d.total_odds).toFixed(2) + '</span></div>' +
-    '<div class="t-bar"><div><b>SportyBet code</b><small>Tap to copy</small></div><button class="pill copy-code" data-copycode>' + esc(cur.code) + '</button></div>' +
-    '<div class="e-actions"><button data-all' + dis + '>Rebuild into sure picks</button><button data-save>Save</button><button data-stake>Stake</button></div>';
+    '<div class="health ' +
+    d.health.toLowerCase() +
+    '"><b>' +
+    esc(d.health) +
+    " ticket</b><span>" +
+    esc(d.reason) +
+    " About " +
+    d.chance +
+    "% chance that all win.</span></div>" +
+    (note
+      ? '<div class="' +
+        (isErr ? "err" : "note") +
+        '">' +
+        esc(note) +
+        "</div>"
+      : "") +
+    rows +
+    '<div class="t-bar"><div><b>Total odds</b><small>Estimated from the odds</small></div><span class="pill red">' +
+    Number(d.total_odds).toFixed(2) +
+    "</span></div>" +
+    '<div class="t-bar"><div><b>SportyBet code</b><small>Tap to copy</small></div><button class="pill copy-code" data-copycode>' +
+    esc(cur.code) +
+    "</button></div>" +
+    '<div class="e-actions"><button data-all' +
+    dis +
+    ">Rebuild into sure picks</button><button data-save>Save</button><button data-stake>Stake</button></div>";
 }
 
 function animateRemove(el) {
   return new Promise((resolve) => {
-    el.style.maxHeight = el.offsetHeight + "px";
+    el.style.maxHeight =
+      el.offsetHeight + "px";
+
     el.style.overflow = "hidden";
-    el.style.transition = "transform .45s ease, opacity .45s ease";
+
+    el.style.transition =
+      "transform .45s ease, opacity .45s ease";
+
     requestAnimationFrame(() => {
-      el.style.transform = "translateX(-110%)"; el.style.opacity = "0";
+      el.style.transform =
+        "translateX(-110%)";
+
+      el.style.opacity = "0";
+
       setTimeout(() => {
-        el.style.transition = "max-height .35s ease, padding .35s ease";
-        el.style.maxHeight = "0"; el.style.paddingTop = "0"; el.style.paddingBottom = "0";
-        setTimeout(resolve, 350);
+        el.style.transition =
+          "max-height .35s ease, padding .35s ease";
+
+        el.style.maxHeight = "0";
+        el.style.paddingTop = "0";
+        el.style.paddingBottom = "0";
+
+        setTimeout(
+          resolve,
+          350
+        );
       }, 450);
     });
   });
 }
+
 function removeRow(i, el) {
   if (syncing) return;
-  if (cur.data.rows.length <= 1) return showErr("A ticket needs at least one pick.");
+
+  if (cur.data.rows.length <= 1) {
+    return showErr(
+      "A ticket needs at least one pick."
+    );
+  }
+
   syncing = true;
-  const prev = { code: cur.code, data: cur.data };
-  pane.querySelectorAll("#eout button[data-act], #eout [data-all]").forEach((b) => (b.disabled = true));
-  const animation = animateRemove(el).then(() => {
-    const rows = prev.data.rows.filter((r) => r.index !== i).map((r, k) => Object.assign({}, r, { index: k }));
-    cur.data = Object.assign({}, prev.data, { rows: rows, total_odds: rows.reduce((a, r) => a * r.odd, 1) });
-    drawTicket("Pick removed. Updating your code...");
-  });
-  const server = api("/api/edit", { code: prev.code, remove: [i] }).catch((e) => ({ error: e.message }));
-  Promise.all([animation, server]).then(([, d]) => {
+
+  const prev = {
+    code: cur.code,
+    data: cur.data
+  };
+
+  pane
+    .querySelectorAll(
+      "#eout button[data-act], #eout [data-all]"
+    )
+    .forEach(
+      (b) => (b.disabled = true)
+    );
+
+  const animation = animateRemove(el).then(
+    () => {
+      const rows = prev.data.rows
+        .filter((r) => r.index !== i)
+        .map((r, k) =>
+          Object.assign(
+            {},
+            r,
+            { index: k }
+          )
+        );
+
+      cur.data = Object.assign(
+        {},
+        prev.data,
+        {
+          rows: rows,
+          total_odds: rows.reduce(
+            (a, r) => a * r.odd,
+            1
+          )
+        }
+      );
+
+      drawTicket(
+        "Pick removed. Updating your code..."
+      );
+    }
+  );
+
+  const server = api(
+    "/api/edit",
+    {
+      code: prev.code,
+      remove: [i]
+    }
+  ).catch((e) => ({
+    error: e.message
+  }));
+
+  Promise.all([
+    animation,
+    server
+  ]).then(([, d]) => {
     syncing = false;
-    if (d.error) { cur = prev; drawTicket("Could not update the code: " + d.error, true); return; }
-    cur = { code: d.code, data: d };
-    if ($("ecode")) $("ecode").value = d.code;
-    drawTicket("Pick removed. New code ready.");
-  });
-}
 
-async function toggleWhy(i, rowEl, btn) {
-  const box = rowEl.querySelector(".why"), inner = box.firstElementChild;
-  if (box.classList.contains("open")) { box.classList.remove("open"); btn.textContent = "Why this pick?"; return; }
-  box.classList.add("open"); btn.textContent = "Hide reason";
-  const row = cur.data.rows[i];
-  if (row.reason) { inner.textContent = row.reason; return; }
-  inner.innerHTML = '<span class="why-load">Checking their last 5 games and head-to-head...</span>';
-  try {
-    const d = await api("/api/why", { code: cur.code, index: i });
-    row.reason = d.reason; inner.textContent = d.reason;
-  } catch (e) { inner.textContent = "I could not get the match data right now. " + e.message; }
-}
+    if (d.error) {
+      cur = prev;
 
-pane.addEventListener("click", (e) => {
-  if (tab === "edit") {
-    const act = e.target.closest("[data-act]");
-    if (act) {
-      const rowEl = act.closest("[data-i]"), i = Number(rowEl.dataset.i);
-      if (act.dataset.act === "swap" && !syncing) runAction("/api/edit", { code: cur.code, swap: [i] }, "Pick made safer from the match form. New code ready.", "Making this pick safer...", "Studying their last 5 games and head-to-head");
-      else if (act.dataset.act === "remove") removeRow(i, rowEl);
-      else if (act.dataset.act === "why") toggleWhy(i, rowEl, act);
+      drawTicket(
+        "Could not update the code: " +
+        d.error,
+        true
+      );
+
       return;
     }
-    if (e.target.closest("[data-all]") && !syncing) return runAction("/api/safer", { code: cur.code }, saferNote, "Rebuilding into sure picks...", "Studying each match's last 5 games and head-to-head. This can take a minute.");
-    if (e.target.closest("[data-save]")) return saveTicket({ code: cur.code, total: cur.data.total_odds, health: cur.data.health });
-    if (e.target.closest("[data-stake]")) { stakeOdds = Number(cur.data.total_odds).toFixed(2); return setTab("stake"); }
-    const cc = e.target.closest("[data-copycode]");
-    if (cc) return copyText(cur.code, cc);
+
+    cur = {
+      code: d.code,
+      data: d
+    };
+
+    if ($("ecode")) {
+      $("ecode").value = d.code;
+    }
+
+    drawTicket(
+      "Pick removed. New code ready."
+    );
+  });
+}
+
+async function toggleWhy(
+  i,
+  rowEl,
+  btn
+) {
+  const box = rowEl.querySelector(".why");
+  const inner = box.firstElementChild;
+
+  if (box.classList.contains("open")) {
+    box.classList.remove("open");
+    btn.textContent =
+      "Why this pick?";
+    return;
   }
-  if (tab === "saved") {
-    const el = e.target.closest("[data-sact]");
-    if (!el) return;
-    const code = el.closest("[data-code]").dataset.code;
-    if (el.dataset.sact === "open") openTools("edit", code);
-    if (el.dataset.sact === "copy") copyText(code, el);
-    if (el.dataset.sact === "del") { putSaved(getSaved().filter((x) => x.code !== code)); renderSaved(); }
+
+  box.classList.add("open");
+  btn.textContent =
+    "Hide reason";
+
+  const row = cur.data.rows[i];
+
+  if (row.reason) {
+    inner.textContent = row.reason;
+    return;
   }
-});
+
+  inner.innerHTML =
+    '<span class="why-load">Checking their last 5 games and head-to-head...</span>';
+
+  try {
+    const d = await api(
+      "/api/why",
+      {
+        code: cur.code,
+        index: i
+      }
+    );
+
+    row.reason = d.reason;
+    inner.textContent =
+      d.reason;
+  } catch (e) {
+    inner.textContent =
+      "I could not get the match data right now. " +
+      e.message;
+  }
+}
+
+pane.addEventListener(
+  "click",
+  (e) => {
+    if (tab === "edit") {
+      const act =
+        e.target.closest("[data-act]");
+
+      if (act) {
+        const rowEl =
+          act.closest("[data-i]");
+
+        const i =
+          Number(rowEl.dataset.i);
+
+        if (
+          act.dataset.act === "swap" &&
+          !syncing
+        ) {
+          runAction(
+            "/api/edit",
+            {
+              code: cur.code,
+              swap: [i]
+            },
+            "Pick made safer from the match form. New code ready.",
+            "Making this pick safer...",
+            "Studying their last 5 games and head-to-head"
+          );
+        } else if (
+          act.dataset.act === "remove"
+        ) {
+          removeRow(i, rowEl);
+        } else if (
+          act.dataset.act === "why"
+        ) {
+          toggleWhy(
+            i,
+            rowEl,
+            act
+          );
+        }
+
+        return;
+      }
+
+      if (
+        e.target.closest("[data-all]") &&
+        !syncing
+      ) {
+        return runAction(
+          "/api/safer",
+          { code: cur.code },
+          saferNote,
+          "Rebuilding into sure picks...",
+          "Studying each match's last 5 games and head-to-head. This can take a minute."
+        );
+      }
+
+      if (
+        e.target.closest("[data-save]")
+      ) {
+        return saveTicket({
+          code: cur.code,
+          total: cur.data.total_odds,
+          health: cur.data.health
+        });
+      }
+
+      if (
+        e.target.closest("[data-stake]")
+      ) {
+        stakeOdds =
+          Number(
+            cur.data.total_odds
+          ).toFixed(2);
+
+        return setTab("stake");
+      }
+
+      const cc =
+        e.target.closest(
+          "[data-copycode]"
+        );
+
+      if (cc) {
+        return copyText(
+          cur.code,
+          cc
+        );
+      }
+    }
+
+    if (tab === "saved") {
+      const el =
+        e.target.closest("[data-sact]");
+
+      if (!el) return;
+
+      const code =
+        el.closest(
+          "[data-code]"
+        ).dataset.code;
+
+      if (
+        el.dataset.sact === "open"
+      ) {
+        openTools(
+          "edit",
+          code
+        );
+      }
+
+      if (
+        el.dataset.sact === "copy"
+      ) {
+        copyText(
+          code,
+          el
+        );
+      }
+
+      if (
+        el.dataset.sact === "del"
+      ) {
+        putSaved(
+          getSaved().filter(
+            (x) =>
+              x.code !== code
+          )
+        );
+
+        renderSaved();
+      }
+    }
+  }
+);
 
 function renderStake() {
   pane.innerHTML =
-    '<h3>Stake calculator</h3><p class="hint">See what a ticket could pay. Only stake what you can afford to lose.</p>' +
-    '<label class="field">Total odds<input id="sodds" type="number" inputmode="decimal" step="0.01" min="1" value="' + esc(stakeOdds) + '" placeholder="e.g. 10.50"></label>' +
-    '<label class="field">Stake (&#8358;)<input id="samt" type="number" inputmode="decimal" min="0" value="' + esc(stakeAmt) + '" placeholder="e.g. 1000"></label>' +
-    '<div class="quick">' + [100, 500, 1000, 5000].map((v) => '<button class="mini" data-q="' + v + '">&#8358;' + v.toLocaleString() + '</button>').join("") + '</div>' +
-    '<div class="result" id="sres"></div>';
+    '<h3>Stake calculator</h3>' +
+    '<p class="hint">See what a ticket could pay. Only stake what you can afford to lose.</p>' +
+    '<label class="field">Total odds<input id="sodds" type="number" inputmode="decimal" step="0.01" min="1" value="' +
+    esc(stakeOdds) +
+    '" placeholder="e.g. 10.50"></label>' +
+    '<label class="field">Stake (&#8358;)<input id="samt" type="number" inputmode="decimal" min="0" value="' +
+    esc(stakeAmt) +
+    '" placeholder="e.g. 1000"></label>' +
+    '<div class="quick">' +
+    [100, 500, 1000, 5000]
+      .map(
+        (v) =>
+          '<button class="mini" data-q="' +
+          v +
+          '">&#8358;' +
+          v.toLocaleString() +
+          "</button>"
+      )
+      .join("") +
+    '</div><div class="result" id="sres"></div>';
+
   const upd = () => {
-    stakeOdds = $("sodds").value; stakeAmt = $("samt").value;
-    const o = parseFloat(stakeOdds), a = parseFloat(stakeAmt);
-    const chance = cur.data ? " The tool estimates about " + cur.data.chance + "% that your current ticket wins." : "";
-    if (!(o >= 1) || !(a > 0)) { $("sres").innerHTML = '<small>Enter the odds and your stake.</small>'; return; }
-    const win = o * a, fmt = (n) => "\u20a6" + Math.round(n).toLocaleString();
-    $("sres").innerHTML = '<div class="big">' + fmt(win) + '</div><div>Possible win (profit ' + fmt(win - a) + ')</div>' +
-      '<small>If any pick loses, you lose your ' + fmt(a) + ' stake.' + chance + '</small>';
+    stakeOdds =
+      $("sodds").value;
+
+    stakeAmt =
+      $("samt").value;
+
+    const o =
+      parseFloat(stakeOdds);
+
+    const a =
+      parseFloat(stakeAmt);
+
+    const chance = cur.data
+      ? " The tool estimates about " +
+        cur.data.chance +
+        "% that your current ticket wins."
+      : "";
+
+    if (!(o >= 1) || !(a > 0)) {
+      $("sres").innerHTML =
+        "<small>Enter the odds and your stake.</small>";
+
+      return;
+    }
+
+    const win =
+      o * a;
+
+    const fmt = (n) =>
+      "\u20a6" +
+      Math.round(n).toLocaleString();
+
+    $("sres").innerHTML =
+      '<div class="big">' +
+      fmt(win) +
+      "</div><div>Possible win (profit " +
+      fmt(win - a) +
+      ")</div>" +
+      "<small>If any pick loses, you lose your " +
+      fmt(a) +
+      " stake." +
+      chance +
+      "</small>";
   };
-  $("sodds").oninput = upd; $("samt").oninput = upd;
-  pane.querySelectorAll("[data-q]").forEach((b) => (b.onclick = () => { $("samt").value = b.dataset.q; upd(); }));
+
+  $("sodds").oninput = upd;
+  $("samt").oninput = upd;
+
+  pane
+    .querySelectorAll("[data-q]")
+    .forEach(
+      (b) =>
+        (b.onclick = () => {
+          $("samt").value =
+            b.dataset.q;
+
+          upd();
+        })
+    );
+
   upd();
 }
 
 function renderSaved() {
   const list = getSaved();
-  pane.innerHTML = '<h3>Saved tickets</h3><p class="hint">Kept on this phone only.</p>' + (list.length ? list.map((t) =>
-    '<div class="saved" data-code="' + esc(t.code) + '">' + (t.img ? '<img alt="" src="data:image/png;base64,' + t.img + '">' : '') +
-    '<div class="s-info"><b>' + esc(t.code) + '</b>' + (t.total ? 'Odds ' + Number(t.total).toFixed(2) : '') + (t.health ? ' \u00b7 ' + esc(t.health) : '') +
-    '<br>' + new Date(t.time).toLocaleDateString([], { day: "numeric", month: "short" }) + '</div>' +
-    '<div class="e-btns" style="flex-direction:column;margin:0"><button data-sact="open">Open</button><button data-sact="copy">Copy</button><button data-sact="del" class="danger">Delete</button></div></div>').join("")
-    : '<p class="hint">Nothing saved yet. Tap Save under a ticket.</p>');
+
+  pane.innerHTML =
+    '<h3>Saved tickets</h3>' +
+    '<p class="hint">Kept on this phone only.</p>' +
+    (list.length
+      ? list
+          .map(
+            (t) =>
+              '<div class="saved" data-code="' +
+              esc(t.code) +
+              '">' +
+              (t.img
+                ? '<img alt="" src="data:image/png;base64,' +
+                  t.img +
+                  '">'
+                : "") +
+              '<div class="s-info"><b>' +
+              esc(t.code) +
+              "</b>" +
+              (t.total
+                ? "Odds " +
+                  Number(
+                    t.total
+                  ).toFixed(2)
+                : "") +
+              (t.health
+                ? " · " +
+                  esc(t.health)
+                : "") +
+              "<br>" +
+              new Date(
+                t.time
+              ).toLocaleDateString(
+                [],
+                {
+                  day: "numeric",
+                  month: "short"
+                }
+              ) +
+              '</div><div class="e-btns" style="flex-direction:column;margin:0">' +
+              '<button data-sact="open">Open</button>' +
+              '<button data-sact="copy">Copy</button>' +
+              '<button data-sact="del" class="danger">Delete</button>' +
+              "</div></div>"
+          )
+          .join("")
+      : '<p class="hint">Nothing saved yet. Tap Save under a ticket.</p>');
 }
 
 function renderSettings() {
-  const on = localStorage.getItem("sb_pidgin") === "1";
+  const on =
+    localStorage.getItem(
+      "sb_pidgin"
+    ) === "1";
+
   pane.innerHTML =
     '<h3>Settings</h3>' +
-    '<div class="switch"><span><b>Pidgin mode</b><small>The AI replies in Nigerian Pidgin.</small></span><button class="tog' + (on ? " on" : "") + '" id="tpid" aria-label="Pidgin mode"></button></div>' +
+    '<div class="switch"><span><b>Pidgin mode</b><small>The AI replies in Nigerian Pidgin.</small></span><button class="tog' +
+    (on ? " on" : "") +
+    '" id="tpid" aria-label="Pidgin mode"></button></div>' +
     '<div class="switch"><span><b>Clear saved tickets</b><small>Removes them from this phone.</small></span><button class="mini" id="tclr">Clear</button></div>' +
     '<p class="hint" style="margin-top:14px">Predictions are estimates, not guarantees. Accumulators lose often. Only stake what you can afford to lose (18+).</p>';
+
   $("tpid").onclick = (e) => {
-    const next = localStorage.getItem("sb_pidgin") !== "1";
-    localStorage.setItem("sb_pidgin", next ? "1" : "0");
-    e.currentTarget.classList.toggle("on", next);
+    const next =
+      localStorage.getItem(
+        "sb_pidgin"
+      ) !== "1";
+
+    localStorage.setItem(
+      "sb_pidgin",
+      next ? "1" : "0"
+    );
+
+    e.currentTarget.classList.toggle(
+      "on",
+      next
+    );
   };
-  $("tclr").onclick = () => { putSaved([]); toast("Cleared"); };
+
+  $("tclr").onclick = () => {
+    putSaved([]);
+    toast("Cleared");
+  };
 }
 
-$("htools").addEventListener("click", () => openTools("edit"));
-$("avatar").addEventListener("click", () => openTools("settings"));
+$("htools").addEventListener(
+  "click",
+  () => openTools("edit")
+);
 
-const welcome = document.createElement("div");
-welcome.className = "row-bot";
+$("avatar").addEventListener(
+  "click",
+  () => openTools("settings")
+);
+
+const welcome =
+  document.createElement("div");
+
+welcome.className =
+  "row-bot";
+
 welcome.innerHTML =
   '<div class="content"><strong>Welcome to SamuelBet AI.</strong><br>I am your football ticket assistant. I go through today\'s SportyBet matches, study each team\'s last 5 games and head-to-head record, and build the ticket you ask for, from a safe 5 picks to a risky 30 odds.' +
   '<br><br>Every pick comes with the reason I chose it, and you get a SportyBet code to paste straight into the app. No pick is ever guaranteed, so stake small.</div>' +
   '<div class="chips"></div>';
-["10 odds tonight", "Safe 5 picks tomorrow", "Straight win tickets", "Today's bankers", "Risky 30 odds"].forEach((q) => {
-  const b = document.createElement("button");
-  b.className = "chip"; b.textContent = q;
-  b.onclick = () => (q === "Straight win tickets" ? askBuilder("") : send(q === "Today's bankers" ? "Safe 5 picks today" : q));
-  welcome.querySelector(".chips").appendChild(b);
+
+[
+  "10 odds tonight",
+  "Safe 5 picks tomorrow",
+  "Straight win tickets",
+  "Today's bankers",
+  "Risky 30 odds"
+].forEach((q) => {
+  const b =
+    document.createElement("button");
+
+  b.className = "chip";
+  b.textContent = q;
+
+  /*
+   * STRAIGHT WIN FIX:
+   *
+   * Do NOT open askBuilder("").
+   * Send the request directly to the backend.
+   *
+   * The backend will use its dedicated Straight Win
+   * logic, where Straight Win = 1UP or 2UP only.
+   */
+  b.onclick = () =>
+    q === "Straight win tickets"
+      ? send("straight win today")
+      : send(
+          q === "Today's bankers"
+            ? "Safe 5 picks today"
+            : q
+        );
+
+  welcome
+    .querySelector(".chips")
+    .appendChild(b);
 });
+
 box.appendChild(welcome);
 
-const fixer = document.createElement("div");
+const fixer =
+  document.createElement("div");
+
 fixer.className = "fixer";
+
 fixer.innerHTML =
   '<b>Make a ticket safer</b>' +
   '<p>Already have a code? Paste it. I study each match\'s last 5 games and head-to-head, then rebuild it into sure picks, or fix it one pick at a time.</p>' +
   '<div class="fixrow"><input id="fixcode" type="text" placeholder="SportyBet code" autocomplete="off" autocapitalize="characters">' +
-  '<button id="fixbtn">Open</button></div><div class="fixerr" id="fixerr"></div>';
+  '<button id="fixbtn">Open</button></div>' +
+  '<div class="fixerr" id="fixerr"></div>';
+
 welcome.appendChild(fixer);
+
 function fromBox() {
-  const code = validCode($("fixcode").value);
-  $("fixerr").textContent = code ? "" : "That does not look like a SportyBet code. Check it and try again.";
-  if (code) { $("fixcode").value = ""; openTools("edit", code); }
+  const code =
+    validCode(
+      $("fixcode").value
+    );
+
+  $("fixerr").textContent =
+    code
+      ? ""
+      : "That does not look like a SportyBet code. Check it and try again.";
+
+  if (code) {
+    $("fixcode").value = "";
+    openTools(
+      "edit",
+      code
+    );
+  }
 }
-$("fixbtn").addEventListener("click", fromBox);
-$("fixcode").addEventListener("keydown", (e) => { if (e.key === "Enter") fromBox(); });
+
+$("fixbtn").addEventListener(
+  "click",
+  fromBox
+);
+
+$("fixcode").addEventListener(
+  "keydown",
+  (e) => {
+    if (e.key === "Enter") {
+      fromBox();
+    }
+  }
+);
 
 const home = $("home");
-function enterApp(openEdit) {
-  sessionStorage.setItem("sb_in", "1");
-  home.classList.add("leave");
-  setTimeout(() => { home.hidden = true; if (openEdit) openTools("edit"); else input.focus(); }, 560);
-}
-$("hgo").addEventListener("click", () => enterApp(false));
-$("hfix").addEventListener("click", () => enterApp(true));
 
-if (sessionStorage.getItem("sb_in") === "1" || sessionStorage.getItem("st_in") === "1") {
+function enterApp(openEdit) {
+  sessionStorage.setItem(
+    "sb_in",
+    "1"
+  );
+
+  home.classList.add("leave");
+
+  setTimeout(() => {
+    home.hidden = true;
+
+    if (openEdit) {
+      openTools("edit");
+    } else {
+      input.focus();
+    }
+  }, 560);
+}
+
+$("hgo").addEventListener(
+  "click",
+  () => enterApp(false)
+);
+
+$("hfix").addEventListener(
+  "click",
+  () => enterApp(true)
+);
+
+if (
+  sessionStorage.getItem("sb_in") === "1" ||
+  sessionStorage.getItem("st_in") === "1"
+) {
   home.hidden = true;
 } else {
   (function countUp() {
-    const odds = [1.20, 1.16, 1.25, 1.19], out = $("hcount");
-    const final = odds.reduce((a, b) => a * b, 1);
-    if (window.matchMedia && matchMedia("(prefers-reduced-motion: reduce)").matches) { out.textContent = final.toFixed(2); return; }
+    const odds = [
+      1.20,
+      1.16,
+      1.25,
+      1.19
+    ];
+
+    const out = $("hcount");
+
+    const final =
+      odds.reduce(
+        (a, b) => a * b,
+        1
+      );
+
+    if (
+      window.matchMedia &&
+      matchMedia(
+        "(prefers-reduced-motion: reduce)"
+      ).matches
+    ) {
+      out.textContent =
+        final.toFixed(2);
+
+      return;
+    }
+
     let total = 1;
-    odds.forEach((o, i) => setTimeout(() => {
-      const from = total; total *= o;
-      const start = performance.now();
-      (function step(now) {
-        const p = Math.min(1, (now - start) / 380);
-        out.textContent = (from + (total - from) * p).toFixed(2);
-        if (p < 1) requestAnimationFrame(step);
-      })(start);
-      out.classList.remove("pop"); void out.offsetWidth; out.classList.add("pop");
-    }, 1250 + i * 450));
+
+    odds.forEach((o, i) =>
+      setTimeout(() => {
+        const from = total;
+        total *= o;
+
+        const start =
+          performance.now();
+
+        (function step(now) {
+          const p =
+            Math.min(
+              1,
+              (now - start) /
+                380
+            );
+
+          out.textContent =
+            (
+              from +
+              (total - from) *
+                p
+            ).toFixed(2);
+
+          if (p < 1) {
+            requestAnimationFrame(
+              step
+            );
+          }
+        })(start);
+
+        out.classList.remove(
+          "pop"
+        );
+
+        void out.offsetWidth;
+
+        out.classList.add(
+          "pop"
+        );
+      }, 1250 + i * 450)
+    );
   })();
 }
 </script>

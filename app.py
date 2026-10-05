@@ -51,6 +51,35 @@ RATE_WINDOW = 60
 
 
 # ============================================================
+# IMPORT SPORTYBET PROVIDER FIRST
+# ============================================================
+
+SPORTYBET_PROVIDER_MODULE = None
+SPORTYBET_PROVIDER_ERROR = None
+
+try:
+
+    SPORTYBET_PROVIDER_MODULE = importlib.import_module(
+        "sportybet_provider"
+    )
+
+    print(
+        "✅ sportybet_provider.py loaded successfully"
+    )
+
+except Exception as exc:
+
+    SPORTYBET_PROVIDER_ERROR = (
+        f"{type(exc).__name__}: {exc}"
+    )
+
+    print(
+        "❌ sportybet_provider.py failed to load:",
+        SPORTYBET_PROVIDER_ERROR,
+    )
+
+
+# ============================================================
 # IMPORT MAIN BOT
 # ============================================================
 

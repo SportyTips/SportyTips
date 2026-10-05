@@ -80,9 +80,9 @@ import sportybet_provider as sp
 
 try:
     import Football_data as fd
-except Exception as exc:
+except Exception as e:
     fd = None
-    print("Football_data import failed:", exc)
+    print("FOOTBALL_DATA IMPORT ERROR:", repr(e))
 
 
 BRAND = "SPORTYTIPS"

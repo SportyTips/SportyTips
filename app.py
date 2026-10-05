@@ -59,12 +59,6 @@ bot = importlib.import_module("main")
 
 # ============================================================
 # IMPORT SMART TICKET
-#
-# smart_ticket.py replaces:
-#
-#     bot.prediction_ticket_flow
-#
-# This MUST happen after main.py is loaded.
 # ============================================================
 
 SMART_TICKET_ERROR = None
@@ -380,6 +374,37 @@ def too_fast(
 
 
 # ============================================================
+# HELPER
+# ============================================================
+
+def first_value(
+    obj,
+    keys,
+):
+
+    if not isinstance(
+        obj,
+        dict,
+    ):
+
+        return None
+
+    for key in keys:
+
+        if key in obj:
+
+            value = obj.get(
+                key
+            )
+
+            if value is not None:
+
+                return value
+
+    return None
+
+
+# ============================================================
 # ONLY ONE TICKET BUILD AT A TIME
 # ============================================================
 
@@ -454,7 +479,6 @@ def start_turn(
     text,
 ):
 
-    # Same session is already building.
     if session in _active_sessions:
 
         return (
@@ -471,7 +495,6 @@ def start_turn(
             ),
         )
 
-    # Another ticket is being built.
     if RUN_LOCK.locked():
 
         return (
@@ -531,7 +554,6 @@ def stream_response(q):
 
             except queue.Empty:
 
-                # Keep Render/browser connection alive.
                 yield "\n"
 
                 continue
@@ -696,7 +718,6 @@ def chat():
     ).strip()
 
     text = text[:500]
-
     session = session[:64]
 
     if not text:
@@ -731,42 +752,21 @@ def chat():
 
         return busy
 
-    return stream_response(
-        q
-    )
+    return stream_response(q)
 
 
 # ============================================================
 # /api/build
 #
-# Supports different versions of the frontend.
+# IMPORTANT:
+# This now understands the exact fields
+# sent by your current index.html:
 #
-# Examples accepted:
-#
-# {
-#   "session": "123",
-#   "message": "straight win 10 odds today"
-# }
-#
-# OR:
-#
-# {
-#   "session": "123",
-#   "spec": {
-#       "straight_win": true,
-#       "target_odds": 10,
-#       "window": "today"
-#   }
-# }
-#
-# OR:
-#
-# {
-#   "session": "123",
-#   "straight_win": true,
-#   "odds": 10,
-#   "window": "today"
-# }
+# mode
+# side
+# window
+# games
+# odds
 # ============================================================
 
 @app.post("/api/build")
@@ -778,10 +778,6 @@ def api_build():
         )
         or {}
     )
-
-    # --------------------------------------------------------
-    # SESSION
-    # --------------------------------------------------------
 
     session = str(
         data.get(
@@ -813,355 +809,270 @@ def api_build():
 
     for key in direct_keys:
 
-        value = data.get(
-            key
-        )
+        value = data.get(key)
 
-        if value is None:
-            continue
-
-        if isinstance(
-            value,
-            str,
-        ):
+        if isinstance(value, str):
 
             value = value.strip()
 
             if value:
 
                 text = value
-
                 break
 
     # --------------------------------------------------------
-    # HELPER
+    # SPEC SUPPORT
     # --------------------------------------------------------
 
-    def first_value(
-        obj,
-        keys,
-    ):
+    spec = data.get("spec")
 
-        if not isinstance(
-            obj,
-            dict,
-        ):
+    if isinstance(spec, str):
 
-            return None
+        try:
 
-        for key in keys:
+            parsed = json.loads(spec)
 
-            if key in obj:
+            if isinstance(parsed, dict):
+                spec = parsed
 
-                value = obj.get(
-                    key
-                )
+        except Exception:
 
-                if value is not None:
+            if not text:
+                text = spec.strip()
 
-                    return value
-
-        return None
+    if not isinstance(spec, dict):
+        spec = {}
 
     # --------------------------------------------------------
-    # SPEC
+    # MERGE TOP LEVEL + SPEC
     # --------------------------------------------------------
 
-    spec = data.get(
-        "spec"
+    def get_value(*keys):
+
+        value = first_value(
+            data,
+            keys,
+        )
+
+        if value is not None:
+            return value
+
+        return first_value(
+            spec,
+            keys,
+        )
+
+    # --------------------------------------------------------
+    # MODE
+    # --------------------------------------------------------
+
+    mode = get_value(
+        "mode",
+        "ticket_type",
+        "ticketType",
     )
 
-    # Some frontend versions may send
-    # spec as JSON text.
+    mode_text = str(
+        mode or ""
+    ).strip().lower()
+
+    mode_map = {
+        "up2": "2UP win",
+        "up1": "1UP win",
+        "win": "plain win",
+        "dc": "double chance",
+        "straight": "straight win",
+        "straight_win": "straight win",
+    }
+
+    # --------------------------------------------------------
+    # SIDE
+    # --------------------------------------------------------
+
+    side = get_value(
+        "side",
+    )
+
+    side_text = str(
+        side or ""
+    ).strip().lower()
+
+    if side_text not in (
+        "home",
+        "away",
+    ):
+
+        side_text = ""
+
+    # --------------------------------------------------------
+    # ODDS
+    # --------------------------------------------------------
+
+    target = get_value(
+        "target_odds",
+        "targetOdds",
+        "odds",
+        "target",
+        "combined_odds",
+        "combinedOdds",
+        "total_odds",
+        "totalOdds",
+    )
+
     if isinstance(
-        spec,
-        str,
+        target,
+        dict,
     ):
-
-        raw_spec = spec.strip()
-
-        if raw_spec:
-
-            try:
-
-                parsed_spec = json.loads(
-                    raw_spec
-                )
-
-                if isinstance(
-                    parsed_spec,
-                    dict,
-                ):
-
-                    spec = parsed_spec
-
-            except Exception:
-
-                if not text:
-
-                    text = raw_spec
-
-    # --------------------------------------------------------
-    # BUILD TEXT FROM SPEC
-    # --------------------------------------------------------
-
-    if (
-        not text
-        and isinstance(
-            spec,
-            dict,
-        )
-    ):
-
-        parts = []
-
-        # ----------------------------------------------------
-        # STRAIGHT WIN
-        # ----------------------------------------------------
-
-        straight = first_value(
-            spec,
-            (
-                "straight_win",
-                "straightWin",
-                "straight",
-                "is_straight_win",
-                "isStraightWin",
-            ),
-        )
-
-        if (
-            straight is True
-            or str(straight).lower()
-            in (
-                "true",
-                "yes",
-                "1",
-                "on",
-            )
-        ):
-
-            parts.append(
-                "straight win"
-            )
-
-        # ----------------------------------------------------
-        # TARGET ODDS
-        # ----------------------------------------------------
 
         target = first_value(
-            spec,
-            (
-                "target_odds",
-                "targetOdds",
-                "odds",
-                "target",
-                "combined_odds",
-                "combinedOdds",
-                "total_odds",
-                "totalOdds",
-            ),
-        )
-
-        # Nested odds object support.
-        if isinstance(
             target,
-            dict,
-        ):
-
-            target = first_value(
-                target,
-                (
-                    "value",
-                    "target",
-                    "odds",
-                    "amount",
-                    "number",
-                ),
-            )
-
-        if target is not None:
-
-            target_text = str(
-                target
-            ).strip()
-
-            if target_text:
-
-                parts.append(
-                    f"{target_text} odds"
-                )
-
-        # ----------------------------------------------------
-        # NUMBER OF PICKS
-        # ----------------------------------------------------
-
-        picks = first_value(
-            spec,
             (
-                "picks",
-                "count",
-                "legs",
-                "number_of_picks",
-                "numberOfPicks",
+                "value",
+                "target",
+                "odds",
+                "amount",
+                "number",
             ),
         )
 
-        if (
-            target is None
-            and picks is not None
-        ):
+    target_text = ""
 
-            picks_text = str(
-                picks
-            ).strip()
+    if target is not None:
 
-            if picks_text:
-
-                parts.append(
-                    f"best {picks_text} picks"
-                )
-
-        # ----------------------------------------------------
-        # WINDOW
-        # ----------------------------------------------------
-
-        window = first_value(
-            spec,
-            (
-                "window",
-                "period",
-                "range",
-                "time",
-            ),
-        )
-
-        if window is None:
-
-            window = "today"
-
-        window_text = str(
-            window
-        ).strip().lower()
-
-        if window_text in (
-            "long",
-            "week",
-            "weekend",
-            "future",
-            "tomorrow",
-        ):
-
-            if window_text == "tomorrow":
-
-                parts.append(
-                    "tomorrow"
-                )
-
-            else:
-
-                parts.append(
-                    "long"
-                )
-
-        else:
-
-            parts.append(
-                "today"
-            )
-
-        # ----------------------------------------------------
-        # RISK
-        # ----------------------------------------------------
-
-        risk = first_value(
-            spec,
-            (
-                "risk",
-                "risk_level",
-                "riskLevel",
-            ),
-        )
-
-        if risk:
-
-            risk_text = str(
-                risk
-            ).strip()
-
-            if risk_text:
-
-                parts.append(
-                    risk_text
-                )
-
-        # ----------------------------------------------------
-        # DEFAULT
-        # ----------------------------------------------------
-
-        if not parts:
-
-            parts.append(
-                "best 5 picks today"
-            )
-
-        text = " ".join(
-            parts
-        )
+        target_text = str(
+            target
+        ).strip()
 
     # --------------------------------------------------------
-    # TOP-LEVEL FIELDS
-    #
-    # Handles frontend sending:
-    #
-    # {
-    #   "straight_win": true,
-    #   "odds": 10,
-    #   "window": "today"
-    # }
+    # NUMBER OF GAMES
+    # --------------------------------------------------------
+
+    games = get_value(
+        "games",
+        "picks",
+        "count",
+        "legs",
+        "number_of_picks",
+        "numberOfPicks",
+    )
+
+    games_text = ""
+
+    if games is not None:
+
+        try:
+
+            games_number = int(
+                float(games)
+            )
+
+            if games_number > 0:
+                games_text = str(
+                    games_number
+                )
+
+        except Exception:
+
+            games_text = str(
+                games
+            ).strip()
+
+    # --------------------------------------------------------
+    # WINDOW
+    # --------------------------------------------------------
+
+    window = get_value(
+        "window",
+        "period",
+        "range",
+        "time",
+    )
+
+    window_text = str(
+        window or "today"
+    ).strip().lower()
+
+    if window_text in (
+        "tonight",
+    ):
+
+        final_window = "tonight"
+
+    elif window_text in (
+        "tomorrow",
+    ):
+
+        final_window = "tomorrow"
+
+    elif window_text in (
+        "long",
+        "week",
+        "weekend",
+        "future",
+    ):
+
+        final_window = "long"
+
+    else:
+
+        final_window = "today"
+
+    # --------------------------------------------------------
+    # BUILD TEXT FROM THE CURRENT FRONTEND
     # --------------------------------------------------------
 
     if not text:
 
-        straight = data.get(
-            "straight_win",
-            data.get(
-                "straightWin",
-                data.get(
-                    "straight",
-                    False,
-                ),
-            ),
-        )
-
-        target = first_value(
-            data,
-            (
-                "target_odds",
-                "targetOdds",
-                "odds",
-                "target",
-                "combined_odds",
-                "combinedOdds",
-                "total_odds",
-                "totalOdds",
-            ),
-        )
-
-        window = first_value(
-            data,
-            (
-                "window",
-                "period",
-                "range",
-            ),
-        )
-
-        if window is None:
-
-            window = "today"
-
         parts = []
+
+        # Ticket mode
+        if mode_text in mode_map:
+
+            parts.append(
+                mode_map[mode_text]
+            )
+
+        # Side
+        if side_text:
+
+            parts.append(
+                side_text
+            )
+
+        # Target odds
+        if target_text:
+
+            parts.append(
+                target_text + " odds"
+            )
+
+        # Number of games
+        elif games_text:
+
+            parts.append(
+                games_text + " games"
+            )
+
+        # Time window
+        parts.append(
+            final_window
+        )
+
+        text = " ".join(parts).strip()
+
+    # --------------------------------------------------------
+    # FALLBACK FOR STRAIGHT WIN
+    # --------------------------------------------------------
+
+    if not text:
+
+        straight = get_value(
+            "straight_win",
+            "straightWin",
+            "straight",
+            "is_straight_win",
+            "isStraightWin",
+        )
 
         if (
             straight is True
@@ -1174,53 +1085,19 @@ def api_build():
             )
         ):
 
-            parts.append(
-                "straight win"
-            )
-
-        if target is not None:
-
-            target_text = str(
-                target
-            ).strip()
+            text = "straight win"
 
             if target_text:
 
-                parts.append(
-                    f"{target_text} odds"
+                text += (
+                    " "
+                    + target_text
+                    + " odds"
                 )
 
-        window_text = str(
-            window
-        ).strip().lower()
-
-        if window_text in (
-            "long",
-            "week",
-            "weekend",
-            "future",
-        ):
-
-            parts.append(
-                "long"
-            )
-
-        elif window_text == "tomorrow":
-
-            parts.append(
-                "tomorrow"
-            )
-
-        else:
-
-            parts.append(
-                "today"
-            )
-
-        if parts:
-
-            text = " ".join(
-                parts
+            text += (
+                " "
+                + final_window
             )
 
     # --------------------------------------------------------
@@ -1233,9 +1110,7 @@ def api_build():
             "❌ /api/build received:"
         )
 
-        print(
-            data
-        )
+        print(data)
 
         return jsonify(
             error="Empty build request."
@@ -1257,7 +1132,7 @@ def api_build():
         ), 429
 
     # --------------------------------------------------------
-    # LOG REQUEST
+    # LOG
     # --------------------------------------------------------
 
     print(
@@ -1278,26 +1153,11 @@ def api_build():
 
         return busy
 
-    return stream_response(
-        q
-    )
+    return stream_response(q)
 
 
 # ============================================================
 # STRAIGHT WIN API
-#
-# Supports:
-#   today
-#   long
-#   target odds
-#
-# Example:
-#
-# {
-#   "session": "123",
-#   "window": "today",
-#   "odds": 10
-# }
 # ============================================================
 
 @app.post("/api/straight_win")
@@ -1309,10 +1169,6 @@ def api_straight_win():
         )
         or {}
     )
-
-    # --------------------------------------------------------
-    # SESSION
-    # --------------------------------------------------------
 
     session = str(
         data.get(
@@ -1327,10 +1183,6 @@ def api_straight_win():
             error="Missing session."
         ), 400
 
-    # --------------------------------------------------------
-    # WINDOW
-    # --------------------------------------------------------
-
     window = str(
         data.get(
             "window",
@@ -1342,15 +1194,12 @@ def api_straight_win():
         "today",
         "long",
         "tomorrow",
+        "tonight",
     ):
 
         return jsonify(
             error="Unknown window."
         ), 400
-
-    # --------------------------------------------------------
-    # TARGET ODDS
-    # --------------------------------------------------------
 
     target = first_value(
         data,
@@ -1366,10 +1215,6 @@ def api_straight_win():
         ),
     )
 
-    # --------------------------------------------------------
-    # BUILD MESSAGE
-    # --------------------------------------------------------
-
     parts = [
         "straight win"
     ]
@@ -1383,34 +1228,14 @@ def api_straight_win():
         if target_text:
 
             parts.append(
-                f"{target_text} odds"
+                target_text + " odds"
             )
 
-    if window == "long":
-
-        parts.append(
-            "long"
-        )
-
-    elif window == "tomorrow":
-
-        parts.append(
-            "tomorrow"
-        )
-
-    else:
-
-        parts.append(
-            "today"
-        )
-
-    text = " ".join(
-        parts
+    parts.append(
+        window
     )
 
-    # --------------------------------------------------------
-    # RATE LIMIT
-    # --------------------------------------------------------
+    text = " ".join(parts)
 
     if too_fast(
         client_ip()
@@ -1422,10 +1247,6 @@ def api_straight_win():
                 "Try again in a minute."
             )
         ), 429
-
-    # --------------------------------------------------------
-    # START
-    # --------------------------------------------------------
 
     print(
         "🎯 /api/straight_win request:",
@@ -1441,9 +1262,7 @@ def api_straight_win():
 
         return busy
 
-    return stream_response(
-        q
-    )
+    return stream_response(q)
 
 
 # ============================================================
@@ -1479,12 +1298,9 @@ def _ticket_tool(
         result = work()
 
         if result is None:
-
             result = {}
 
-        return jsonify(
-            result
-        )
+        return jsonify(result)
 
     except Exception as exc:
 
@@ -1522,9 +1338,7 @@ def api_check():
     if not code:
 
         return jsonify(
-            error=(
-                "Enter a SportyBet code."
-            )
+            error="Enter a SportyBet code."
         ), 400
 
     if not CODE_OK.match(code):
@@ -1611,9 +1425,7 @@ def api_edit():
 
         return busy
 
-    return stream_response(
-        q
-    )
+    return stream_response(q)
 
 
 # ============================================================
@@ -1667,9 +1479,7 @@ def api_safer():
 
         return busy
 
-    return stream_response(
-        q
-    )
+    return stream_response(q)
 
 
 # ============================================================

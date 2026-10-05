@@ -46,6 +46,12 @@ RATE_WINDOW = 60
 # ============================================================
 
 bot = importlib.import_module("main")
+try:
+    smart_ticket = importlib.import_module("smart_ticket")
+    print("✅ smart_ticket.py loaded successfully")
+except Exception as exc:
+    smart_ticket = None
+    print(f"❌ smart_ticket.py failed to load: {exc}")
 
 
 # ============================================================

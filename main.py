@@ -398,7 +398,7 @@ except Exception as exc:
 def get_allowed_fixtures_cached(
 date_string,
 ):
-“””
+"""
 Get API-Football fixtures for one calendar date.
 
 Football_data.py uses this to match SportyBet events

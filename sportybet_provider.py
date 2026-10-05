@@ -1,3259 +1,550 @@
-"""SportyTips Smart SportyBet ticket builder.
+"""SportyBet provider for SportyTips.
 
-Uses SportyBet's own fixtures, markets and odds.
+Needs no extra libraries. Turn on with:  USE_SPORTYBET=1
 
-Important:
-- No API-Football.
-- No fake booking codes.
-- Booking codes come from SportyBet provider.
-- No DNB.
-- No negative handicaps.
-- No Under selections.
-- Supports 1UP / 2UP.
-- Supports Over goals.
-- Supports BTTS.
-- Supports team goals.
-- Supports corners.
-- Supports positive handicap.
-- Supports Asian handicap.
-
-STRAIGHT WIN RULE:
-- Straight Win = 1UP + 2UP only.
-- 1UP is allowed.
-- 2UP is allowed.
-- 1X2 is excluded.
-- Double Chance is excluded.
-- Over/Under is excluded.
-- BTTS is excluded.
-- Team Goals are excluded.
-- Corners are excluded.
-- Handicap is excluded.
-- Asian Handicap is excluded.
-- Every other market is excluded.
+SportyBet has NO official public API. Everything marked VERIFY below is based
+on the web app's requests and must be checked in your browser (F12 -> Network)
+because SportyBet can change it at any time.
 """
 
-import html
-import math
+import json
 import re
-import threading
 import time
-import traceback
-from concurrent.futures import (
-    ThreadPoolExecutor,
-    as_completed,
-    TimeoutError as FutureTimeout,
+from difflib import SequenceMatcher
+from urllib.error import HTTPError, URLError
+from urllib.parse import urlencode
+from urllib.request import Request, urlopen
+
+BASE = "https://www.sportybet.com/api/ng"
+UPCOMING_PATH = "/factsCenter/pcUpcomingEvents"
+EVENT_PATH = "/factsCenter/event"
+LOAD_CODE_PATH = "/orders/share/{code}"
+SAVE_CODE_PATH = "/orders/share"
+
+HEADERS = {
+    "User-Agent": "Mozilla/5.0 (Linux; Android 13) AppleWebKit/537.36 Chrome/120 Mobile Safari/537.36",
+    "Accept": "application/json",
+    "Content-Type": "application/json",
+    "clientid": "web",
+    "operid": "2",
+    "platform": "web",
+}
+
+TIMEOUT = 20
+EVENTS_CACHE_SECONDS = 300
+MAX_EVENT_PAGES = 15
+MIN_SAFER_ODDS = 1.05
+
+# ---------- Sportradar market + outcome ids (all VERIFIED) ----------
+M_1X2 = "1"
+M_DC = "10"
+M_TOTAL = "18"
+M_BTTS = "29"
+M_HOME_TEAM_GOALS = "19"
+M_AWAY_TEAM_GOALS = "20"
+M_CORNERS = "166"
+M_CORNERS_1H = "177"
+M_STREAK_3 = "60020"
+M_DNB = "64"
+M_HANDICAP = "65"
+M_ASIAN_HANDICAP = "66"
+M_GOALS_BY_MINUTE = "900313"
+
+OUT_1X2 = {"home": "1", "draw": "2", "away": "3"}
+OUT_DC = {"1x": "9", "12": "10", "x2": "11"}
+OUT_TOTAL = {"over": "12", "under": "13"}
+OUT_BTTS = {"yes": "74", "no": "76"}
+OUT_STREAK = {"yes": "74", "no": "76"}
+OUT_TEAM_GOALS = {"over": "12", "under": "13"}
+OUT_DNB = {"home": "4", "away": "5"}
+
+PREFER_EITHER_HALF = True
+MIN_UP_ODDS_DEFAULT = 1.20
+UP_MARKETS_CACHE_SECONDS = 600
+
+VIRTUAL_RE = re.compile(
+    r"\bsrl\b|simulated|virtual|e-?soccer|e-?football|cyber|volta|"
+    r"battle\s*-?\s*\d+\s*min",
+    re.I,
 )
-from datetime import (
-    datetime,
-    timedelta,
-    timezone,
-)
-
-import main as bot
-import sportybet_provider as sp
 
 
-BRAND = "SPORTYTIPS"
+class SportyBetError(Exception):
+    pass
 
 
-# ============================================================
-# SPEED SETTINGS
-# ============================================================
-
-MAX_DETAIL_EVENTS = 10
-
-DETAIL_WORKERS = 6
-
-DETAIL_SECONDS = 7
-
-MAX_CACHED_MATCHES = 150
-
-MAX_PAGES = 4
-
-MAX_LEGS = 30
-
-MAX_OPTIONS_PER_MATCH = 5
-
-GROUP_LIMIT = 80
-
-OVERSHOOT = 0.06
+def _norm(name):
+    name = re.sub(r"[^a-z0-9 ]", " ", str(name).lower())
+    name = re.sub(r"\b(fc|cf|sc|afc|ac|as|fk|sk|club|de|the)\b", " ", name)
+    return re.sub(r"\s+", " ", name).strip()
 
 
-# ============================================================
-# MARKET SETTINGS
-# ============================================================
-
-MIN_ODDS = {
-    "up": 1.30,
-    "dc": 1.30,
-    "over15": 1.30,
-    "over": 1.30,
-    "btts": 1.60,
-    "team_goals": 1.30,
-    "streak": 1.30,
-    "corners": 1.30,
-    "corners_1h": 1.30,
-    "handicap": 1.30,
-    "asian_handicap": 1.30,
-}
+def _sim(a, b):
+    return SequenceMatcher(None, _norm(a), _norm(b)).ratio()
 
 
-MAX_ODDS_KIND = {
-    "corners": 1.50,
-    "corners_1h": 1.50,
-}
+def _walk_events(node):
+    if isinstance(node, dict):
+        if "eventId" in node and "homeTeamName" in node:
+            yield node
+            return
+        for value in node.values():
+            yield from _walk_events(value)
+    elif isinstance(node, list):
+        for value in node:
+            yield from _walk_events(value)
 
 
-KIND_BONUS = {
-    "up": 0.04,
-    "team_goals": 0.04,
-    "corners": 0.03,
-    "corners_1h": 0.03,
-    "handicap": 0.03,
-    "asian_handicap": 0.03,
-    "btts": 0.02,
-    "streak": 0.03,
-    "dc": 0.01,
-}
-
-
-KIND_CAP = {
-    "over15": 0.20,
-    "over": 0.30,
-    "btts": 0.30,
-    "dc": 0.30,
-    "up": 0.40,
-    "corners": 0.30,
-    "corners_1h": 0.20,
-    "handicap": 0.30,
-    "asian_handicap": 0.25,
-    "team_goals": 0.35,
-    "streak": 0.25,
-}
-
-
-KIND_NAME = {
-    "over15": "Over 1.5",
-    "over": "Over goals",
-    "btts": "BTTS",
-    "dc": "Double chance",
-    "up": "1UP / 2UP",
-    "corners": "Corners",
-    "corners_1h": "1st half corners",
-    "handicap": "Handicap",
-    "asian_handicap": "Asian handicap",
-    "team_goals": "Team goals",
-    "streak": "3+ goal streak — No",
-}
-
-
-# ============================================================
-# HELPERS
-# ============================================================
-
-def _f(value):
+def _float(value):
     try:
-        return sp._float(value)
-    except Exception:
+        return float(value)
+    except (TypeError, ValueError):
         return None
 
 
-def _single(odd):
-    if not odd:
+def is_virtual(event):
+    sport = event.get("sport") or {}
+    category = sport.get("category") or {}
+    tournament = category.get("tournament") or {}
+    text = " ".join(str(part or "") for part in (
+        event.get("homeTeamName"), event.get("awayTeamName"),
+        tournament.get("name"), category.get("name"),
+    ))
+    return bool(VIRTUAL_RE.search(text))
+
+
+def find_up_market(markets, spec):
+    """Find '1X2 - 1UP' or '1X2 - 2UP' by NAME. Returns (key, odds) or None."""
+    n = spec.get("up")
+    side = spec.get("side")
+    if n not in (1, 2) or side not in ("home", "away"):
         return None
-
-    return min(
-        0.95 / odd,
-        0.97,
-    )
-
-
-def _two_way(
-    odd,
-    other,
-):
-    if not odd:
-        return None
-
-    if other:
-        a = 1 / odd
-        b = 1 / other
-        total = a + b
-
-        if total:
-            return a / total
-
-    return min(
-        0.95 / odd,
-        0.97,
-    )
-
-
-# ============================================================
-# SIDE DETECTION
-# ============================================================
-
-def _side_of(
-    outcome,
-    two_way=False,
-):
-    label = str(
-        outcome.get("desc")
-        or outcome.get("name")
-        or ""
-    ).strip().lower()
-
-    oid = str(
-        outcome.get("id")
-    )
-
-    if label.startswith("home"):
-        return "home"
-
-    if label.startswith("away"):
-        return "away"
-
-    if label.startswith("draw"):
-        return None
-
-    if oid == "1":
-        return "home"
-
-    if oid == "3":
-        return "away"
-
-    if two_way and oid == "2":
-        return "away"
-
+    pattern = re.compile(r"1x2\W+" + str(n) + r"\s*-?\s*up\b", re.I)
+    for market in markets or []:
+        text = f"{market.get('desc') or ''} {market.get('name') or ''}"
+        if not pattern.search(text):
+            continue
+        specifier = market.get("specifier") or ""
+        for outcome in market.get("outcomes", []):
+            label = str(outcome.get("desc") or outcome.get("name") or "").strip().lower()
+            if not (label == side or str(outcome.get("id")) == OUT_1X2[side]):
+                continue
+            if outcome.get("isActive") is False:
+                return None
+            odd = _float(outcome.get("odds"))
+            if odd:
+                return (str(market.get("id")), specifier, str(outcome.get("id"))), odd
     return None
 
 
-# ============================================================
-# 1UP / 2UP
-# ============================================================
-
-UP_RE = re.compile(
-    r"1x2\W+([12])\s*-?\s*up\b",
-    re.I,
-)
-
-UP_LOOSE_RE = re.compile(
-    r"\b([12])\s*-?\s*up\b",
-    re.I,
-)
-
-
-def _up_candidates(
-    markets,
-    home,
-    away,
-    add,
-):
-    """
-    Collect ONLY SportyBet 1UP and 2UP outcomes.
-
-    Both 1UP and 2UP are valid for Straight Win mode.
-    """
-
+def find_either_half(markets, side):
     for market in markets or []:
-
-        text = (
-            f"{market.get('desc') or ''} "
-            f"{market.get('name') or ''}"
-        )
-
-        found = (
-            UP_RE.search(text)
-            or UP_LOOSE_RE.search(text)
-        )
-
-        if not found:
+        text = f"{market.get('desc') or ''} {market.get('name') or ''}".lower()
+        if "either half" not in text or "both" in text or "1st" in text or "2nd" in text:
             continue
-
-        outcomes = market.get(
-            "outcomes",
-            [],
-        )
-
-        if len(outcomes) != 3:
-            continue
-
-        up_number = int(
-            found.group(1)
-        )
-
-        # Only 1UP and 2UP can ever be accepted.
-        if up_number not in (1, 2):
-            continue
-
-        spec = (
-            market.get(
-                "specifier"
-            )
-            or ""
-        )
-
-        for outcome in outcomes:
-
-            if (
-                outcome.get(
-                    "isActive"
-                )
-                is False
-            ):
+        specifier = market.get("specifier") or ""
+        for outcome in market.get("outcomes", []):
+            label = str(outcome.get("desc") or outcome.get("name") or "").strip().lower()
+            if not (side in label or (side in text and label == "yes")):
                 continue
-
-            side = _side_of(
-                outcome
-            )
-
-            if side not in (
-                "home",
-                "away",
-            ):
-                continue
-
-            odd = _f(
-                outcome.get(
-                    "odds"
-                )
-            )
-
-            if not odd or odd <= 1:
-                continue
-
-            team = (
-                home
-                if side == "home"
-                else away
-            )
-
-            add(
-                "up",
-                (
-                    f"{team} to win "
-                    f"({up_number}UP)"
-                ),
-                odd,
-                _single(odd),
-                (
-                    str(
-                        market.get(
-                            "id"
-                        )
-                    ),
-                    spec,
-                    str(
-                        outcome.get(
-                            "id"
-                        )
-                    ),
-                ),
-                side=side,
-                up_n=up_number,
-            )
-
-
-# ============================================================
-# EVENT CANDIDATES
-# ============================================================
-
-def event_candidates(
-    event,
-    markets,
-):
-    home = event.get(
-        "homeTeamName",
-        "Home",
-    )
-
-    away = event.get(
-        "awayTeamName",
-        "Away",
-    )
-
-    candidates = []
-
-    def add(
-        kind,
-        label,
-        odd,
-        probability,
-        key,
-        **extra,
-    ):
-        if (
-            not odd
-            or not probability
-            or odd <= 1
-        ):
-            return
-
-        item = {
-            "kind": kind,
-            "label": label,
-            "odd": odd,
-            "p": probability,
-            "key": key,
-        }
-
-        item.update(extra)
-
-        candidates.append(
-            item
-        )
-
-    # ========================================================
-    # 1X2
-    # ========================================================
-
-    h = sp.find_odds(
-        markets,
-        (
-            sp.M_1X2,
-            "",
-            sp.OUT_1X2["home"],
-        ),
-    )
-
-    d = sp.find_odds(
-        markets,
-        (
-            sp.M_1X2,
-            "",
-            sp.OUT_1X2["draw"],
-        ),
-    )
-
-    a = sp.find_odds(
-        markets,
-        (
-            sp.M_1X2,
-            "",
-            sp.OUT_1X2["away"],
-        ),
-    )
-
-    ph = None
-    pa = None
-
-    if h and d and a:
-        inv = [
-            1 / h,
-            1 / d,
-            1 / a,
-        ]
-
-        total = sum(inv)
-
-        if total:
-            ph = inv[0] / total
-            pa = inv[2] / total
-
-    # ========================================================
-    # 1UP / 2UP
-    # ========================================================
-
-    _up_candidates(
-        markets,
-        home,
-        away,
-        add,
-    )
-
-    # ========================================================
-    # DOUBLE CHANCE
-    # ========================================================
-
-    if ph is not None and pa is not None:
-
-        key = (
-            sp.M_DC,
-            "",
-            sp.OUT_DC["12"],
-        )
-
-        odd = sp.find_odds(
-            markets,
-            key,
-        )
-
-        add(
-            "dc",
-            f"{home} or {away}",
-            odd,
-            ph + pa,
-            key,
-        )
-
-    # ========================================================
-    # OVER GOALS ONLY
-    # ========================================================
-
-    for market in markets or []:
-
-        if (
-            str(
-                market.get("id")
-            )
-            != str(sp.M_TOTAL)
-        ):
-            continue
-
-        spec = (
-            market.get(
-                "specifier"
-            )
-            or ""
-        )
-
-        if not spec.startswith(
-            "total="
-        ):
-            continue
-
-        line = _f(
-            spec.replace(
-                "total=",
-                "",
-            )
-        )
-
-        if line not in (
-            0.5,
-            1.5,
-            2.5,
-            3.5,
-        ):
-            continue
-
-        over = None
-        under = None
-
-        for outcome in market.get(
-            "outcomes",
-            [],
-        ):
-
-            if (
-                outcome.get(
-                    "isActive"
-                )
-                is False
-            ):
-                continue
-
-            oid = str(
-                outcome.get(
-                    "id"
-                )
-            )
-
-            if oid == str(
-                sp.OUT_TOTAL["over"]
-            ):
-                over = _f(
-                    outcome.get(
-                        "odds"
-                    )
-                )
-
-            elif oid == str(
-                sp.OUT_TOTAL["under"]
-            ):
-                under = _f(
-                    outcome.get(
-                        "odds"
-                    )
-                )
-
-        kind = (
-            "over15"
-            if line == 1.5
-            else "over"
-        )
-
-        add(
-            kind,
-            f"Over {line:g} goals",
-            over,
-            _two_way(
-                over,
-                under,
-            ),
-            (
-                str(
-                    market.get(
-                        "id"
-                    )
-                ),
-                spec,
-                sp.OUT_TOTAL["over"],
-            ),
-            line=line,
-        )
-
-    # ========================================================
-    # BTTS
-    # ========================================================
-
-    yes_key = (
-        sp.M_BTTS,
-        "",
-        sp.OUT_BTTS["yes"],
-    )
-
-    no_key = (
-        sp.M_BTTS,
-        "",
-        sp.OUT_BTTS["no"],
-    )
-
-    yes = sp.find_odds(
-        markets,
-        yes_key,
-    )
-
-    no = sp.find_odds(
-        markets,
-        no_key,
-    )
-
-    add(
-        "btts",
-        "Both teams to score",
-        yes,
-        _two_way(
-            yes,
-            no,
-        ),
-        yes_key,
-    )
-
-    # ========================================================
-    # TEAM GOALS
-    # ========================================================
-
-    for side, market_id, team in (
-        (
-            "home",
-            sp.M_HOME_TEAM_GOALS,
-            home,
-        ),
-        (
-            "away",
-            sp.M_AWAY_TEAM_GOALS,
-            away,
-        ),
-    ):
-
-        for market in markets or []:
-
-            if (
-                str(
-                    market.get("id")
-                )
-                != str(market_id)
-            ):
-                continue
-
-            spec = (
-                market.get(
-                    "specifier"
-                )
-                or ""
-            )
-
-            if not spec.startswith(
-                "total="
-            ):
-                continue
-
-            line = _f(
-                spec.replace(
-                    "total=",
-                    "",
-                )
-            )
-
-            if line not in (
-                0.5,
-                1.5,
-            ):
-                continue
-
-            over = None
-            under = None
-
-            for outcome in market.get(
-                "outcomes",
-                [],
-            ):
-
-                if (
-                    outcome.get(
-                        "isActive"
-                    )
-                    is False
-                ):
-                    continue
-
-                oid = str(
-                    outcome.get(
-                        "id"
-                    )
-                )
-
-                if oid == str(
-                    sp.OUT_TEAM_GOALS[
-                        "over"
-                    ]
-                ):
-                    over = _f(
-                        outcome.get(
-                            "odds"
-                        )
-                    )
-
-                elif oid == str(
-                    sp.OUT_TEAM_GOALS[
-                        "under"
-                    ]
-                ):
-                    under = _f(
-                        outcome.get(
-                            "odds"
-                        )
-                    )
-
-            add(
-                "team_goals",
-                (
-                    f"{team} to score "
-                    f"{line:g}+"
-                ),
-                over,
-                _two_way(
-                    over,
-                    under,
-                ),
-                (
-                    market_id,
-                    spec,
-                    sp.OUT_TEAM_GOALS[
-                        "over"
-                    ],
-                ),
-                side=side,
-                line=line,
-            )
-
-    # ========================================================
-    # 3+ GOAL STREAK — NO
-    # ========================================================
-
-    for market in markets or []:
-
-        if (
-            str(
-                market.get("id")
-            )
-            != str(sp.M_STREAK_3)
-        ):
-            continue
-
-        yes = None
-        no = None
-
-        for outcome in market.get(
-            "outcomes",
-            [],
-        ):
-
-            if (
-                outcome.get(
-                    "isActive"
-                )
-                is False
-            ):
-                continue
-
-            oid = str(
-                outcome.get(
-                    "id"
-                )
-            )
-
-            if oid == str(
-                sp.OUT_STREAK["yes"]
-            ):
-                yes = _f(
-                    outcome.get(
-                        "odds"
-                    )
-                )
-
-            elif oid == str(
-                sp.OUT_STREAK["no"]
-            ):
-                no = _f(
-                    outcome.get(
-                        "odds"
-                    )
-                )
-
-        if no:
-
-            add(
-                "streak",
-                (
-                    "No team to score "
-                    "3+ in a row"
-                ),
-                no,
-                _two_way(
-                    no,
-                    yes,
-                ),
-                (
-                    sp.M_STREAK_3,
-                    "",
-                    sp.OUT_STREAK["no"],
-                ),
-            )
-
-    # ========================================================
-    # CORNERS
-    # ========================================================
-
-    for market_id, half, lines in (
-        (
-            sp.M_CORNERS,
-            False,
-            (
-                6.5,
-                7.5,
-            ),
-        ),
-        (
-            sp.M_CORNERS_1H,
-            True,
-            (
-                3.5,
-            ),
-        ),
-    ):
-
-        for market in markets or []:
-
-            if (
-                str(
-                    market.get("id")
-                )
-                != str(market_id)
-            ):
-                continue
-
-            spec = (
-                market.get(
-                    "specifier"
-                )
-                or ""
-            )
-
-            if not spec.startswith(
-                "total="
-            ):
-                continue
-
-            line = _f(
-                spec.replace(
-                    "total=",
-                    "",
-                )
-            )
-
-            if line not in lines:
-                continue
-
-            over = None
-            under = None
-
-            for outcome in market.get(
-                "outcomes",
-                [],
-            ):
-
-                if (
-                    outcome.get(
-                        "isActive"
-                    )
-                    is False
-                ):
-                    continue
-
-                oid = str(
-                    outcome.get(
-                        "id"
-                    )
-                )
-
-                if oid == str(
-                    sp.OUT_TOTAL["over"]
-                ):
-                    over = _f(
-                        outcome.get(
-                            "odds"
-                        )
-                    )
-
-                elif oid == str(
-                    sp.OUT_TOTAL["under"]
-                ):
-                    under = _f(
-                        outcome.get(
-                            "odds"
-                        )
-                    )
-
-            kind = (
-                "corners_1h"
-                if half
-                else "corners"
-            )
-
-            prefix = (
-                "1st half Over "
-                if half
-                else "Over "
-            )
-
-            add(
-                kind,
-                (
-                    f"{prefix}"
-                    f"{line:g} corners"
-                ),
-                over,
-                _two_way(
-                    over,
-                    under,
-                ),
-                (
-                    market_id,
-                    spec,
-                    sp.OUT_TOTAL["over"],
-                ),
-                line=line,
-            )
-
-    # ========================================================
-    # POSITIVE HANDICAPS ONLY
-    # ========================================================
-
-    for market in markets or []:
-
-        market_id = str(
-            market.get("id")
-        )
-
-        if market_id not in (
-            str(sp.M_HANDICAP),
-            str(sp.M_ASIAN_HANDICAP),
-        ):
-            continue
-
-        spec = (
-            market.get(
-                "specifier"
-            )
-            or ""
-        )
-
-        if not spec.startswith(
-            "hcp="
-        ):
-            continue
-
-        kind = (
-            "asian_handicap"
-            if market_id
-            == str(
-                sp.M_ASIAN_HANDICAP
-            )
-            else "handicap"
-        )
-
-        for outcome in market.get(
-            "outcomes",
-            [],
-        ):
-
-            if (
-                outcome.get(
-                    "isActive"
-                )
-                is False
-            ):
-                continue
-
-            side = _side_of(
-                outcome
-            )
-
-            if side not in (
-                "home",
-                "away",
-            ):
-                continue
-
-            odd = _f(
-                outcome.get(
-                    "odds"
-                )
-            )
-
-            if not odd:
-                continue
-
-            label = str(
-                outcome.get(
-                    "desc"
-                )
-                or outcome.get(
-                    "name"
-                )
-                or ""
-            )
-
-            # NEVER select negative handicap.
-            if "+" not in label:
-                continue
-
-            team = (
-                home
-                if side == "home"
-                else away
-            )
-
-            add(
-                kind,
-                f"{team} {label.strip()}",
-                odd,
-                _single(odd),
-                (
-                    market_id,
-                    spec,
-                    str(
-                        outcome.get(
-                            "id"
-                        )
-                    ),
-                ),
-                side=side,
-            )
-
-    return candidates
-
-
-# ============================================================
-# FAVOURITE STRENGTH
-# ============================================================
-
-def favourite_strength(event):
-    markets = (
-        event.get(
-            "markets"
-        )
-        or []
-    )
-
-    h = sp.find_odds(
-        markets,
-        (
-            sp.M_1X2,
-            "",
-            sp.OUT_1X2["home"],
-        ),
-    )
-
-    d = sp.find_odds(
-        markets,
-        (
-            sp.M_1X2,
-            "",
-            sp.OUT_1X2["draw"],
-        ),
-    )
-
-    a = sp.find_odds(
-        markets,
-        (
-            sp.M_1X2,
-            "",
-            sp.OUT_1X2["away"],
-        ),
-    )
-
-    if not (
-        h
-        and d
-        and a
-    ):
-        return None
-
-    inv = [
-        1 / h,
-        1 / d,
-        1 / a,
-    ]
-
-    total = sum(inv)
-
-    if not total:
-        return None
-
-    return max(
-        inv[0],
-        inv[2],
-    ) / total
-
-
-# ============================================================
-# DETAILED MARKET CACHE
-# ============================================================
-
-_DETAIL_LOCK = threading.Lock()
-
-
-def _slim_markets(markets):
-    keep = []
-
-    for market in markets or []:
-
-        market_id = str(
-            market.get("id")
-        )
-
-        if market_id in {
-            str(sp.M_1X2),
-            str(sp.M_DC),
-            str(sp.M_TOTAL),
-            str(sp.M_BTTS),
-            str(sp.M_HOME_TEAM_GOALS),
-            str(sp.M_AWAY_TEAM_GOALS),
-            str(sp.M_CORNERS),
-            str(sp.M_CORNERS_1H),
-            str(sp.M_STREAK_3),
-            str(sp.M_HANDICAP),
-            str(sp.M_ASIAN_HANDICAP),
-        }:
-            keep.append(
-                market
-            )
-            continue
-
-        text = (
-            f"{market.get('desc') or ''} "
-            f"{market.get('name') or ''}"
-        )
-
-        if UP_LOOSE_RE.search(text):
-            keep.append(
-                market
-            )
-
-    return keep
-
-
-def _event_markets_cached(
-    self,
-    event_id,
-):
-    cache = getattr(
-        self,
-        "_sportytips_market_cache",
-        None,
-    )
-
-    if cache is None:
-        cache = {}
-        self._sportytips_market_cache = cache
-
-    now = time.time()
-
-    cached = cache.get(
-        event_id
-    )
-
-    if cached:
-        timestamp, markets = cached
-
-        if (
-            now - timestamp
-            < getattr(
-                sp,
-                "UP_MARKETS_CACHE_SECONDS",
-                180,
-            )
-        ):
-            return markets
-
-    markets = _slim_markets(
-        self.get_event_markets(
-            event_id
-        )
-    )
-
-    cache[event_id] = (
-        now,
-        markets,
-    )
-
-    if (
-        len(cache)
-        > MAX_CACHED_MATCHES
-    ):
-        oldest = sorted(
-            cache,
-            key=lambda key:
-                cache[key][0],
-        )
-
-        remove_count = (
-            len(cache)
-            - MAX_CACHED_MATCHES
-        )
-
-        for key in oldest[
-            :remove_count
-        ]:
-            cache.pop(
-                key,
-                None,
-            )
-
-    return markets
-
-
-# Replace provider's detailed cache.
-sp.SportyBetProvider._event_markets_cached = (
-    _event_markets_cached
-)
-
-
-# ============================================================
-# GATHER
-# ============================================================
-
-def gather(
-    provider,
-    start,
-    end,
-    risk,
-    floor,
-    exclude,
-    min_p_shift=0.0,
-    notify=None,
-    straight_only=False,
-    max_groups=GROUP_LIMIT,
-):
-    started = time.time()
-
-    events = provider.get_upcoming(
-        start,
-        end,
-    )
-
-    if not events:
-        print(
-            "SportyBet returned 0 events."
-        )
-
-        return (
-            [],
-            0,
-            0,
-            0,
-        )
-
-    # ========================================================
-    # RANK EVENTS
-    # ========================================================
-
-    rated = []
-
-    for event in events:
-
-        strength = favourite_strength(
-            event
-        )
-
-        if strength is not None:
-            rated.append(
-                (
-                    strength,
-                    event,
-                )
-            )
-
-    rated.sort(
-        key=lambda item:
-            item[0],
-        reverse=True,
-    )
-
-    if rated:
-        wanted = [
-            event
-            for _, event
-            in rated[
-                :MAX_DETAIL_EVENTS
-            ]
-        ]
-
-    else:
-        wanted = [
-            event
-            for event in events[
-                :MAX_DETAIL_EVENTS
-            ]
-            if event.get(
-                "eventId"
-            )
-        ]
-
-    # ========================================================
-    # LOAD DETAILS IN PARALLEL
-    # ========================================================
-
-    details = {}
-
-    if wanted:
-
-        pool = ThreadPoolExecutor(
-            max_workers=DETAIL_WORKERS
-        )
-
-        futures = {
-            pool.submit(
-                provider._event_markets_cached,
-                event[
-                    "eventId"
-                ],
-            ): event
-            for event in wanted
-        }
-
-        try:
-
-            for future in as_completed(
-                futures,
-                timeout=DETAIL_SECONDS,
-            ):
-
-                event = futures[
-                    future
-                ]
-
-                event_id = event[
-                    "eventId"
-                ]
-
-                try:
-
-                    details[
-                        event_id
-                    ] = future.result()
-
-                except Exception as exc:
-
-                    print(
-                        "Market request failed:",
-                        exc,
-                    )
-
-        except FutureTimeout:
-
-            print(
-                "Detailed market loading "
-                "timed out."
-            )
-
-        finally:
-
-            pool.shutdown(
-                wait=False,
-                cancel_futures=True,
-            )
-
-    # ========================================================
-    # PROBABILITY SETTINGS
-    # ========================================================
-
-    min_p = (
-        {
-            "safe": 0.65,
-            "normal": 0.55,
-            "risky": 0.45,
-        }.get(
-            risk,
-            0.55,
-        )
-        - min_p_shift
-    )
-
-    max_odd = (
-        {
-            "safe": 2.20,
-            "normal": 2.40,
-            "risky": 2.60,
-        }.get(
-            risk,
-            2.40,
-        )
-    )
-
-    if straight_only:
-
-        min_p = min(
-            min_p,
-            0.40,
-        )
-
-        max_odd = max(
-            max_odd,
-            2.60,
-        )
-
-    groups = []
-
-    # ========================================================
-    # CREATE CANDIDATES
-    # ========================================================
-
-    for event in events:
-
-        event_id = event.get(
-            "eventId"
-        )
-
-        if not event_id:
-            continue
-
-        markets = (
-            details.get(
-                event_id
-            )
-            or event.get(
-                "markets"
-            )
-            or []
-        )
-
-        if not markets:
-            continue
-
-        fixture = sp.sporty_fixture(
-            event
-        )
-
-        candidates = event_candidates(
-            event,
-            markets,
-        )
-
-        kept = []
-
-        labels = set()
-
-        for candidate in candidates:
-
-            # =================================================
-            # CRITICAL STRAIGHT WIN RULE
-            #
-            # Straight Win allows ONLY:
-            #   1UP
-            #   2UP
-            #
-            # Every other market is rejected here.
-            # =================================================
-
-            if straight_only:
-
-                if candidate.get(
-                    "kind"
-                ) != "up":
-                    continue
-
-                # Safety check:
-                # even within "up", only 1UP/2UP
-                # are permitted.
-                if candidate.get(
-                    "up_n"
-                ) not in (
-                    1,
-                    2,
-                ):
-                    continue
-
-            floor_kind = MIN_ODDS.get(
-                candidate[
-                    "kind"
-                ],
-                1.30,
-            )
-
-            cap_kind = (
-                MAX_ODDS_KIND.get(
-                    candidate[
-                        "kind"
-                    ]
-                )
-            )
-
-            odd = candidate[
-                "odd"
-            ]
-
-            if odd < floor_kind:
-                continue
-
-            if (
-                cap_kind
-                and odd > cap_kind
-            ):
-                continue
-
-            if candidate[
-                "p"
-            ] < min_p:
-                continue
-
-            if odd > max_odd:
-                continue
-
-            if (
-                event_id,
-                candidate[
-                    "key"
-                ],
-            ) in exclude:
-                continue
-
-            if candidate[
-                "label"
-            ] in labels:
-                continue
-
-            labels.add(
-                candidate[
-                    "label"
-                ]
-            )
-
-            timestamp = (
-                event.get(
-                    "estimateStartTime"
-                )
-                or 0
-            )
-
-            try:
-
-                kickoff = (
-                    datetime.fromtimestamp(
-                        timestamp / 1000,
-                        tz=timezone.utc,
-                    )
-                )
-
-            except Exception:
-
-                kickoff = (
-                    datetime.now(
-                        timezone.utc
-                    )
-                )
-
-            candidate.update(
-                {
-                    "event": event,
-                    "event_id": event_id,
-                    "home": event.get(
-                        "homeTeamName",
-                        "Home",
-                    ),
-                    "away": event.get(
-                        "awayTeamName",
-                        "Away",
-                    ),
-                    "kickoff": kickoff,
-                    "league": (
-                        fixture.get(
-                            "league",
-                            {},
-                        ).get(
-                            "name",
-                            "Football",
-                        )
-                    ),
-                }
-            )
-
-            kept.append(
-                candidate
-            )
-
-        if kept:
-
-            kept.sort(
-                key=lambda candidate:
-                    candidate[
-                        "p"
-                    ]
-                    + KIND_BONUS.get(
-                        candidate[
-                            "kind"
-                        ],
-                        0,
-                    ),
-                reverse=True,
-            )
-
-            groups.append(
-                kept[
-                    :MAX_OPTIONS_PER_MATCH
-                ]
-            )
-
-    groups.sort(
-        key=lambda group:
-            max(
-                candidate[
-                    "p"
-                ]
-                for candidate in group
-            ),
-        reverse=True,
-    )
-
-    groups = groups[
-        :max_groups
-    ]
-
-    elapsed = (
-        time.time()
-        - started
-    )
-
-    print(
-        "gather:",
-        len(events),
-        "matches,",
-        len(details),
-        "detailed,",
-        len(groups),
-        "usable,",
-        f"{elapsed:.1f}s",
-    )
-
-    return (
-        groups,
-        len(events),
-        len(details),
-        0,
-    )
-
-
-# ============================================================
-# ODDS PRODUCT
-# ============================================================
-
-def _product(picks):
-    total = 1.0
-
-    for pick in picks:
-        total *= pick[
-            "odd"
-        ]
-
-    return total
-
-
-# ============================================================
-# DP ENGINE
-# ============================================================
-
-def _dp(
-    groups,
-    target,
-):
-    SCALE = 80
-
-    if target <= 1:
-        return None
-
-    target_weight = math.ceil(
-        math.log(
-            target
-        )
-        * SCALE
-    )
-
-    max_weight = max(
-        target_weight,
-        int(
-            math.log(
-                target
-                * (
-                    1
-                    + OVERSHOOT
-                )
-            )
-            * SCALE
-        ),
-    )
-
-    INF = float(
-        "inf"
-    )
-
-    dp = [
-        INF
-        for _ in range(
-            max_weight + 1
-        )
-    ]
-
-    dp[0] = 0.0
-
-    choices = []
-
-    for group in groups:
-
-        new = dp[:]
-
-        choice = [
-            None
-            for _ in range(
-                max_weight + 1
-            )
-        ]
-
-        for index, candidate in enumerate(
-            group
-        ):
-
-            odd = candidate[
-                "odd"
-            ]
-
-            probability = candidate[
-                "p"
-            ]
-
-            if (
-                odd <= 1
-                or probability <= 0
-            ):
-                continue
-
-            weight = round(
-                math.log(
-                    odd
-                )
-                * SCALE
-            )
-
-            if (
-                weight <= 0
-                or weight > max_weight
-            ):
-                continue
-
-            cost = (
-                -math.log(
-                    probability
-                )
-                - KIND_BONUS.get(
-                    candidate[
-                        "kind"
-                    ],
-                    0,
-                )
-                + 0.06
-            )
-
-            for x in range(
-                max_weight
-                - weight
-                + 1
-            ):
-
-                if dp[x] == INF:
-                    continue
-
-                value = (
-                    dp[x]
-                    + cost
-                )
-
-                if (
-                    value
-                    < new[
-                        x
-                        + weight
-                    ]
-                ):
-
-                    new[
-                        x
-                        + weight
-                    ] = value
-
-                    choice[
-                        x
-                        + weight
-                    ] = (
-                        index,
-                        x,
-                    )
-
-        dp = new
-
-        choices.append(
-            choice
-        )
-
-    best = None
-
-    for weight in range(
-        target_weight,
-        max_weight + 1,
-    ):
-
-        if dp[
-            weight
-        ] == INF:
-            continue
-
-        if (
-            best is None
-            or dp[
-                weight
-            ]
-            < dp[
-                best
-            ]
-        ):
-            best = weight
-
-    if best is None:
-        return None
-
-    picked = []
-
-    x = best
-
-    for group_index in range(
-        len(groups) - 1,
-        -1,
-        -1,
-    ):
-
-        step = choices[
-            group_index
-        ][x]
-
-        if step is None:
-            continue
-
-        candidate_index, previous_x = (
-            step
-        )
-
-        picked.append(
-            groups[
-                group_index
-            ][
-                candidate_index
-            ]
-        )
-
-        x = previous_x
-
-    picked.reverse()
-
-    return picked
-
-
-def _dp_exact(
-    groups,
-    target,
-):
-    best = None
-
-    aim = target
-
-    for _ in range(3):
-
-        picks = _dp(
-            groups,
-            aim,
-        )
-
-        if not picks:
-            break
-
-        actual = _product(
-            picks
-        )
-
-        if (
-            actual >= target
-            and (
-                best is None
-                or actual
-                < _product(
-                    best
-                )
-            )
-        ):
-
-            best = picks
-
-        if (
-            target
-            <= actual
-            <= target * 1.10
-        ):
-
-            return picks
-
-        aim = max(
-            target,
-            aim
-            * target
-            / actual
-            * 1.01,
-        )
-
-    return best
-
-
-# ============================================================
-# KIND COUNTS
-# ============================================================
-
-def _kind_counts(picks):
-    counts = {}
-
-    for pick in picks:
-
-        kind = pick[
-            "kind"
-        ]
-
-        counts[kind] = (
-            counts.get(
-                kind,
-                0,
-            )
-            + 1
-        )
-
-    return counts
-
-
-# ============================================================
-# CHOOSE TARGET
-# ============================================================
-
-def choose_target(
-    groups,
-    target,
-    caps=True,
-):
-    if not groups:
-        return [], False
-
-    picks = _dp_exact(
-        groups,
-        target,
-    )
-
-    if picks:
-        return (
-            picks,
-            True,
-        )
-
-    # Fallback.
-    ranked = []
-
-    for group in groups:
-
-        best = max(
-            group,
-            key=lambda candidate:
-                candidate[
-                    "p"
-                ]
-                + KIND_BONUS.get(
-                    candidate[
-                        "kind"
-                    ],
-                    0,
-                ),
-        )
-
-        ranked.append(
-            best
-        )
-
-    ranked.sort(
-        key=lambda candidate:
-            candidate[
-                "p"
-            ],
-        reverse=True,
-    )
-
-    result = []
-
-    used = set()
-
-    for candidate in ranked:
-
-        event_id = candidate[
-            "event_id"
-        ]
-
-        if event_id in used:
-            continue
-
-        result.append(
-            candidate
-        )
-
-        used.add(
-            event_id
-        )
-
-        if len(result) >= MAX_LEGS:
-            break
-
-    actual = _product(
-        result
-    )
-
-    return (
-        result,
-        actual >= target,
-    )
-
-
-# ============================================================
-# CHOOSE COUNT
-# ============================================================
-
-def choose_count(
-    groups,
-    count,
-    caps=True,
-):
-    candidates = sorted(
-        (
-            candidate
-            for group in groups
-            for candidate in group
-        ),
-        key=lambda candidate:
-            candidate[
-                "p"
-            ]
-            + KIND_BONUS.get(
-                candidate[
-                    "kind"
-                ],
-                0,
-            ),
-        reverse=True,
-    )
-
-    chosen = []
-
-    used_events = set()
-
-    counts = {}
-
-    for candidate in candidates:
-
-        event_id = candidate[
-            "event_id"
-        ]
-
-        if event_id in used_events:
-            continue
-
-        kind = candidate[
-            "kind"
-        ]
-
-        if caps:
-
-            cap = max(
-                1,
-                math.ceil(
-                    KIND_CAP.get(
-                        kind,
-                        0.30,
-                    )
-                    * count
-                    * 1.5
-                ),
-            )
-
-            if (
-                counts.get(
-                    kind,
-                    0,
-                )
-                >= cap
-            ):
-                continue
-
-        chosen.append(
-            candidate
-        )
-
-        used_events.add(
-            event_id
-        )
-
-        counts[kind] = (
-            counts.get(
-                kind,
-                0,
-            )
-            + 1
-        )
-
-        if len(chosen) >= count:
-            return (
-                chosen,
-                True,
-            )
-
-    return (
-        chosen,
-        len(chosen) >= count,
-    )
-
-
-# ============================================================
-# REASONS
-# ============================================================
-
-def _reason_for(candidate):
-    kind = candidate[
-        "kind"
-    ]
-
-    odd = candidate[
-        "odd"
-    ]
-
-    home = candidate[
-        "home"
-    ]
-
-    away = candidate[
-        "away"
-    ]
-
-    side = candidate.get(
-        "side"
-    )
-
-    if kind == "up":
-
-        team = (
-            home
-            if side == "home"
-            else away
-        )
-
-        number = candidate.get(
-            "up_n",
-            2,
-        )
-
-        return (
-            f"{team} to win "
-            f"({number}UP) at "
-            f"{odd:.2f}."
-        )
-
+            if outcome.get("isActive") is False:
+                return None
+            odd = _float(outcome.get("odds"))
+            if odd:
+                return (str(market.get("id")), specifier, str(outcome.get("id"))), odd
+    return None
+
+
+def spec_to_key(spec):
+    if spec.get("resolved_key"):
+        return spec["resolved_key"]
+    kind, side = spec.get("kind"), spec.get("side")
     if kind == "dc":
-
-        return (
-            f"{home} or {away} "
-            f"at {odd:.2f}."
-        )
-
-    if kind in (
-        "over15",
-        "over",
-    ):
-
-        line = candidate.get(
-            "line",
-            1.5,
-        )
-
-        return (
-            f"Over {line:g} goals "
-            f"at {odd:.2f}."
-        )
-
+        return M_DC, "", OUT_DC[side]
+    if kind == "goals":
+        return M_TOTAL, f"total={spec['line']:g}", OUT_TOTAL[side]
     if kind == "btts":
-
-        return (
-            "Both teams to score "
-            f"at {odd:.2f}."
-        )
-
+        return M_BTTS, "", OUT_BTTS[side]
     if kind == "team_goals":
-
-        line = candidate.get(
-            "line",
-            0.5,
-        )
-
-        team = (
-            home
-            if side == "home"
-            else away
-        )
-
-        return (
-            f"{team} to score "
-            f"{line:g}+ at "
-            f"{odd:.2f}."
-        )
-
+        mid = M_HOME_TEAM_GOALS if side == "home" else M_AWAY_TEAM_GOALS
+        return mid, f"total={spec['line']:g}", OUT_TEAM_GOALS["over"]
     if kind == "streak":
-
-        return (
-            "No team to score "
-            f"3+ in a row at "
-            f"{odd:.2f}."
-        )
-
+        return M_STREAK_3, "", OUT_STREAK[spec.get("side", "no")]
     if kind == "corners":
-
-        line = candidate.get(
-            "line",
-            7.5,
-        )
-
-        return (
-            f"Over {line:g} corners "
-            f"at {odd:.2f}."
-        )
-
-    if kind == "corners_1h":
-
-        line = candidate.get(
-            "line",
-            3.5,
-        )
-
-        return (
-            f"1st half Over "
-            f"{line:g} corners "
-            f"at {odd:.2f}."
-        )
-
-    return (
-        f"{candidate['label']} "
-        f"at {odd:.2f}."
-    )
+        mid = M_CORNERS_1H if spec.get("half") else M_CORNERS
+        return mid, f"total={spec['line']:g}", OUT_TOTAL["over"]
+    if kind == "dnb":
+        return M_DNB, "", OUT_DNB[side]
+    return None
 
 
-# ============================================================
-# DISPLAY
-# ============================================================
-
-def _time_text(
-    candidate,
-    today,
-):
-    local = candidate[
-        "kickoff"
-    ].astimezone(
-        bot.LOCAL_TZ
-    )
-
-    text = local.strftime(
-        "%I:%M %p"
-    ).lstrip("0")
-
-    if local.date() == today:
-        return text
-
-    return (
-        local.strftime("%a ")
-        + text
-    )
-
-
-def _confidence(probability):
-
-    if probability >= 0.80:
-        return "🟢"
-
-    if probability >= 0.70:
-        return "🟡"
-
-    return "🟠"
+def key_to_label(key, home, away):
+    market, specifier, outcome = key
+    if market == M_DC:
+        return {"9": f"{home} or Draw", "10": f"{home} or {away}",
+                "11": f"Draw or {away}"}.get(outcome, "Double chance")
+    if market == M_TOTAL:
+        line = specifier.replace("total=", "")
+        return f"{'Over' if outcome == OUT_TOTAL['over'] else 'Under'} {line} goals"
+    if market == M_BTTS:
+        return "Both teams to score" if outcome == OUT_BTTS["yes"] else "Both teams NOT to score"
+    if market in (M_HOME_TEAM_GOALS, M_AWAY_TEAM_GOALS):
+        line = specifier.replace("total=", "")
+        team = home if market == M_HOME_TEAM_GOALS else away
+        return f"{team} to score {line}+"
+    if market == M_STREAK_3:
+        return "No team to score 3+ in a row" if outcome == OUT_STREAK["no"] else "Any team to score 3+ in a row"
+    if market == M_CORNERS:
+        line = specifier.replace("total=", "")
+        return f"Over {line} corners"
+    if market == M_CORNERS_1H:
+        line = specifier.replace("total=", "")
+        return f"1st half Over {line} corners"
+    if market == M_DNB:
+        team = home if outcome == OUT_DNB["home"] else away
+        return f"{team} (draw no bet)"
+    return f"Market {market} ({specifier}) outcome {outcome}"
 
 
-def _fmt(value):
+def find_odds(markets, key):
+    market_id, specifier, outcome_id = key
+    for market in markets or []:
+        if str(market.get("id")) != market_id:
+            continue
+        if (market.get("specifier") or "") != specifier:
+            continue
+        for outcome in market.get("outcomes", []):
+            if str(outcome.get("id")) == outcome_id:
+                if outcome.get("isActive") is False:
+                    return None
+                return _float(outcome.get("odds"))
+    return None
 
-    if value == int(value):
-        return str(
-            int(value)
-        )
 
-    return f"{value:g}"
+def safer_alternatives(key):
+    market, specifier, outcome = key
+    if market == M_DC:
+        return []
+    if market == M_TOTAL:
+        line = _float(specifier.replace("total=", "")) or 0
+        if outcome == OUT_TOTAL["over"] and line > 1.5:
+            return [(M_TOTAL, "total=1.5", OUT_TOTAL["over"])]
+        if outcome == OUT_TOTAL["under"] and line < 3.5:
+            return [(M_TOTAL, "total=3.5", OUT_TOTAL["under"])]
+        return []
+    if market == M_BTTS:
+        if outcome == OUT_BTTS["yes"]:
+            return [(M_TOTAL, "total=1.5", OUT_TOTAL["over"])]
+        return [(M_TOTAL, "total=3.5", OUT_TOTAL["under"])]
+    return []
 
 
-# ============================================================
-# BUILD TICKET
-# ============================================================
-
-def build_ticket(
-    provider,
-    req,
-    target,
-    count,
-    risk,
-    exclude=frozenset(),
-    notify=None,
-    straight_only=False,
-    max_days=None,
-):
-    if target:
-
-        floor = max(
-            1.10,
-            min(
-                1.45,
-                target
-                ** (
-                    1 / 30
-                ),
-            ),
-        )
-
-    else:
-
-        floor = 1.15
-
-    if risk == "risky":
-
-        floor = max(
-            floor,
-            1.35,
-        )
-
-    if target:
-
-        max_groups = max(
-            30,
-            min(
-                GROUP_LIMIT,
-                int(
-                    math.log(
-                        target
-                    )
-                    * 16
-                ),
-            ),
-        )
-
-    else:
-
-        max_groups = max(
-            30,
-            min(
-                GROUP_LIMIT,
-                (count or 5)
-                * 5,
-            ),
-        )
-
-    extra_days = 0
-
-    hard_limit = (
-        max_days
-        if max_days is not None
-        else 3
-    )
-
-    chosen = []
-
-    reached = False
-
-    note = ""
-
-    while True:
-
-        end = (
-            req["end"]
-            + timedelta(
-                days=extra_days
-            )
-        )
-
-        (
-            groups,
-            total_events,
-            detailed,
-            studied,
-        ) = gather(
-            provider,
-            req["start"],
-            end,
-            risk,
-            floor,
-            exclude,
-            0.05
-            if target
-            and target <= 20
-            else 0.0,
-            notify,
-            straight_only=straight_only,
-            max_groups=max_groups,
-        )
-
-        if target:
-
-            chosen, reached = (
-                choose_target(
-                    groups,
-                    target,
-                    caps=not straight_only,
-                )
-            )
-
-        else:
-
-            chosen, reached = (
-                choose_count(
-                    groups,
-                    count or 5,
-                    caps=not straight_only,
-                )
-            )
-
-        if reached:
-            break
-
-        if extra_days >= hard_limit:
-            break
-
-        extra_days += 1
-
-    if extra_days and chosen:
-
-        note = (
-            "I extended the search "
-            f"by {extra_days} day"
-            f"{'s' if extra_days != 1 else ''}."
-        )
-
+def sporty_fixture(event):
+    sport = event.get("sport") or {}
+    category = sport.get("category") or {}
+    tournament = category.get("tournament") or {}
     return {
-        "chosen": chosen,
-        "reached": reached,
-        "note": note,
-        "events": total_events,
-        "detailed": detailed,
-        "floor": floor,
-        "days_used": (
-            extra_days + 1
-        ),
+        "fixture": {
+            "id": event.get("eventId"),
+            "timestamp": int((event.get("estimateStartTime") or 0) / 1000),
+            "status": {"short": "NS"},
+        },
+        "teams": {
+            "home": {"name": event.get("homeTeamName", "Home")},
+            "away": {"name": event.get("awayTeamName", "Away")},
+        },
+        "league": {
+            "id": None,
+            "name": tournament.get("name") or "Football",
+            "country": category.get("name") or "",
+        },
     }
 
 
-# ============================================================
-# RESET STRAIGHT MODE
-# ============================================================
-
-def _reset_straight():
-
-    try:
-
-        import upgrades
-
-        upgrades.STRAIGHT_WIN_ONLY = False
-
-    except Exception:
-        pass
+def can_safer(key):
+    straight = key[0] in (M_DNB,)
+    return bool(safer_alternatives(key)) or straight
 
 
-# ============================================================
-# MAIN FLOW
-# ============================================================
+def leg_label(leg):
+    if leg.get("label_override"):
+        return leg["label_override"]
+    key = leg["key"]
+    return key_to_label(key, leg["home"], leg["away"])
 
-def flow(
-    chat_id,
-    text,
-):
-    provider = getattr(
-        bot,
-        "SPORTYBET_PROVIDER",
-        None,
-    )
 
-    if provider is None:
+def leg_risk(leg):
+    odd = leg.get("odd") or 1.0
+    score = 0 if odd < 1.35 else (1 if odd < 1.6 else 2)
+    if leg["key"][0] in (M_BTTS, M_HOME_TEAM_GOALS, M_AWAY_TEAM_GOALS, M_STREAK_3):
+        score += 1
+    return "Safe" if score == 0 else ("Medium" if score == 1 else "Risky")
 
-        return _orig_flow(
-            chat_id,
-            text,
-        )
 
-    try:
+def summarize_legs(legs):
+    rows, total, chance, straight = [], 1.0, 1.0, 0
+    for index, leg in enumerate(legs):
+        odd = leg.get("odd") or 1.0
+        total *= odd
+        chance *= min(0.95 / odd, 0.97) if odd > 1 else 0.97
+        if leg["key"][0] in (M_DNB,):
+            straight += 1
+        rows.append({
+            "index": index,
+            "match": f"{leg['home']} vs {leg['away']}",
+            "pick": leg_label(leg),
+            "odd": odd,
+            "risk": leg_risk(leg),
+            "can_safer": can_safer(leg["key"]),
+            "reason": leg.get("reason"),
+        })
+    health = "Safe" if chance >= 0.45 else ("Medium" if chance >= 0.20 else "Risky")
+    reason = f"{len(rows)} pick{'s' if len(rows) != 1 else ''}, total odds {total:.2f}."
+    if straight:
+        reason += f" {straight} straight win{'s' if straight != 1 else ''}."
+    return {"rows": rows, "total_odds": total, "chance": round(chance * 100),
+            "health": health, "reason": reason, "straight": straight}
 
-        req = bot.parse_request(
-            text
-        )
 
-    except Exception:
+class SportyBetProvider:
+    def __init__(self):
+        self._events = []
+        self._events_time = 0
+        self._up_cache = {}
 
-        return _orig_flow(
-            chat_id,
-            text,
-        )
+    def get_upcoming(self, start, end):
+        found = []
+        for event in self._load_events():
+            ms = event.get("estimateStartTime")
+            if ms and start.timestamp() <= ms / 1000 < end.timestamp():
+                found.append(event)
+        return found
 
-    text = str(
-        text or ""
-    )
-
-    # ========================================================
-    # STRAIGHT WIN DETECTION
-    #
-    # Straight Win means ONLY:
-    #   1UP
-    #   2UP
-    #
-    # It does NOT include 1X2, DC, goals, BTTS,
-    # team goals, corners, handicap or Asian handicap.
-    # ========================================================
-
-    straight_only = bool(
-        re.search(
-            r"\bstraight\s*-?\s*win(?:s)?\b",
-            text,
-            re.I,
-        )
-    )
-
-    # Also recognize an explicit request for BOTH 1UP and 2UP
-    # as Straight Win mode.
-    if not straight_only:
-
-        has_1up = bool(
-            re.search(
-                r"\b1\s*-?\s*up\b",
-                text,
-                re.I,
-            )
-        )
-
-        has_2up = bool(
-            re.search(
-                r"\b2\s*-?\s*up\b",
-                text,
-                re.I,
-            )
-        )
-
-        if has_1up and has_2up:
-            straight_only = True
-
-    straight_today = (
-        straight_only
-        and bool(
-            re.search(
-                r"\btoday\b",
-                text,
-                re.I,
-            )
-        )
-        and not bool(
-            re.search(
-                r"\blong\b",
-                text,
-                re.I,
-            )
-        )
-    )
-
-    target = req.get(
-        "target_odds"
-    )
-
-    count = req.get(
-        "picks"
-    )
-
-    risk = (
-        req.get("risk")
-        or "normal"
-    )
-
-    if not target and not count:
-        count = 5
-
-    # ========================================================
-    # INTRO
-    # ========================================================
-
-    if straight_only:
-
-        intro = (
-            "⏳ Checking SportyBet "
-            "1UP / 2UP matches..."
-        )
-
-    elif target:
-
-        intro = (
-            "⏳ Checking SportyBet "
-            f"matches for "
-            f"{_fmt(target)} odds..."
-        )
-
-    else:
-
-        intro = (
-            "⏳ Checking SportyBet "
-            f"matches for "
-            f"{count} picks..."
-        )
-
-    bot.send_message(
-        chat_id,
-        intro,
-    )
-
-    started = time.time()
-
-    # ========================================================
-    # STRAIGHT WIN MODE
-    # ========================================================
-
-    if straight_only:
-
+    def _request(self, path, params=None, body=None):
+        url = BASE + path
+        if params:
+            url += "?" + urlencode(params)
+        data = json.dumps(body).encode("utf-8") if body is not None else None
+        request = Request(url, data=data, headers=HEADERS,
+                          method="POST" if body is not None else "GET")
         try:
-
-            import upgrades
-
-            upgrades.STRAIGHT_WIN_ONLY = True
-
-        except Exception:
-            pass
-
-    # ========================================================
-    # BUILD
-    # ========================================================
-
-    try:
-
-        built = build_ticket(
-            provider,
-            req,
-            target,
-            count,
-            risk,
-            straight_only=straight_only,
-            max_days=(
-                0
-                if straight_today
-                else None
-            ),
-        )
-
-    except Exception as exc:
-
-        traceback.print_exc()
-
-        _reset_straight()
-
-        bot.send_message(
-            chat_id,
-            (
-                "❌ SportyBet could not "
-                "be read right now.\n"
-                + html.escape(
-                    str(exc)[:200]
-                )
-            ),
-        )
-
-        return
-
-    elapsed = (
-        time.time()
-        - started
-    )
-
-    chosen = built[
-        "chosen"
-    ]
-
-    print(
-        f"Ticket built in "
-        f"{elapsed:.1f}s: "
-        f"{len(chosen)} picks, "
-        f"target={target}, "
-        f"straight={straight_only}"
-    )
-
-    # ========================================================
-    # NO PICKS
-    # ========================================================
-
-    if not chosen:
-
-        bot.send_message(
-            chat_id,
-            (
-                "❌ I couldn't find "
-                "enough usable SportyBet "
-                "selections in that window."
-            ),
-        )
-
-        _reset_straight()
-
-        return
-
-    # ========================================================
-    # FINAL SAFETY CHECK
-    #
-    # This is an additional protection layer.
-    #
-    # If Straight Win is active, absolutely NOTHING except
-    # 1UP / 2UP is allowed to reach SportyBet booking-code
-    # creation.
-    # ========================================================
-
-    if straight_only:
-
-        invalid = []
-
-        for candidate in chosen:
-
-            if (
-                candidate.get(
-                    "kind"
-                )
-                != "up"
-                or candidate.get(
-                    "up_n"
-                )
-                not in (
-                    1,
-                    2,
-                )
-            ):
-                invalid.append(
-                    candidate
-                )
-
-        if invalid:
-
-            print(
-                "STRAIGHT WIN SAFETY: "
-                "invalid market detected; "
-                "removing it."
-            )
-
-            chosen = [
-                candidate
-                for candidate in chosen
-                if (
-                    candidate.get(
-                        "kind"
-                    )
-                    == "up"
-                    and candidate.get(
-                        "up_n"
-                    )
-                    in (
-                        1,
-                        2,
-                    )
-                )
-            ]
-
-            if not chosen:
-
-                bot.send_message(
-                    chat_id,
-                    (
-                        "❌ No valid 1UP / 2UP "
-                        "selections were found."
-                    ),
-                )
-
-                _reset_straight()
-
-                return
-
-    # ========================================================
-    # TODAY STRAIGHT TARGET
-    # ========================================================
-
-    if (
-        straight_only
-        and straight_today
-        and target
-        and not built[
-            "reached"
-        ]
-    ):
-
-        actual = _product(
-            chosen
-        )
-
-        bot.send_message(
-            chat_id,
-            (
-                f"❌ Today only reaches "
-                f"about {actual:.1f} odds, "
-                f"not {_fmt(target)}.\n\n"
-                "Try a long straight-win "
-                "ticket to search more days."
-            ),
-        )
-
-        _reset_straight()
-
-        return
-
-    # ========================================================
-    # SORT
-    # ========================================================
-
-    chosen.sort(
-        key=lambda candidate:
-            candidate[
-                "kickoff"
-            ]
-    )
-
-    total_odds = 1.0
-
-    chance = 1.0
-
-    for candidate in chosen:
-
-        total_odds *= candidate[
-            "odd"
-        ]
-
-        chance *= candidate[
-            "p"
-        ]
-
-        candidate[
-            "reason"
-        ] = _reason_for(
-            candidate
-        )
-
-    # ========================================================
-    # REAL SPORTYBET BOOKING CODE
-    # ========================================================
-
-    code = None
-
-    errors = []
-
-    try:
-
-        code = (
-            provider.create_booking_code(
-                [
-                    (
-                        candidate[
-                            "event"
-                        ],
-                        {
-                            "resolved_key":
-                                candidate[
-                                    "key"
-                                ]
-                        },
-                    )
-                    for candidate in chosen
-                ]
-            )
-        )
-
-    except Exception as exc:
-
-        print(
-            "Booking code failed:",
-            exc,
-        )
-
-        errors.append(
-            "Booking code failed: "
-            + str(exc)
-        )
-
-    # ========================================================
-    # RESPONSE
-    # ========================================================
-
-    local_now = (
-        datetime.now(
-            timezone.utc
-        ).astimezone(
-            bot.LOCAL_TZ
-        )
-    )
-
-    today = local_now.date()
-
-    if target:
-
-        title = (
-            f"{_fmt(target)} ODDS"
-        )
-
-    else:
-
-        title = (
-            f"{len(chosen)} PICKS"
-        )
-
-    if straight_only:
-
-        title = (
-            "STRAIGHT WIN · "
-            + title
-        )
-
-    lines = [
-        (
-            f"🎯 <b>{BRAND} — "
-            f"{html.escape(title)}</b>"
-        ),
-        (
-            f"📅 "
-            f"{html.escape(req['label'].capitalize())}"
-            f" • {bot.LOCAL_TZ_NAME}"
-        ),
-    ]
-
-    # ========================================================
-    # FIXED DISPLAY BLOCK
-    # ========================================================
-
-    for number, candidate in enumerate(
-        chosen,
-        start=1,
-    ):
-
-        lines.append("")
-
-        time_text = html.escape(
-            _time_text(
-                candidate,
-                today,
-            )
-        )
-
-        league_text = html.escape(
-            candidate["league"]
-        )
-
-        home_text = html.escape(
-            candidate["home"]
-        )
-
-        away_text = html.escape(
-            candidate["away"]
-        )
-
-        label_text = html.escape(
-            candidate["label"]
-        )
-
-        lines.append(
-            f"<b>{number}.</b> "
-            f"🕒 {time_text}"
-            f" • 🏆 {league_text}"
-        )
-
-        lines.append(
-            f"⚽ "
-            f"{home_text}"
-            f" vs "
-            f"{away_text}"
-        )
-
-        lines.append(
-            f"✅ <b>"
-            f"{label_text}"
-            f"</b> • 💰 "
-            f"{candidate['odd']:.2f}"
-            f" • "
-            f"{_confidence(candidate['p'])} "
-            f"{round(candidate['p'] * 100)}%"
-        )
-
-        lines.append(
-            "💬 "
-            + html.escape(
-                candidate[
-                    "reason"
-                ]
-            )
-        )
-
-    lines.extend(
-        [
-            "",
-            "━━━━━━━━━━━━",
-            (
-                f"💰 <b>Total odds: "
-                f"{total_odds:.2f}</b>"
-            ),
-            (
-                f"📊 Estimated combined "
-                f"probability: "
-                f"<b>"
-                f"{chance * 100:.1f}%"
-                f"</b>"
-            ),
-        ]
-    )
-
-    if (
-        target
-        and not built[
-            "reached"
-        ]
-    ):
-
-        lines.append(
-            f"⚠️ Could not safely reach "
-            f"{_fmt(target)} odds."
-        )
-
-    if built[
-        "note"
-    ]:
-
-        lines.append(
-            "ℹ️ "
-            + html.escape(
-                built[
-                    "note"
-                ]
-            )
-        )
-
-    mix = _kind_counts(
-        chosen
-    )
-
-    lines.append(
-        "🧩 Mix: "
-        + ", ".join(
-            f"{number} "
-            f"{KIND_NAME.get(
-                kind,
-                kind,
-            ).lower()}"
-            for kind, number
-            in sorted(
-                mix.items(),
-                key=lambda item:
-                    -item[1],
-            )
-        )
-    )
-
-    if code:
-
-        lines.append(
-            f"📲 SportyBet code: "
-            f"<b>"
-            f"{html.escape(
-                str(code)
-            )}"
-            f"</b>"
-        )
-
-    lines.append(
-        f"🔎 Checked "
-        f"{built['events']} SportyBet "
-        f"matches across "
-        f"{built['days_used']} day(s)."
-    )
-
-    if (
-        len(chosen) >= 12
-        and target
-        and target >= 50
-    ):
-
-        lines.append(
-            "⚠️ Big odds are difficult "
-            "to land. Stake small."
-        )
-
-    lines.append(
-        "⚠️ Predictions are estimates, "
-        "not guarantees. 18+."
-    )
-
-    for error in errors:
-
-        lines.append(
-            "⚠️ "
-            + html.escape(
-                error[:160]
-            )
-        )
-
-    bot.send_message(
-        chat_id,
-        "\n".join(lines),
-    )
-
-    _reset_straight()
-
-
-# ============================================================
-# REPLACE MAIN TICKET FLOW
-# ============================================================
-
-_orig_flow = (
-    bot.prediction_ticket_flow
-)
-
-bot.prediction_ticket_flow = flow
-
-
-# ============================================================
-# SEARCH WINDOW
-# ============================================================
-
-bot.MAX_DAYS_AHEAD = max(
-    getattr(
-        bot,
-        "MAX_DAYS_AHEAD",
-        2,
-    ),
-    3,
-)
-
-
-# ============================================================
-# BACKGROUND WARMER
-# ============================================================
-
-_WARM_LOCK = threading.Lock()
-
-
-def _start_warmer():
-
-    provider = getattr(
-        bot,
-        "SPORTYBET_PROVIDER",
-        None,
-    )
-
-    if provider is None:
-
-        print(
-            "SportyBet provider unavailable; "
-            "warmer not started."
-        )
-
-        return
-
-    def refresh():
-
-        if not _WARM_LOCK.acquire(
-            blocking=False
-        ):
-            return
-
+            with urlopen(request, timeout=TIMEOUT) as response:
+                result = json.loads(response.read().decode("utf-8"))
+        except HTTPError as exc:
+            raise SportyBetError(f"HTTP {exc.code} on {path}")
+        except (URLError, ValueError) as exc:
+            raise SportyBetError(f"{path}: {exc}")
+        if result.get("bizCode") not in (None, 10000):
+            raise SportyBetError(f"{path}: {result.get('message') or result.get('bizCode')}")
+        return result
+
+    def _load_events(self):
+        if self._events and time.time() - self._events_time < EVENTS_CACHE_SECONDS:
+            return self._events
+        events = []
+        for page in range(1, MAX_EVENT_PAGES + 1):
+            result = self._request(UPCOMING_PATH, {
+                "sportId": "sr:sport:1",
+                "marketId": f"{M_1X2},{M_DC},{M_TOTAL},{M_BTTS}",
+                "pageSize": 100,
+                "pageNum": page,
+                "todayGames": "false",
+            })
+            found = list(_walk_events(result.get("data")))
+            if not found:
+                break
+            events.extend(found)
+        events = [event for event in events if not is_virtual(event)]
+        self._events, self._events_time = events, time.time()
+        return events
+
+    def find_event(self, home, away, kickoff, league_name):
+        best, best_score = None, 0.0
+        for event in self._load_events():
+            start_ms = event.get("estimateStartTime")
+            if kickoff and start_ms:
+                if abs(start_ms / 1000 - kickoff.timestamp()) > 20 * 60:
+                    continue
+            score = (_sim(home, event.get("homeTeamName", ""))
+                     + _sim(away, event.get("awayTeamName", ""))) / 2
+            if score > best_score:
+                best, best_score = event, score
+        return best if best_score >= 0.70 else None
+
+    def _event_markets_cached(self, event_id):
+        hit = self._up_cache.get(event_id)
+        if hit and time.time() - hit[0] < UP_MARKETS_CACHE_SECONDS:
+            return hit[1]
+        markets = self.get_event_markets(event_id)
+        self._up_cache[event_id] = (time.time(), markets)
+        return markets
+
+    def get_odds(self, event, spec):
+        if spec.get("up"):
+            try:
+                found = find_up_market(self._event_markets_cached(event["eventId"]), spec)
+            except SportyBetError:
+                found = None
+            floor = spec.get("up_min_odds") or MIN_UP_ODDS_DEFAULT
+            if found and found[1] >= floor:
+                spec["resolved_key"] = found[0]
+                spec["up_used"] = True
+                return found[1]
+        spec.pop("resolved_key", None)
+        spec["up_used"] = False
+        key = spec_to_key(spec)
+        if key is None:
+            return None
+        return find_odds(event.get("markets"), key)
+
+    def create_booking_code(self, selections):
+        keys = []
+        for event, spec in selections:
+            key = spec_to_key(spec)
+            if key is None:
+                raise SportyBetError(f"Unsupported market for booking: {spec.get('kind')}")
+            keys.append((event["eventId"], key))
+        return self._save_code(keys)
+
+    def _save_code(self, keys):
+        body = {"selections": [
+            {"eventId": event_id, "marketId": k[0], "specifier": k[1], "outcomeId": k[2]}
+            for event_id, k in keys
+        ]}
+        result = self._request(SAVE_CODE_PATH, body=body)
+        data = result.get("data") or {}
+        code = data.get("shareCode") or data.get("code")
+        if not code:
+            raise SportyBetError("SportyBet did not return a code.")
+        return code
+
+    def load_code(self, code):
+        result = self._request(LOAD_CODE_PATH.format(code=code))
+        data = result.get("data") or {}
+        legs = []
+        for event in data.get("outcomes", []):
+            for market in event.get("markets", []):
+                chosen = [o for o in market.get("outcomes", [])
+                          if o.get("isSelected") or o.get("selected")]
+                if not chosen and len(market.get("outcomes", [])) == 1:
+                    chosen = market["outcomes"]
+                for outcome in chosen:
+                    legs.append({
+                        "event_id": event.get("eventId"),
+                        "home": event.get("homeTeamName", "Home"),
+                        "away": event.get("awayTeamName", "Away"),
+                        "key": (str(market.get("id")), market.get("specifier") or "",
+                                str(outcome.get("id"))),
+                        "odd": _float(outcome.get("odds")),
+                        "market_name": market.get("desc") or market.get("name") or "",
+                        "outcome_name": outcome.get("desc") or outcome.get("name") or "",
+                    })
+        if not legs:
+            raise SportyBetError("Could not read that code (expired, or the format changed).")
+        return legs
+
+    def get_event_markets(self, event_id):
+        result = self._request(EVENT_PATH, {"eventId": event_id, "productId": 3})
+        return (result.get("data") or {}).get("markets", [])
+
+    def check_code(self, code):
+        legs = self.load_code(code)
+        result = summarize_legs(legs)
+        result["code"] = code
+        return result
+
+    def _safer_pick(self, leg):
+        key = leg["key"]
+        is_win = key[0] == M_DNB
+        alternatives = safer_alternatives(key)
+        if not (alternatives or is_win):
+            return None
         try:
+            markets = self.get_event_markets(leg["event_id"])
+        except SportyBetError:
+            return None
+        options = []
+        for alt in alternatives:
+            odd = find_odds(markets, alt)
+            if odd and odd >= MIN_SAFER_ODDS:
+                options.append((odd, alt))
+        if options:
+            odd, alt = min(options)
+            return alt, odd, key_to_label(alt, leg["home"], leg["away"])
+        return None
 
-            print(
-                "SportyBet background "
-                "refresh starting..."
-            )
+    def edit_code(self, code, remove=None, swap=None, picker=None):
+        legs = self.load_code(code)
+        remove, swap = set(remove or []), set(swap or [])
+        new_legs, changed = [], False
+        for index, leg in enumerate(legs):
+            if index in remove:
+                changed = True
+                continue
+            leg = dict(leg)
+            if index in swap:
+                better = (picker(leg) if picker else None) or self._safer_pick(leg)
+                if better:
+                    leg["key"], leg["odd"], leg["label_override"] = better[:3]
+                    leg["reason"] = better[3] if len(better) > 3 else None
+                    changed = True
+            new_legs.append(leg)
+        if not new_legs:
+            raise SportyBetError("A ticket needs at least one pick.")
+        new_code = code
+        if changed:
+            new_code = self._save_code([(l["event_id"], l["key"]) for l in new_legs])
+        result = summarize_legs(new_legs)
+        result["code"] = new_code
+        result["changed"] = changed
+        return result
 
-            provider._events_time = 0
-
-            provider._load_events()
-
-            print(
-                "SportyBet background "
-                "refresh complete."
-            )
-
-        except Exception as exc:
-
-            print(
-                "SportyBet background "
-                "refresh failed:",
-                exc,
-            )
-
-        finally:
-
-            _WARM_LOCK.release()
-
-    def loop():
-
-        # First refresh.
-        threading.Thread(
-            target=refresh,
-            daemon=True,
-        ).start()
-
-        while True:
-
-            time.sleep(
-                300
-            )
-
-            threading.Thread(
-                target=refresh,
-                daemon=True,
-            ).start()
-
-    threading.Thread(
-        target=loop,
-        daemon=True,
-        name="sportytips-warmer",
-    ).start()
-
-
-_start_warmer()
+    def make_safer(self, code):
+        legs = self.load_code(code)
+        rows, new_keys, seen = [], [], set()
+        old_total = new_total = 1.0
+        for leg in legs:
+            old_key, old_odd = leg["key"], leg["odd"] or 1.0
+            new_key, new_odd = old_key, old_odd
+            changed = False
+            alternatives = safer_alternatives(old_key)
+            is_win = old_key[0] == M_DNB
+            if alternatives or is_win:
+                try:
+                    markets = self.get_event_markets(leg["event_id"])
+                except SportyBetError:
+                    markets = []
+                options = []
+                for alt in alternatives:
+                    odd = find_odds(markets, alt)
+                    if odd and odd >= MIN_SAFER_ODDS:
+                        options.append((odd, alt))
+                if options:
+                    new_odd, new_key = min(options)
+                    changed = True
+            old_total *= old_odd
+            duplicate = (leg["event_id"], new_key) in seen
+            if duplicate:
+                rows.append({
+                    "match": f"{leg['home']} vs {leg['away']}",
+                    "old": key_to_label(old_key, leg["home"], leg["away"]),
+                    "old_odd": old_odd,
+                    "new": "removed (already covered by another pick)",
+                    "new_odd": 1.0,
+                    "changed": True,
+                })
+                continue
+            seen.add((leg["event_id"], new_key))
+            new_total *= new_odd
+            new_keys.append((leg["event_id"], new_key))
+            rows.append({
+                "match": f"{leg['home']} vs {leg['away']}",
+                "old": key_to_label(old_key, leg["home"], leg["away"]),
+                "old_odd": old_odd,
+                "new": key_to_label(new_key, leg["home"], leg["away"]),
+                "new_odd": new_odd,
+                "changed": changed,
+            })
+        new_code = self._save_code(new_keys) if any(r["changed"] for r in rows) else None
+        return {"rows": rows, "old_total": old_total,
+                "new_total": new_total, "new_code": new_code}

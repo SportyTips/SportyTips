@@ -202,7 +202,7 @@ def football_request(
 endpoint,
 params=None,
 ):
-“””
+"""
 Make a request to API-Football.
 
 Example:

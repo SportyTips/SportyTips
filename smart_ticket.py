@@ -16,6 +16,20 @@ Important:
 - Supports corners.
 - Supports positive handicap.
 - Supports Asian handicap.
+
+STRAIGHT WIN RULE:
+- Straight Win = 1UP + 2UP only.
+- 1UP is allowed.
+- 2UP is allowed.
+- 1X2 is excluded.
+- Double Chance is excluded.
+- Over/Under is excluded.
+- BTTS is excluded.
+- Team Goals are excluded.
+- Corners are excluded.
+- Handicap is excluded.
+- Asian Handicap is excluded.
+- Every other market is excluded.
 """
 
 import html
@@ -235,6 +249,12 @@ def _up_candidates(
     away,
     add,
 ):
+    """
+    Collect ONLY SportyBet 1UP and 2UP outcomes.
+
+    Both 1UP and 2UP are valid for Straight Win mode.
+    """
+
     for market in markets or []:
 
         text = (
@@ -261,6 +281,10 @@ def _up_candidates(
         up_number = int(
             found.group(1)
         )
+
+        # Only 1UP and 2UP can ever be accepted.
+        if up_number not in (1, 2):
+            continue
 
         spec = (
             market.get(
@@ -1445,14 +1469,33 @@ def gather(
 
         for candidate in candidates:
 
-            if (
-                straight_only
-                and candidate[
+            # =================================================
+            # CRITICAL STRAIGHT WIN RULE
+            #
+            # Straight Win allows ONLY:
+            #   1UP
+            #   2UP
+            #
+            # Every other market is rejected here.
+            # =================================================
+
+            if straight_only:
+
+                if candidate.get(
                     "kind"
-                ]
-                != "up"
-            ):
-                continue
+                ) != "up":
+                    continue
+
+                # Safety check:
+                # even within "up", only 1UP/2UP
+                # are permitted.
+                if candidate.get(
+                    "up_n"
+                ) not in (
+                    1,
+                    2,
+                ):
+                    continue
 
             floor_kind = MIN_ODDS.get(
                 candidate[
@@ -2500,13 +2543,47 @@ def flow(
         text or ""
     )
 
+    # ========================================================
+    # STRAIGHT WIN DETECTION
+    #
+    # Straight Win means ONLY:
+    #   1UP
+    #   2UP
+    #
+    # It does NOT include 1X2, DC, goals, BTTS,
+    # team goals, corners, handicap or Asian handicap.
+    # ========================================================
+
     straight_only = bool(
         re.search(
-            r"straight\s*-?\s*win",
+            r"\bstraight\s*-?\s*win(?:s)?\b",
             text,
             re.I,
         )
     )
+
+    # Also recognize an explicit request for BOTH 1UP and 2UP
+    # as Straight Win mode.
+    if not straight_only:
+
+        has_1up = bool(
+            re.search(
+                r"\b1\s*-?\s*up\b",
+                text,
+                re.I,
+            )
+        )
+
+        has_2up = bool(
+            re.search(
+                r"\b2\s*-?\s*up\b",
+                text,
+                re.I,
+            )
+        )
+
+        if has_1up and has_2up:
+            straight_only = True
 
     straight_today = (
         straight_only
@@ -2665,6 +2742,79 @@ def flow(
         _reset_straight()
 
         return
+
+    # ========================================================
+    # FINAL SAFETY CHECK
+    #
+    # This is an additional protection layer.
+    #
+    # If Straight Win is active, absolutely NOTHING except
+    # 1UP / 2UP is allowed to reach SportyBet booking-code
+    # creation.
+    # ========================================================
+
+    if straight_only:
+
+        invalid = []
+
+        for candidate in chosen:
+
+            if (
+                candidate.get(
+                    "kind"
+                )
+                != "up"
+                or candidate.get(
+                    "up_n"
+                )
+                not in (
+                    1,
+                    2,
+                )
+            ):
+                invalid.append(
+                    candidate
+                )
+
+        if invalid:
+
+            print(
+                "STRAIGHT WIN SAFETY: "
+                "invalid market detected; "
+                "removing it."
+            )
+
+            chosen = [
+                candidate
+                for candidate in chosen
+                if (
+                    candidate.get(
+                        "kind"
+                    )
+                    == "up"
+                    and candidate.get(
+                        "up_n"
+                    )
+                    in (
+                        1,
+                        2,
+                    )
+                )
+            ]
+
+            if not chosen:
+
+                bot.send_message(
+                    chat_id,
+                    (
+                        "❌ No valid 1UP / 2UP "
+                        "selections were found."
+                    ),
+                )
+
+                _reset_straight()
+
+                return
 
     # ========================================================
     # TODAY STRAIGHT TARGET

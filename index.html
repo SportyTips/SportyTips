@@ -1,10 +1,10 @@
-l<!DOCTYPE html>
+<!DOCTYPE html>
 <html lang="en">
 <head>
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
 <meta name="theme-color" content="#04111f">
-<title>SportyTips</title>
+<title>SamuelBet AI</title>
 <style>
   :root {
     --navy: #04111f;
@@ -58,7 +58,7 @@ l<!DOCTYPE html>
 
   .hticket {
     background: #fff; color: var(--ink); border-radius: 28px; padding: 6px 16px 14px;
-    box-shadow: 0 30px 70px rgba(0,0,0,.5);
+    box-shadow: 0 24px 60px rgba(0,0,0,.45); opacity: 0; transform: translateY(46px);
     animation: rise .8s .8s cubic-bezier(.2, .8, .2, 1) forwards;
   }
   @keyframes rise { to { opacity: 1; transform: none; } }
@@ -120,6 +120,7 @@ l<!DOCTYPE html>
   .typing i:nth-child(2) { animation-delay: .2s; } .typing i:nth-child(3) { animation-delay: .4s; }
   @keyframes blink { 0%, 80%, 100% { opacity: .25; } 40% { opacity: 1; } }
 
+  /* ticket image + tools under a ticket */
   .imgrow img { max-width: 100%; border-radius: 18px; display: block; }
   .imgbtns, .ttools { display: flex; flex-wrap: wrap; align-items: center; gap: 8px; margin: 10px 0 2px; }
   .mini { border: 1px solid var(--line); background: #fff; color: var(--ink); padding: 8px 14px; border-radius: 999px; font-size: 14px; font-weight: 600; cursor: pointer; }
@@ -130,6 +131,7 @@ l<!DOCTYPE html>
   .badge.medium, .health.medium { background: #fff3d6; color: #8a5a00; }
   .badge.risky, .health.risky { background: #ffe3e3; color: #b3141b; }
 
+  /* ticket card (kept for older servers) */
   .ticket { margin: 12px 0 4px; border-radius: 22px; overflow: hidden; background: var(--navy); position: relative; border: 1px solid #0d2236; }
   .ticket::before { content: ""; position: absolute; inset: 0; pointer-events: none; background: linear-gradient(115deg, transparent 62%, var(--red) 62.2%, var(--red) 100%); opacity: .95; }
   .ticket::after { content: ""; position: absolute; top: 0; bottom: 0; right: 14%; width: 9%; background: var(--dark-red); transform: skewX(-12deg); pointer-events: none; }
@@ -173,6 +175,7 @@ l<!DOCTYPE html>
   .fixrow button { border: 0; background: var(--red); color: #fff; font-weight: 700; font-size: 15px; border-radius: 999px; padding: 0 18px; cursor: pointer; }
   .fixerr { color: var(--red); font-size: 14px; margin-top: 6px; }
 
+  /* composer */
   .composer { position: absolute; left: 0; right: 0; bottom: 0; padding: 0 14px calc(10px + env(safe-area-inset-bottom)); background: linear-gradient(to top, #fff 70%, rgba(255,255,255,0)); }
   .box { display: flex; align-items: center; gap: 10px; background: #fff; border: 1px solid var(--line); border-radius: 999px; padding: 8px 8px 8px 20px; box-shadow: 0 6px 24px rgba(11,18,32,.10); }
   .box input { flex: 1; border: 0; outline: 0; font-size: 17px; font-family: inherit; background: transparent; min-width: 0; color: var(--ink); }
@@ -182,6 +185,62 @@ l<!DOCTYPE html>
   .send { width: 44px; height: 44px; border-radius: 50%; border: 0; background: var(--red-soft); color: #fff; display: grid; place-items: center; cursor: pointer; transition: background .15s; }
   .send.ready { background: var(--red); }
   .legal { text-align: center; color: var(--muted); font-size: 12px; margin: 8px 0 0; }
+
+
+  /* copy tag beside the SportyBet code */
+  .codetag { display: inline-flex; align-items: center; gap: 8px; background: var(--navy); color: #fff; border-radius: 999px; padding: 4px 4px 4px 14px; margin-left: 4px; vertical-align: middle; }
+  .codetag strong { letter-spacing: .06em; font-size: 17px; }
+  .copytag { border: 0; background: var(--red); color: #fff; font-weight: 700; font-size: 13px; padding: 7px 14px; border-radius: 999px; cursor: pointer; }
+  .copytag.done { background: var(--green); }
+
+
+  /* make-safer card in brand colours */
+  .fixer { background: var(--navy); color: #fff; border: 0; position: relative; overflow: hidden; }
+  .fixer::before { content: ""; position: absolute; inset: 0; background: var(--red); clip-path: polygon(72% 0, 100% 0, 100% 100%, 82% 100%); }
+  .fixer::after { content: ""; position: absolute; inset: 0; background: var(--dark-red); clip-path: polygon(78% 0, 86% 0, 96% 100%, 88% 100%); }
+  .fixer > * { position: relative; z-index: 1; }
+  .fixer b { color: #fff; font-size: 18px; }
+  .fixer p { color: #c4ccd8; }
+  .fixer .fixrow input { border: 0; }
+  .fixer .fixrow button { background: #fff; color: var(--navy); }
+  .fixer .fixerr { color: #ffb3b3; }
+
+  /* rolling loader */
+  .roller { position: relative; background: var(--navy); color: #fff; border-radius: 20px; padding: 18px 18px 14px; margin: 14px 0; overflow: hidden; }
+  .roller::before { content: ""; position: absolute; inset: 0; background: var(--red); clip-path: polygon(78% 0, 100% 0, 100% 100%, 86% 100%); opacity: .9; }
+  .roller > * { position: relative; z-index: 1; }
+  .roller b { font-size: 17px; display: block; }
+  .roller small { color: #c4ccd8; font-size: 13px; }
+  .lane { position: relative; height: 48px; margin-top: 10px; }
+  .lane .line { position: absolute; left: 0; right: 0; bottom: 8px; height: 3px; background: rgba(255,255,255,.2); border-radius: 2px; }
+  .lane .trail { position: absolute; left: 0; bottom: 8px; height: 3px; background: var(--red); border-radius: 2px; animation: trail 1.7s cubic-bezier(.45, 0, .55, 1) infinite; }
+  .lane .ball { position: absolute; bottom: 11px; width: 34px; height: 34px; animation: roll 1.7s cubic-bezier(.45, 0, .55, 1) infinite; }
+  .lane .ball svg { width: 100%; height: 100%; animation: spin .8s linear infinite; }
+  @keyframes roll { from { left: -44px; } to { left: calc(100% + 8px); } }
+  @keyframes trail { from { width: 0; } to { width: 100%; } }
+  @keyframes spin { to { transform: rotate(360deg); } }
+
+  /* reason box under a pick */
+  .why { max-height: 0; opacity: 0; overflow: hidden; transition: max-height .4s ease, opacity .4s ease, margin .4s ease; margin-top: 0; }
+  .why.open { max-height: 320px; opacity: 1; margin-top: 10px; }
+  .why > div { background: var(--bar); border-left: 4px solid var(--red); border-radius: 12px; padding: 10px 12px; font-size: 14px; color: var(--ink); line-height: 1.45; }
+  .why .why-load { color: var(--gray); }
+  .e-btns button:disabled, .e-actions button:disabled { opacity: .45; }
+
+
+  /* ticket builder card */
+  .builder { background: var(--navy); color: #fff; border-radius: 22px; padding: 16px; margin: 12px 0; position: relative; overflow: hidden; }
+  .builder::before { content: ""; position: absolute; inset: 0; background: var(--red); clip-path: polygon(80% 0, 100% 0, 100% 100%, 90% 100%); opacity: .9; pointer-events: none; }
+  .builder > * { position: relative; z-index: 1; }
+  .b-label { font-size: 12px; font-weight: 800; letter-spacing: .08em; text-transform: uppercase; color: #9fb0c6; margin: 12px 0 6px; }
+  .b-label:first-child { margin-top: 0; }
+  .b-opts { display: flex; flex-wrap: wrap; gap: 8px; align-items: center; }
+  .b-opt { border: 1.5px solid rgba(255,255,255,.35); background: rgba(255,255,255,.06); color: #fff; font-weight: 700; font-size: 14px; padding: 8px 14px; border-radius: 999px; cursor: pointer; }
+  .b-opt.on { background: #fff; color: var(--navy); border-color: #fff; }
+  .b-num { width: 84px; border: 0; border-radius: 999px; padding: 9px 14px; font-size: 16px; font-family: inherit; text-align: center; }
+  .b-go { width: 100%; margin-top: 16px; border: 0; background: var(--red); color: #fff; font-weight: 800; font-size: 17px; padding: 14px; border-radius: 999px; cursor: pointer; }
+  .b-go:disabled { opacity: .5; }
+  .b-hint { color: #c4ccd8; font-size: 13px; margin-top: 8px; }
 
   /* ============ TOOLS SHEET ============ */
   .sheet { position: fixed; inset: 0; z-index: 40; display: flex; align-items: flex-end; justify-content: center; }
@@ -233,17 +292,6 @@ l<!DOCTYPE html>
   .tog.on { background: var(--red); }
   .tog.on::after { transform: translateX(22px); }
   .toast { position: fixed; left: 50%; bottom: 100px; transform: translateX(-50%); background: var(--navy); color: #fff; padding: 10px 18px; border-radius: 999px; font-size: 14px; font-weight: 600; z-index: 80; animation: up .25s; }
-
-  /* ============ STRAIGHT WIN BUTTONS ============ */
-  .sw-row { display: flex; gap: 10px; margin: 14px 0 10px; }
-  .sw-btn {
-    flex: 1; border: 0; background: var(--navy); color: #fff; font-weight: 700; font-size: 15px;
-    padding: 14px 12px; border-radius: 16px; cursor: pointer; line-height: 1.2;
-  }
-  .sw-btn small { display: block; color: #9aa6b6; font-size: 12px; font-weight: 600; margin-top: 3px; }
-  .sw-btn:active { transform: scale(.98); }
-  .sw-btn.primary { background: var(--red); }
-  .sw-btn.primary small { color: rgba(255,255,255,.75); }
 </style>
 </head>
 <body>
@@ -260,7 +308,7 @@ l<!DOCTYPE html>
   </svg>
   <div class="home-scroll">
     <div class="home-inner">
-      <div class="h-brand"><div class="logo">S</div><span>Sporty<span class="ai">Tips</span></span></div>
+      <div class="h-brand"><div class="logo">S</div><span>SamuelBet <span class="ai">AI</span></span></div>
       <h1 class="h-title">Smarter slips,<br>built in seconds.</h1>
       <p class="h-sub">Tell me how many odds you want. I scan the matches, pick the strongest legs and give you a SportyBet code.</p>
 
@@ -285,7 +333,7 @@ l<!DOCTYPE html>
 <!-- ============ CHAT ============ -->
 <div class="app">
   <header>
-    <div class="brand"><div class="logo">S</div><span>Sporty<span class="ai">Tips</span></span></div>
+    <div class="brand"><div class="logo">S</div><span>SamuelBet <span class="ai">AI</span></span></div>
     <button class="hbtn" id="htools">Tools</button>
     <button class="avatar" id="avatar" aria-label="Settings">U</button>
   </header>
@@ -297,7 +345,7 @@ l<!DOCTYPE html>
       <span class="clip" title="Attachments are not supported yet">
         <svg viewBox="0 0 24 24"><path d="M21.44 11.05l-9.19 9.19a6 6 0 0 1-8.49-8.49l9.19-9.19a4 4 0 0 1 5.66 5.66l-9.2 9.19a2 2 0 0 1-2.83-2.83l8.49-8.48"/></svg>
       </span>
-      <input id="input" type="text" placeholder="Ask SportyTips anything" autocomplete="off" enterkeyhint="send">
+      <input id="input" type="text" placeholder="Ask SamuelBet AI anything" autocomplete="off" enterkeyhint="send">
       <button class="send" id="send" aria-label="Send">
         <svg viewBox="0 0 24 24"><line x1="12" y1="19" x2="12" y2="5"/><polyline points="5 12 12 5 19 12"/></svg>
       </button>
@@ -325,14 +373,13 @@ l<!DOCTYPE html>
 
 <script>
 const API = "/api/chat";
-const API_SW = "/api/straight_win";
 const $ = (id) => document.getElementById(id);
 const box = $("messages"), input = $("input"), sendBtn = $("send");
 
-let session = localStorage.getItem("st_session");
+let session = localStorage.getItem("sb_session");
 if (!session) {
   session = (window.crypto && crypto.randomUUID) ? crypto.randomUUID() : String(Date.now()) + Math.random().toString(16).slice(2);
-  localStorage.setItem("st_session", session);
+  localStorage.setItem("sb_session", session);
 }
 
 const ICONS = {
@@ -402,12 +449,12 @@ function ticketHtml(t) {
     ? '<div class="t-bar"><b>SPORTYBET CODE</b><button class="pill copy-code" data-code="' + esc(t.code) + '">' + esc(t.code) + '</button></div>'
     : "";
   return '<div class="ticket">' +
-    '<div class="t-head"><div class="t-brand"><div class="logo">S</div>SPORTYTIPS</div><div class="t-date">' + esc(t.date_text) + '</div></div>' +
+    '<div class="t-head"><div class="t-brand"><div class="logo">S</div>SAMUELBET AI</div><div class="t-date">' + esc(t.date_text) + '</div></div>' +
     '<div class="t-title"><span>' + esc(t.title) + '</span></div>' +
     '<div class="t-card">' + rows +
     '<div class="t-bar"><div><b>COMBINED ODDS</b><small>Estimated chance all win: ~' + Math.round(t.win_chance * 100) + '%</small></div>' +
     '<span class="pill red">' + Number(t.total_odds).toFixed(2) + '</span></div>' + code + '</div>' +
-    '<div class="t-foot"><span>Data-driven picks. Bet smart.</span><span>SportyTips</span></div></div>' +
+    '<div class="t-foot"><span>Data-driven picks. Bet smart.</span><span>SamuelBet AI</span></div></div>' +
     (t.notes && t.notes.length ? '<div class="notes">' + t.notes.map(esc).join("<br>") + '</div>' : "") +
     '<div class="notes">' + esc(t.read || "") + '</div>';
 }
@@ -448,24 +495,24 @@ function addBot(payload) {
   return row;
 }
 
-/* ---------- streamed items ---------- */
+/* ---------- pieces streamed from the server ---------- */
 let turn = { img: null };
 
 function b64ToFile(b64) {
   const bin = atob(b64), bytes = new Uint8Array(bin.length);
   for (let i = 0; i < bin.length; i++) bytes[i] = bin.charCodeAt(i);
-  return new File([bytes], "sportytips-ticket.png", { type: "image/png" });
+  return new File([bytes], "samuelbet-ticket.png", { type: "image/png" });
 }
 function downloadImage(b64) {
   const a = document.createElement("a");
-  a.href = "data:image/png;base64," + b64; a.download = "sportytips-ticket.png";
+  a.href = "data:image/png;base64," + b64; a.download = "samuelbet-ticket.png";
   document.body.appendChild(a); a.click(); a.remove();
 }
 async function shareImage(b64) {
   const file = b64ToFile(b64);
   try {
     if (navigator.canShare && navigator.canShare({ files: [file] })) {
-      await navigator.share({ files: [file], title: "SportyTips ticket" });
+      await navigator.share({ files: [file], title: "SamuelBet AI ticket" });
       return;
     }
   } catch (e) { if (e && e.name === "AbortError") return; }
@@ -494,7 +541,29 @@ function addItem(item) {
     .replace(/&lt;/g, "<").replace(/&gt;/g, ">").replace(/&amp;/g, "&");
   const row = addBot({ reply: t });
   const m = t.match(CODE_RX);
-  if (m) attachTicketTools(row, m[1].toUpperCase(), turn);
+  if (m) {
+    const code = m[1].toUpperCase();
+    addCopyTag(row, code);
+    attachTicketTools(row, code, turn);
+  }
+}
+
+// "Copy" tag right beside the SportyBet code
+function addCopyTag(row, code) {
+  const content = row.querySelector(".content");
+  if (!content) return;
+  const target = "<strong>" + code + "</strong>";
+  const html = content.innerHTML;
+  const at = html.toUpperCase().lastIndexOf(target.toUpperCase());
+  if (at < 0) return;
+  const tag = '<span class="codetag"><strong>' + code + '</strong><button class="copytag" data-copytag>Copy</button></span>';
+  content.innerHTML = html.slice(0, at) + tag + html.slice(at + target.length);
+  const btn = content.querySelector("[data-copytag]");
+  btn.onclick = async () => {
+    await copyText(code);
+    btn.textContent = "Copied"; btn.classList.add("done");
+    setTimeout(() => { btn.textContent = "Copy"; btn.classList.remove("done"); }, 1500);
+  };
 }
 
 function attachTicketTools(row, code, turnRef) {
@@ -524,26 +593,19 @@ function addTyping() {
 function removeTyping() { const t = $("typing"); if (t) t.remove(); }
 
 let busy = false;
-async function send(text, isRetry) {
-  text = (text || "").trim();
-  if (!text || busy) return;
-  busy = true; lastUserText = text; turn = { img: null };
-  if (!isRetry) addUser(text);
-  input.value = ""; sendBtn.classList.remove("ready");
-  addTyping();
+async function runStream(path, body) {
   try {
     const ctrl = new AbortController();
-    const timer = setTimeout(() => ctrl.abort(), 600000);
-    const res = await fetch(API, {
+    const timer = setTimeout(() => ctrl.abort(), 280000);
+    const res = await fetch(path, {
       method: "POST", headers: { "Content-Type": "application/json" },
-      body: JSON.stringify({ message: text, session }),
-      signal: ctrl.signal
+      body: JSON.stringify(body), signal: ctrl.signal
     });
     if (!res.ok) {
       const d = await res.json().catch(() => ({}));
       clearTimeout(timer); removeTyping();
       addBot({ reply: d.error || "Server error. Try again." });
-      busy = false; return;
+      return;
     }
     const reader = res.body.getReader();
     const dec = new TextDecoder();
@@ -568,6 +630,74 @@ async function send(text, isRetry) {
     removeTyping();
     addBot({ reply: "I could not reach the server. Please check your connection and try again." });
   }
+}
+
+const BUILD_RX = /(straight\s*wins?|plain\s*wins?|\b[12]\s*-?\s*up\b|\b(home|away)\s*wins?\b|double\s*chance)/i;
+const QUESTION_RX = /^\s*(what|explain|how|why|who|when|is|does|can)\b/i;
+
+async function send(text, isRetry) {
+  text = (text || "").trim();
+  if (!text || busy) return;
+  if (!isRetry && BUILD_RX.test(text) && !QUESTION_RX.test(text)) {
+    addUser(text); input.value = ""; sendBtn.classList.remove("ready");
+    askBuilder(text);
+    return;
+  }
+  busy = true; lastUserText = text; turn = { img: null };
+  if (!isRetry) addUser(text);
+  input.value = ""; sendBtn.classList.remove("ready");
+  addTyping();
+  await runStream(API, { message: text, session, pidgin: localStorage.getItem("sb_pidgin") === "1" });
+  busy = false;
+}
+
+/* ---------- ticket builder card: market, side, games, odds, day ---------- */
+const MODE_LABEL = { up2: "2UP win", up1: "1UP win", win: "Plain win", dc: "Double chance" };
+function askBuilder(text) {
+  const t = String(text || "").toLowerCase();
+  const pick = {
+    mode: /double\s*chance/.test(t) ? "dc" : /\b1\s*-?\s*up\b/.test(t) ? "up1" : /plain/.test(t) ? "win" : "up2",
+    side: /\bhome\b/.test(t) && !/\baway\b/.test(t) ? "home" : /\baway\b/.test(t) && !/\bhome\b/.test(t) ? "away" : "any",
+    window: /tomorrow/.test(t) ? "tomorrow" : /tonight/.test(t) ? "tonight" : "today"
+  };
+  const g = t.match(/(\d+)\s*(?:games?|picks?|matches)/), o = t.match(/(\d+(?:\.\d+)?)\s*odds?/);
+  const row = document.createElement("div");
+  row.className = "row-bot";
+  const opts = (key, list) => '<div class="b-opts" data-key="' + key + '">' + list.map((x) =>
+    '<button class="b-opt' + (pick[key] === x[0] ? " on" : "") + '" data-v="' + x[0] + '">' + x[1] + '</button>').join("") + '</div>';
+  row.innerHTML =
+    '<div class="content">Nice. Tell me how you want it and I will build it.</div>' +
+    '<div class="builder">' +
+    '<div class="b-label">Ticket type</div>' + opts("mode", [["up2", "2UP win"], ["up1", "1UP win"], ["win", "Plain win"], ["dc", "Double chance"]]) +
+    '<div class="b-label">Side</div>' + opts("side", [["home", "Home"], ["away", "Away"], ["any", "Any"]]) +
+    '<div class="b-label">How many games</div><div class="b-opts"><input class="b-num" data-n="games" type="number" inputmode="numeric" min="1" max="30" placeholder="any" value="' + (g ? g[1] : "5") + '">' +
+    [3, 5, 8, 10].map((n) => '<button class="b-opt" data-fill="games" data-v="' + n + '">' + n + '</button>').join("") + '</div>' +
+    '<div class="b-label">Total odds</div><div class="b-opts"><input class="b-num" data-n="odds" type="number" inputmode="decimal" min="1.01" step="0.01" placeholder="any" value="' + (o ? o[1] : "") + '">' +
+    [2, 3, 5, 10].map((n) => '<button class="b-opt" data-fill="odds" data-v="' + n + '">' + n + '</button>').join("") + '</div>' +
+    '<div class="b-label">When</div>' + opts("window", [["today", "Today"], ["tonight", "Tonight"], ["tomorrow", "Tomorrow"]]) +
+    '<button class="b-go">Build my ticket</button>' +
+    '<div class="b-hint">Every pick is at least 1.30 odds. Leave odds empty to just get the strongest games.</div></div>';
+  row.querySelectorAll(".b-opts[data-key]").forEach((grp) => grp.addEventListener("click", (e) => {
+    const b = e.target.closest(".b-opt"); if (!b) return;
+    grp.querySelectorAll(".b-opt").forEach((x) => x.classList.remove("on")); b.classList.add("on"); pick[grp.dataset.key] = b.dataset.v;
+  }));
+  row.querySelectorAll("[data-fill]").forEach((b) => (b.onclick = () => { row.querySelector('[data-n="' + b.dataset.fill + '"]').value = b.dataset.v; }));
+  row.querySelector(".b-go").onclick = (e) => {
+    const games = parseInt(row.querySelector('[data-n="games"]').value, 10) || null;
+    const odds = parseFloat(row.querySelector('[data-n="odds"]').value) || null;
+    e.currentTarget.disabled = true;
+    startBuild({ mode: pick.mode, side: pick.side, window: pick.window, games: games || (odds ? null : 5), odds: odds });
+  };
+  box.appendChild(row); scrollDown();
+}
+
+async function startBuild(spec) {
+  if (busy) return;
+  busy = true; turn = { img: null };
+  const sideText = spec.side === "any" ? "" : spec.side + " ";
+  addUser(sideText + MODE_LABEL[spec.mode] + " tickets" + (spec.games ? ", " + spec.games + " games" : "") + (spec.odds ? ", " + spec.odds + " odds" : "") + ", " + spec.window);
+  addTyping();
+  await runStream("/api/build", Object.assign({ session, pidgin: localStorage.getItem("sb_pidgin") === "1" }, spec));
   busy = false;
 }
 
@@ -575,60 +705,12 @@ input.addEventListener("input", () => sendBtn.classList.toggle("ready", input.va
 input.addEventListener("keydown", (e) => { if (e.key === "Enter") send(input.value); });
 sendBtn.addEventListener("click", () => send(input.value));
 
-/* ---------- straight win shortcut ---------- */
-async function straightWin(window_) {
-  if (busy) return;
-  busy = true;
-  turn = { img: null };
-  const label = window_ === "long" ? "Straight win · long" : "Straight win · today";
-  addUser(label);
-  addTyping();
-  try {
-    const ctrl = new AbortController();
-    const timer = setTimeout(() => ctrl.abort(), 600000);
-    const res = await fetch(API_SW, {
-      method: "POST", headers: { "Content-Type": "application/json" },
-      body: JSON.stringify({ window: window_, session }),
-      signal: ctrl.signal
-    });
-    if (!res.ok) {
-      const d = await res.json().catch(() => ({}));
-      clearTimeout(timer); removeTyping();
-      addBot({ reply: d.error || "Server error. Try again." });
-      busy = false; return;
-    }
-    const reader = res.body.getReader();
-    const dec = new TextDecoder();
-    let buf = "";
-    while (true) {
-      const { done, value } = await reader.read();
-      if (done) break;
-      buf += dec.decode(value, { stream: true });
-      let i;
-      while ((i = buf.indexOf("\n")) >= 0) {
-        const line = buf.slice(0, i).trim();
-        buf = buf.slice(i + 1);
-        if (!line) continue;
-        let item;
-        try { item = JSON.parse(line); } catch (e) { continue; }
-        removeTyping(); addItem(item); addTyping();
-      }
-    }
-    clearTimeout(timer);
-    removeTyping();
-  } catch (e) {
-    removeTyping();
-    addBot({ reply: "I could not reach the server. Please try again." });
-  }
-  busy = false;
-}
-
-/* ---------- saved tickets ---------- */
-function getSaved() { try { return JSON.parse(localStorage.getItem("st_saved") || "[]"); } catch (e) { return []; } }
+/* ---------- saved tickets (kept on this phone) ---------- */
+function getSaved() { try { return JSON.parse(localStorage.getItem("sb_saved") || "[]"); } catch (e) { return []; } }
 function putSaved(list) {
   list = list.slice(0, 8).map((x, i) => (i < 4 ? x : Object.assign({}, x, { img: null })));
-  try { localStorage.setItem("st_saved", JSON.stringify(list)); }
-  catch (e) { try { localStorage.setItem("st_saved", JSON.stringify(list.map((x) => Object.assign({}, x, { img: null })))); } catch (e2) {} }
+  try { localStorage.setItem("sb_saved", JSON.stringify(list)); }
+  catch (e) { try { localStorage.setItem("sb_saved", JSON.stringify(list.map((x) => Object.assign({}, x, { img: null })))); } catch (e2) {} }
 }
 function saveTicket(t) {
   if (!t.code) return;
@@ -660,9 +742,6 @@ sheet.addEventListener("click", (e) => {
   if (e.target.closest("[data-close]")) closeTools();
   const t = e.target.closest("[data-tab]");
   if (t) setTab(t.dataset.tab);
-  // straight-win buttons inside the pane
-  const sw = e.target.closest("[data-sw]");
-  if (sw) { closeTools(); straightWin(sw.dataset.sw); }
 });
 
 function validCode(raw) {
@@ -671,16 +750,17 @@ function validCode(raw) {
 }
 
 /* Edit tab */
+const BALL = '<svg viewBox="0 0 36 36"><circle cx="18" cy="18" r="16" fill="#fff"/><polygon points="18,10 25,15 22,24 14,24 11,15" fill="#04111f"/><path d="M18 10V2M25 15l9-3M22 24l6 8M14 24l-6 8M11 15l-9-3" stroke="#04111f" stroke-width="2" fill="none"/></svg>';
+function loaderHtml(title, sub) {
+  return '<div class="roller"><b>' + esc(title) + '</b><small>' + esc(sub || "") + '</small>' +
+    '<div class="lane"><div class="line"></div><div class="trail"></div><div class="ball">' + BALL + '</div></div></div>';
+}
+let syncing = false;
+
 function renderEdit() {
   pane.innerHTML =
-    '<h3>Straight win only</h3>' +
-    '<p class="hint">1UP / 2UP picks only. The bot asks you for the odds target.</p>' +
-    '<div class="sw-row">' +
-      '<button class="sw-btn primary" data-sw="today">Straight win<small>today only</small></button>' +
-      '<button class="sw-btn" data-sw="long">Straight win<small>long ticket</small></button>' +
-    '</div>' +
-    '<h3 style="margin-top:20px">Edit a SportyBet ticket</h3>' +
-    '<p class="hint">Paste a code. You can make one pick safer, remove a pick, or make the whole ticket safer.</p>' +
+    '<h3>Edit a SportyBet ticket</h3>' +
+    '<p class="hint">Paste a code. Make one pick safer, remove a pick, or rebuild the whole ticket into sure picks. You get a new code each time.</p>' +
     '<div class="fixrow"><input id="ecode" type="text" placeholder="SportyBet code" autocomplete="off" autocapitalize="characters" value="' + esc(cur.code || "") + '">' +
     '<button id="echeck">Check</button></div><div id="eout"></div>';
   $("echeck").onclick = () => { const c = validCode($("ecode").value); if (!c) return showErr("That does not look like a SportyBet code."); runCheck(c); };
@@ -688,51 +768,115 @@ function renderEdit() {
   if (cur.data) drawTicket();
 }
 function showErr(msg) { const o = $("eout"); if (o) o.innerHTML = '<div class="err">' + esc(msg) + '</div>'; }
-function showWorking(msg) { const o = $("eout"); if (o) o.innerHTML = '<div class="note">' + esc(msg) + '</div>'; }
+function showWorking(title, sub) { const o = $("eout"); if (o) o.innerHTML = loaderHtml(title, sub); }
 
 async function runCheck(code) {
   cur = { code: code, data: null };
   if (tab !== "edit") setTab("edit");
-  showWorking("Reading your ticket...");
+  showWorking("Reading your ticket...", "Getting every pick and its odds from SportyBet");
   try { cur.data = await api("/api/check", { code }); drawTicket(); }
   catch (e) { showErr(e.message); }
 }
-async function runAction(path, body, okNote) {
-  showWorking("Working on it...");
+async function runAction(path, body, okNote, title, sub) {
+  showWorking(title || "Working on it...", sub || "");
   try {
     const d = await api(path, body);
     cur = { code: d.code, data: d };
     if ($("ecode")) $("ecode").value = d.code;
-    drawTicket(d.changed === false ? "Nothing could be made safer on that ticket." : okNote);
+    const note = d.changed === false ? "Nothing could be made safer on that ticket." : (typeof okNote === "function" ? okNote(d) : okNote);
+    drawTicket(note);
   } catch (e) { showErr(e.message); }
 }
-function drawTicket(note) {
+function saferNote(d) {
+  let t = "Rebuilt into sure picks from each match's form and head-to-head. New code ready.";
+  if (d.dropped && d.dropped.length) {
+    const names = d.dropped.slice(0, 3).map((x) => x.match).join(", ");
+    t += " Removed " + d.dropped.length + " match" + (d.dropped.length > 1 ? "es" : "") + " with no sure pick: " + names + (d.dropped.length > 3 ? "..." : "") + ".";
+  }
+  return t;
+}
+function drawTicket(note, isErr) {
   const d = cur.data, out = $("eout");
   if (!d || !out) return;
+  const dis = syncing ? " disabled" : "";
   const rows = d.rows.map((r) =>
     '<div class="e-row" data-i="' + r.index + '"><div class="e-top"><div class="e-main">' +
     '<div class="t-match">' + esc(r.match) + '</div><div class="t-pick">' + esc(r.pick) + '</div></div>' +
     '<div class="e-side"><span class="pill">' + Number(r.odd).toFixed(2) + '</span>' +
     '<span class="risk ' + r.risk.toLowerCase() + '">' + esc(r.risk) + '</span></div></div>' +
-    '<div class="e-btns">' + (r.can_safer ? '<button data-act="swap">Make safer</button>' : '') +
-    '<button data-act="remove" class="danger">Remove</button></div></div>').join("");
+    '<div class="e-btns">' + (r.can_safer ? '<button data-act="swap"' + dis + '>Make safer</button>' : '') +
+    '<button data-act="why">Why this pick?</button><button data-act="remove" class="danger"' + dis + '>Remove</button></div>' +
+    '<div class="why"><div></div></div></div>').join("");
   out.innerHTML =
     '<div class="health ' + d.health.toLowerCase() + '"><b>' + esc(d.health) + ' ticket</b><span>' + esc(d.reason) + ' About ' + d.chance + '% chance that all win.</span></div>' +
-    (note ? '<div class="note">' + esc(note) + '</div>' : '') + rows +
+    (note ? '<div class="' + (isErr ? 'err' : 'note') + '">' + esc(note) + '</div>' : '') + rows +
     '<div class="t-bar"><div><b>Total odds</b><small>Estimated from the odds</small></div><span class="pill red">' + Number(d.total_odds).toFixed(2) + '</span></div>' +
     '<div class="t-bar"><div><b>SportyBet code</b><small>Tap to copy</small></div><button class="pill copy-code" data-copycode>' + esc(cur.code) + '</button></div>' +
-    '<div class="e-actions"><button data-all>Make everything safer</button><button data-save>Save</button><button data-stake>Stake</button></div>';
+    '<div class="e-actions"><button data-all' + dis + '>Rebuild into sure picks</button><button data-save>Save</button><button data-stake>Stake</button></div>';
 }
+
+/* remove: slide the pick away (about 0.8 s), update straight away, sync the new code in the background */
+function animateRemove(el) {
+  return new Promise((resolve) => {
+    el.style.maxHeight = el.offsetHeight + "px";
+    el.style.overflow = "hidden";
+    el.style.transition = "transform .45s ease, opacity .45s ease";
+    requestAnimationFrame(() => {
+      el.style.transform = "translateX(-110%)"; el.style.opacity = "0";
+      setTimeout(() => {
+        el.style.transition = "max-height .35s ease, padding .35s ease";
+        el.style.maxHeight = "0"; el.style.paddingTop = "0"; el.style.paddingBottom = "0";
+        setTimeout(resolve, 350);
+      }, 450);
+    });
+  });
+}
+function removeRow(i, el) {
+  if (syncing) return;
+  if (cur.data.rows.length <= 1) return showErr("A ticket needs at least one pick.");
+  syncing = true;
+  const prev = { code: cur.code, data: cur.data };
+  pane.querySelectorAll("#eout button[data-act], #eout [data-all]").forEach((b) => (b.disabled = true));
+  const animation = animateRemove(el).then(() => {
+    const rows = prev.data.rows.filter((r) => r.index !== i).map((r, k) => Object.assign({}, r, { index: k }));
+    cur.data = Object.assign({}, prev.data, { rows: rows, total_odds: rows.reduce((a, r) => a * r.odd, 1) });
+    drawTicket("Pick removed. Updating your code...");
+  });
+  const server = api("/api/edit", { code: prev.code, remove: [i] }).catch((e) => ({ error: e.message }));
+  Promise.all([animation, server]).then(([, d]) => {
+    syncing = false;
+    if (d.error) { cur = prev; drawTicket("Could not update the code: " + d.error, true); return; }
+    cur = { code: d.code, data: d };
+    if ($("ecode")) $("ecode").value = d.code;
+    drawTicket("Pick removed. New code ready.");
+  });
+}
+
+/* why this pick: the reason opens right under the pick */
+async function toggleWhy(i, rowEl, btn) {
+  const box = rowEl.querySelector(".why"), inner = box.firstElementChild;
+  if (box.classList.contains("open")) { box.classList.remove("open"); btn.textContent = "Why this pick?"; return; }
+  box.classList.add("open"); btn.textContent = "Hide reason";
+  const row = cur.data.rows[i];
+  if (row.reason) { inner.textContent = row.reason; return; }
+  inner.innerHTML = '<span class="why-load">Checking their last 5 games and head-to-head...</span>';
+  try {
+    const d = await api("/api/why", { code: cur.code, index: i });
+    row.reason = d.reason; inner.textContent = d.reason;
+  } catch (e) { inner.textContent = "I could not get the match data right now. " + e.message; }
+}
+
 pane.addEventListener("click", (e) => {
   if (tab === "edit") {
     const act = e.target.closest("[data-act]");
     if (act) {
-      const i = Number(act.closest("[data-i]").dataset.i);
-      if (act.dataset.act === "swap") runAction("/api/edit", { code: cur.code, swap: [i] }, "Pick made safer. New code ready.");
-      else if (act.dataset.act === "remove") runAction("/api/edit", { code: cur.code, remove: [i] }, "Pick removed. New code ready.");
+      const rowEl = act.closest("[data-i]"), i = Number(rowEl.dataset.i);
+      if (act.dataset.act === "swap" && !syncing) runAction("/api/edit", { code: cur.code, swap: [i] }, "Pick made safer from the match form. New code ready.", "Making this pick safer...", "Studying their last 5 games and head-to-head");
+      else if (act.dataset.act === "remove") removeRow(i, rowEl);
+      else if (act.dataset.act === "why") toggleWhy(i, rowEl, act);
       return;
     }
-    if (e.target.closest("[data-all]")) return runAction("/api/safer", { code: cur.code }, "Whole ticket made safer. New code ready.");
+    if (e.target.closest("[data-all]") && !syncing) return runAction("/api/safer", { code: cur.code }, saferNote, "Rebuilding into sure picks...", "Studying each match's last 5 games and head-to-head. This can take a minute.");
     if (e.target.closest("[data-save]")) return saveTicket({ code: cur.code, total: cur.data.total_odds, health: cur.data.health });
     if (e.target.closest("[data-stake]")) { stakeOdds = Number(cur.data.total_odds).toFixed(2); return setTab("stake"); }
     const cc = e.target.closest("[data-copycode]");
@@ -783,10 +927,17 @@ function renderSaved() {
 
 /* Settings tab */
 function renderSettings() {
+  const on = localStorage.getItem("sb_pidgin") === "1";
   pane.innerHTML =
     '<h3>Settings</h3>' +
+    '<div class="switch"><span><b>Pidgin mode</b><small>The AI replies in Nigerian Pidgin.</small></span><button class="tog' + (on ? " on" : "") + '" id="tpid" aria-label="Pidgin mode"></button></div>' +
     '<div class="switch"><span><b>Clear saved tickets</b><small>Removes them from this phone.</small></span><button class="mini" id="tclr">Clear</button></div>' +
     '<p class="hint" style="margin-top:14px">Predictions are estimates, not guarantees. Accumulators lose often. Only stake what you can afford to lose (18+).</p>';
+  $("tpid").onclick = (e) => {
+    const next = localStorage.getItem("sb_pidgin") !== "1";
+    localStorage.setItem("sb_pidgin", next ? "1" : "0");
+    e.currentTarget.classList.toggle("on", next);
+  };
   $("tclr").onclick = () => { putSaved([]); toast("Cleared"); };
 }
 
@@ -797,12 +948,13 @@ $("avatar").addEventListener("click", () => openTools("settings"));
 const welcome = document.createElement("div");
 welcome.className = "row-bot";
 welcome.innerHTML =
-  '<div class="content"><strong>Welcome to SportyTips.</strong><br>Ask me for a ticket in plain words, or paste a SportyBet code and I will help you make it safer.</div>' +
+  '<div class="content"><strong>Welcome to SamuelBet AI.</strong><br>I am your football ticket assistant. I go through today\'s SportyBet matches, study each team\'s last 5 games and head-to-head record, and build the ticket you ask for, from a safe 5 picks to a risky 30 odds.' +
+  '<br><br>Every pick comes with the reason I chose it, and you get a SportyBet code to paste straight into the app. No pick is ever guaranteed, so stake small.</div>' +
   '<div class="chips"></div>';
-["best 10 odds today", "50 odds tomorrow", "straight win today", "straight win long ticket", "safe 20 odds 2 days"].forEach((q) => {
+["10 odds tonight", "Safe 5 picks tomorrow", "Straight win tickets", "Today's bankers", "Risky 30 odds"].forEach((q) => {
   const b = document.createElement("button");
   b.className = "chip"; b.textContent = q;
-  b.onclick = () => send(q);
+  b.onclick = () => (q === "Straight win tickets" ? askBuilder("") : send(q === "Today's bankers" ? "Safe 5 picks today" : q));
   welcome.querySelector(".chips").appendChild(b);
 });
 box.appendChild(welcome);
@@ -811,7 +963,7 @@ const fixer = document.createElement("div");
 fixer.className = "fixer";
 fixer.innerHTML =
   '<b>Make a ticket safer</b>' +
-  '<p>Paste your SportyBet code. Straight wins become &quot;win either half&quot;, and you can fix pick by pick.</p>' +
+  '<p>Already have a code? Paste it. I study each match\'s last 5 games and head-to-head, then rebuild it into sure picks, or fix it one pick at a time.</p>' +
   '<div class="fixrow"><input id="fixcode" type="text" placeholder="SportyBet code" autocomplete="off" autocapitalize="characters">' +
   '<button id="fixbtn">Open</button></div><div class="fixerr" id="fixerr"></div>';
 welcome.appendChild(fixer);
@@ -826,14 +978,14 @@ $("fixcode").addEventListener("keydown", (e) => { if (e.key === "Enter") fromBox
 /* ---------- home page ---------- */
 const home = $("home");
 function enterApp(openEdit) {
-  sessionStorage.setItem("st_in", "1");
+  sessionStorage.setItem("sb_in", "1");
   home.classList.add("leave");
   setTimeout(() => { home.hidden = true; if (openEdit) openTools("edit"); else input.focus(); }, 560);
 }
 $("hgo").addEventListener("click", () => enterApp(false));
 $("hfix").addEventListener("click", () => enterApp(true));
 
-if (sessionStorage.getItem("st_in") === "1") {
+if (sessionStorage.getItem("sb_in") === "1" || sessionStorage.getItem("st_in") === "1") {
   home.hidden = true;
 } else {
   (function countUp() {

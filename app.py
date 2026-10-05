@@ -33,29 +33,31 @@ RATE_LIMIT = 8
 RATE_WINDOW = 60
 TOOL_LIMIT = 30
 
-LAUNCHER_MODULE = os.getenv("LAUNCHER_MODULE", "launcher")
+LAUNCHER_MODULE = os.getenv(
+    "LAUNCHER_MODULE",
+    "launcher",
+)
 
 
 # ===============================================================
 # IMPORTANT IMPORT ORDER
-# ===============================================================
-# SportyBet provider MUST be completely loaded before main.py
-# and smart_ticket.py are imported.
-#
-# This prevents:
-# "partially initialized module 'sportybet_provider'"
 # ===============================================================
 
 SPORTYBET_PROVIDER_MODULE = None
 SPORTYBET_PROVIDER_ERROR = None
 
 try:
+
     SPORTYBET_PROVIDER_MODULE = importlib.import_module(
         "sportybet_provider"
     )
-    print("✅ sportybet_provider.py loaded successfully")
+
+    print(
+        "✅ sportybet_provider.py loaded successfully"
+    )
 
 except Exception as exc:
+
     SPORTYBET_PROVIDER_ERROR = (
         f"{type(exc).__name__}: {exc}"
     )
@@ -71,36 +73,44 @@ except Exception as exc:
 # ===============================================================
 
 try:
-    bot = importlib.import_module("main")
-    print("✅ main.py loaded successfully")
+
+    bot = importlib.import_module(
+        "main"
+    )
+
+    print(
+        "✅ main.py loaded successfully"
+    )
 
 except Exception as exc:
+
     print(
         "❌ main.py failed to load:",
         f"{type(exc).__name__}: {exc}",
     )
+
     raise
 
 
 # ===============================================================
 # LOAD SMART TICKET BUILDER
 # ===============================================================
-#
-# smart_ticket.py replaces main.prediction_ticket_flow with the
-# real SportyTips ticket-building logic.
-# ===============================================================
 
 SMART_TICKET_MODULE = None
 SMART_TICKET_ERROR = None
 
 try:
+
     SMART_TICKET_MODULE = importlib.import_module(
         "smart_ticket"
     )
 
-    print("✅ smart_ticket.py loaded successfully")
+    print(
+        "✅ smart_ticket.py loaded successfully"
+    )
 
 except Exception as exc:
+
     SMART_TICKET_ERROR = (
         f"{type(exc).__name__}: {exc}"
     )
@@ -116,14 +126,22 @@ except Exception as exc:
 # ===============================================================
 
 try:
-    launcher = importlib.import_module(LAUNCHER_MODULE)
-    print(f"✅ {LAUNCHER_MODULE}.py loaded successfully")
+
+    launcher = importlib.import_module(
+        LAUNCHER_MODULE
+    )
+
+    print(
+        f"✅ {LAUNCHER_MODULE}.py loaded successfully"
+    )
 
 except Exception as exc:
+
     print(
         f"❌ {LAUNCHER_MODULE}.py failed to load:",
         f"{type(exc).__name__}: {exc}",
     )
+
     raise
 
 
@@ -132,8 +150,13 @@ except Exception as exc:
 # ===============================================================
 
 try:
-    upgrades = importlib.import_module("upgrades")
+
+    upgrades = importlib.import_module(
+        "upgrades"
+    )
+
 except ImportError:
+
     upgrades = None
 
 
@@ -145,7 +168,12 @@ _ctx = threading.local()
 
 
 def _emit(item):
-    q = getattr(_ctx, "q", None)
+
+    q = getattr(
+        _ctx,
+        "q",
+        None,
+    )
 
     if q is not None:
         q.put(item)
@@ -159,7 +187,6 @@ HIDE_LINES = re.compile(
 
 
 def _rebrand(text):
-    """Always display SportyTips instead of older branding."""
 
     text = re.sub(
         r"SamuelBet\s*(<span[^>]*>)\s*AI\s*(</span>)",
@@ -169,12 +196,22 @@ def _rebrand(text):
 
     return (
         text
-        .replace("SamuelBet AI", "SportyTips")
-        .replace("SamuelBet", "SportyTips")
+        .replace(
+            "SamuelBet AI",
+            "SportyTips",
+        )
+        .replace(
+            "SamuelBet",
+            "SportyTips",
+        )
     )
 
 
-def web_send_message(chat_id, text):
+def web_send_message(
+    chat_id,
+    text,
+):
+
     kept = [
         line
         for line in text.split("\n")
@@ -188,6 +225,7 @@ def web_send_message(chat_id, text):
     ).strip()
 
     if not cleaned:
+
         cleaned = (
             "I couldn't get that right now. "
             "Please try again in a minute."
@@ -195,24 +233,42 @@ def web_send_message(chat_id, text):
 
     cleaned = (
         cleaned
-        .replace("&#x27;", "'")
-        .replace("&#39;", "'")
-        .replace("&quot;", '"')
+        .replace(
+            "&#x27;",
+            "'",
+        )
+        .replace(
+            "&#39;",
+            "'",
+        )
+        .replace(
+            "&quot;",
+            '"',
+        )
     )
 
     _emit(
         {
             "type": "text",
-            "html": _rebrand(cleaned),
+            "html": _rebrand(
+                cleaned
+            ),
         }
     )
 
 
-def web_send_photo(chat_id, png, caption=""):
+def web_send_photo(
+    chat_id,
+    png,
+    caption="",
+):
+
     _emit(
         {
             "type": "image",
-            "data": base64.b64encode(png).decode("ascii"),
+            "data": base64.b64encode(
+                png
+            ).decode("ascii"),
             "caption": caption,
         }
     )
@@ -250,17 +306,26 @@ _hits = {}
 # RATE LIMIT
 # ===============================================================
 
-def too_fast(key, limit=RATE_LIMIT):
+def too_fast(
+    key,
+    limit=RATE_LIMIT,
+):
+
     now = time.time()
 
     recent = [
         t
-        for t in _hits.get(key, [])
+        for t in _hits.get(
+            key,
+            [],
+        )
         if now - t < RATE_WINDOW
     ]
 
     if len(recent) >= limit:
+
         _hits[key] = recent
+
         return True
 
     recent.append(now)
@@ -271,6 +336,7 @@ def too_fast(key, limit=RATE_LIMIT):
 
 
 def client_ip():
+
     return (
         request.headers.get(
             "X-Forwarded-For",
@@ -287,12 +353,18 @@ def client_ip():
 # RUN ONE CHAT TURN
 # ===============================================================
 
-def run_turn(session, text, q):
+def run_turn(
+    session,
+    text,
+    q,
+):
+
     _ctx.q = q
 
     try:
 
         with RUN_LOCK:
+
             bot.handle_text(
                 session,
                 text,
@@ -300,21 +372,129 @@ def run_turn(session, text, q):
 
     except Exception as exc:
 
-        # Print the COMPLETE traceback to Render logs.
-        # This is temporary debugging so we can see exactly
-        # what is failing when a ticket is requested.
         import traceback
 
-        print("❌ CHAT ERROR:")
+        print(
+            "❌ CHAT ERROR:"
+        )
+
         traceback.print_exc()
 
-        # Also send the actual exception type/message to the
-        # browser instead of only "Server error".
         q.put(
             {
                 "type": "text",
-                "html": "❌ " + html.escape(
-                    f"{type(exc).__name__}: {exc}"
+                "html": (
+                    "❌ "
+                    + html.escape(
+                        f"{type(exc).__name__}: {exc}"
+                    )
+                ),
+            }
+        )
+
+    finally:
+
+        q.put(None)
+
+
+# ===============================================================
+# RUN CUSTOM SMART TICKET BUILD
+# ===============================================================
+
+def run_custom_build(
+    session,
+    search_days,
+    target_odds,
+    picks,
+    risk,
+    straight_only,
+    q,
+):
+
+    _ctx.q = q
+
+    try:
+
+        if SMART_TICKET_MODULE is None:
+
+            raise RuntimeError(
+                "smart_ticket.py is not loaded."
+            )
+
+        flow = getattr(
+            SMART_TICKET_MODULE,
+            "flow",
+            None,
+        )
+
+        if not callable(flow):
+
+            raise RuntimeError(
+                "smart_ticket.flow is unavailable."
+            )
+
+        # -------------------------------------------------------
+        # Build a natural request for the existing parser.
+        #
+        # The actual custom values are passed directly to
+        # smart_ticket.flow(), so they cannot be lost inside
+        # main.py.
+        # -------------------------------------------------------
+
+        if straight_only:
+
+            text = (
+                "straight win long ticket"
+                if search_days != 1
+                else "straight win today"
+            )
+
+        elif target_odds:
+
+            text = (
+                f"build ticket "
+                f"{target_odds} odds"
+            )
+
+        else:
+
+            text = (
+                f"build ticket "
+                f"{picks} picks"
+            )
+
+        # -------------------------------------------------------
+        # DIRECT SMART TICKET CALL
+        # -------------------------------------------------------
+
+        with RUN_LOCK:
+
+            flow(
+                session,
+                text,
+                search_days=search_days,
+                target_override=target_odds,
+                count_override=picks,
+            )
+
+    except Exception as exc:
+
+        import traceback
+
+        print(
+            "❌ CUSTOM BUILD ERROR:"
+        )
+
+        traceback.print_exc()
+
+        q.put(
+            {
+                "type": "text",
+                "html": (
+                    "❌ "
+                    + html.escape(
+                        f"{type(exc).__name__}: {exc}"
+                    )
                 ),
             }
         )
@@ -370,12 +550,15 @@ CHAT_EXTRAS = r"""
   function copyText(text, btn) {
 
     function done() {
+
       btn.textContent = "Copied";
       btn.classList.add("done");
 
       setTimeout(function () {
+
         btn.textContent = "Copy";
         btn.classList.remove("done");
+
       }, 1500);
     }
 
@@ -449,7 +632,12 @@ CHAT_EXTRAS = r"""
         b.textContent = "Copy";
 
         b.onclick = function () {
-          copyText(text, b);
+
+          copyText(
+            text,
+            b
+          );
+
         };
 
         s.after(b);
@@ -487,7 +675,10 @@ def home_page():
     )
 
     if not os.path.exists(path):
-        return redirect("/chat")
+
+        return redirect(
+            "/chat"
+        )
 
     with open(
         path,
@@ -514,7 +705,9 @@ def home_page():
 @app.get("/index.html")
 def chat_page_alias():
 
-    return redirect("/chat")
+    return redirect(
+        "/chat"
+    )
 
 
 # ===============================================================
@@ -586,7 +779,9 @@ def health():
         status="ok",
         sportybet=provider_loaded,
         sportybet_error=SPORTYBET_PROVIDER_ERROR,
-        smart_ticket=SMART_TICKET_MODULE is not None,
+        smart_ticket=(
+            SMART_TICKET_MODULE is not None
+        ),
         smart_ticket_error=SMART_TICKET_ERROR,
     )
 
@@ -610,13 +805,17 @@ def _stream_response(q):
             except queue.Empty:
 
                 yield "\n"
+
                 continue
 
             if item is None:
+
                 break
 
             yield (
-                json.dumps(item)
+                json.dumps(
+                    item
+                )
                 + "\n"
             )
 
@@ -691,6 +890,321 @@ def chat():
 
 
 # ===============================================================
+# CUSTOM TICKET BUILDER API
+# ===============================================================
+#
+# This is the new endpoint.
+#
+# Frontend sends:
+#
+# {
+#   "session": "...",
+#   "search_days": 7,
+#   "target_odds": 20,
+#   "picks": 5,
+#   "risk": "normal",
+#   "straight_only": false
+# }
+#
+# The values are passed directly to smart_ticket.flow().
+# ===============================================================
+
+@app.post("/api/build")
+def api_build():
+
+    data = (
+        request.get_json(
+            silent=True
+        )
+        or {}
+    )
+
+    session = str(
+        data.get(
+            "session",
+            "",
+        )
+    )[:64]
+
+    if not session:
+
+        return jsonify(
+            error="Missing session."
+        ), 400
+
+    if too_fast(
+        "build:" + client_ip(),
+        RATE_LIMIT,
+    ):
+
+        return jsonify(
+            error=(
+                "Slow down. "
+                "Try again in a minute."
+            )
+        ), 429
+
+    # -----------------------------------------------------------
+    # SEARCH DAYS
+    # -----------------------------------------------------------
+
+    search_days = data.get(
+        "search_days"
+    )
+
+    try:
+
+        search_days = int(
+            search_days
+        )
+
+    except (
+        TypeError,
+        ValueError,
+    ):
+
+        return jsonify(
+            error=(
+                "Search period must be "
+                "1, 2, 3, 5, 7 or 14 days."
+            )
+        ), 400
+
+    if search_days not in (
+        1,
+        2,
+        3,
+        5,
+        7,
+        14,
+    ):
+
+        return jsonify(
+            error=(
+                "Search period must be "
+                "1, 2, 3, 5, 7 or 14 days."
+            )
+        ), 400
+
+    # -----------------------------------------------------------
+    # TARGET ODDS
+    # -----------------------------------------------------------
+
+    target_odds = data.get(
+        "target_odds"
+    )
+
+    if (
+        target_odds is not None
+        and str(
+            target_odds
+        ).strip() != ""
+    ):
+
+        try:
+
+            target_odds = float(
+                target_odds
+            )
+
+        except (
+            TypeError,
+            ValueError,
+        ):
+
+            return jsonify(
+                error=(
+                    "Target odds must be "
+                    "a valid number."
+                )
+            ), 400
+
+        if target_odds <= 1:
+
+            return jsonify(
+                error=(
+                    "Target odds must "
+                    "be greater than 1."
+                )
+            ), 400
+
+    else:
+
+        target_odds = None
+
+    # -----------------------------------------------------------
+    # NUMBER OF PICKS
+    # -----------------------------------------------------------
+
+    picks = data.get(
+        "picks"
+    )
+
+    if (
+        picks is not None
+        and str(
+            picks
+        ).strip() != ""
+    ):
+
+        try:
+
+            picks = int(
+                picks
+            )
+
+        except (
+            TypeError,
+            ValueError,
+        ):
+
+            return jsonify(
+                error=(
+                    "Number of picks "
+                    "must be a valid number."
+                )
+            ), 400
+
+        if picks < 1:
+
+            return jsonify(
+                error=(
+                    "Number of picks "
+                    "must be at least 1."
+                )
+            ), 400
+
+        if picks > 30:
+
+            return jsonify(
+                error=(
+                    "Maximum number of "
+                    "picks is 30."
+                )
+            ), 400
+
+    else:
+
+        picks = None
+
+    # -----------------------------------------------------------
+    # RISK
+    # -----------------------------------------------------------
+
+    risk = str(
+        data.get(
+            "risk",
+            "normal",
+        )
+    ).lower().strip()
+
+    if risk not in (
+        "safe",
+        "normal",
+        "risky",
+    ):
+
+        risk = "normal"
+
+    # -----------------------------------------------------------
+    # STRAIGHT WIN
+    # -----------------------------------------------------------
+
+    straight_value = data.get(
+        "straight_only",
+        False,
+    )
+
+    if isinstance(
+        straight_value,
+        bool,
+    ):
+
+        straight_only = (
+            straight_value
+        )
+
+    else:
+
+        straight_only = str(
+            straight_value
+        ).lower() in (
+            "1",
+            "true",
+            "yes",
+            "on",
+        )
+
+    # -----------------------------------------------------------
+    # STRAIGHT WIN DOES NOT USE OTHER MARKETS
+    # -----------------------------------------------------------
+
+    if straight_only:
+
+        # Straight Win is handled by smart_ticket.py.
+        #
+        # Its safety rules permit ONLY:
+        #   1UP
+        #   2UP
+        #
+        # We intentionally do not inject another market here.
+        pass
+
+    # -----------------------------------------------------------
+    # PROVIDER CHECK
+    # -----------------------------------------------------------
+
+    provider = getattr(
+        bot,
+        "SPORTYBET_PROVIDER",
+        None,
+    )
+
+    if provider is None:
+
+        return jsonify(
+            error=(
+                "SportyBet mode is off. "
+                "Set USE_SPORTYBET to 1 "
+                "on the server."
+            )
+        ), 503
+
+    if SMART_TICKET_MODULE is None:
+
+        return jsonify(
+            error=(
+                "smart_ticket.py "
+                "is not loaded."
+            )
+        ), 503
+
+    # -----------------------------------------------------------
+    # START BUILD
+    # -----------------------------------------------------------
+
+    q = queue.Queue()
+
+    threading.Thread(
+        target=run_custom_build,
+        args=(
+            session,
+            search_days,
+            target_odds,
+            picks,
+            risk,
+            straight_only,
+            q,
+        ),
+        daemon=True,
+    ).start()
+
+    return _stream_response(
+        q
+    )
+
+
+# ===============================================================
 # STRAIGHT WIN
 # ===============================================================
 
@@ -746,11 +1260,15 @@ def api_straight_win():
 
     if window == "long":
 
-        text = "straight win long ticket"
+        text = (
+            "straight win long ticket"
+        )
 
     else:
 
-        text = "straight win today"
+        text = (
+            "straight win today"
+        )
 
     q = queue.Queue()
 
@@ -764,7 +1282,9 @@ def api_straight_win():
         daemon=True,
     ).start()
 
-    return _stream_response(q)
+    return _stream_response(
+        q
+    )
 
 
 # ===============================================================
@@ -792,7 +1312,9 @@ def _ticket_tool(work):
         )
     ).strip().upper()
 
-    if not CODE_OK.match(code):
+    if not CODE_OK.match(
+        code
+    ):
 
         return jsonify(
             error=(
@@ -871,7 +1393,9 @@ def api_check():
 
     return _ticket_tool(
         lambda p, code, data:
-        p.check_code(code)
+        p.check_code(
+            code
+        )
     )
 
 
@@ -887,10 +1411,14 @@ def api_edit():
         p.edit_code(
             code,
             remove=_ints(
-                data.get("remove")
+                data.get(
+                    "remove"
+                )
             ),
             swap=_ints(
-                data.get("swap")
+                data.get(
+                    "swap"
+                )
             ),
             picker=None,
         )
@@ -906,7 +1434,9 @@ def api_safer():
 
     return _ticket_tool(
         lambda p, code, data:
-        p.make_safer(code)
+        p.make_safer(
+            code
+        )
     )
 
 

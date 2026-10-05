@@ -4,9 +4,10 @@ Does NOT edit your bot files. It imports them, swaps the Telegram send
 functions for ones that stream to the browser, and calls the bot's own
 handle_text() for every message.
 
-Pages:
+Pages (it finds the chat page by itself: the file with the message box):
   /       the homepage (home.html)
   /chat   the chat (index.html)
+  /status  "free" or "busy" (shows if a ticket is still being built)
 
 Put this file next to main.py, launcher.py, sportybet_provider.py,
 ticket_image_lite.py, smart_ticket.py, upgrades.py, home.html and index.html.
@@ -38,6 +39,7 @@ BASE_DIR = os.path.dirname(os.path.abspath(__file__))
 RATE_LIMIT = 8
 RATE_WINDOW = 60
 TOOL_LIMIT = 30
+LOCK_WAIT_SECONDS = 240      # how long a message waits behind another ticket before giving up
 
 bot = importlib.import_module("main")
 launcher = importlib.import_module(LAUNCHER_MODULE)
@@ -107,13 +109,25 @@ def client_ip():
 
 
 def run_turn(session, text, q):
+    """Runs one message. Only one ticket is built at a time, so if another one is
+    still running we SAY so instead of loading in silence."""
     _ctx.q = q
+    got_lock = RUN_LOCK.acquire(blocking=False)
     try:
-        with RUN_LOCK:
-            bot.handle_text(session, text)
+        if not got_lock:
+            q.put({"type": "text",
+                   "html": "⏳ I'm still finishing another ticket. Yours is next, one moment..."})
+            got_lock = RUN_LOCK.acquire(timeout=LOCK_WAIT_SECONDS)
+            if not got_lock:
+                q.put({"type": "text",
+                       "html": "I'm still busy with another ticket. Please try again in a minute."})
+                return
+        bot.handle_text(session, text)
     except Exception as exc:
         q.put({"type": "text", "html": "❌ " + html.escape(str(exc))})
     finally:
+        if got_lock:
+            RUN_LOCK.release()
         q.put(None)
 
 
@@ -169,11 +183,32 @@ CHAT_EXTRAS = r"""
 """
 
 
+def _read(name):
+    path = os.path.join(BASE_DIR, name)
+    if not os.path.exists(path):
+        return None
+    with open(path, encoding="utf-8") as fh:
+        return fh.read()
+
+
+def _pages():
+    """(landing_page, chat_page). The chat page is the file that contains the message box,
+    so it works even if home.html and index.html have been swapped."""
+    pages = [p for p in (_read("home.html"), _read("index.html")) if p]
+    chat = next((p for p in pages if 'id="messages"' in p), None)
+    landing = next((p for p in pages if 'id="messages"' not in p), None)
+    return landing, chat
+
+
+NO_CACHE = {"Cache-Control": "no-cache"}
+
+
 @app.get("/")
 def home_page():
-    if not os.path.exists(os.path.join(BASE_DIR, "home.html")):
-        return redirect("/chat")          # no homepage file yet: go straight to chat
-    return send_from_directory(BASE_DIR, "home.html")
+    landing, chat = _pages()
+    if landing is None:
+        return redirect("/chat")          # no homepage file: go straight to chat
+    return Response(landing, mimetype="text/html", headers=NO_CACHE)
 
 
 @app.get("/index.html")
@@ -183,21 +218,25 @@ def chat_page_alias():
 
 @app.get("/chat")
 def chat_page():
-    path = os.path.join(BASE_DIR, "index.html")
-    if not os.path.exists(path):
-        return "index.html is missing next to app.py.", 404
-    with open(path, encoding="utf-8") as fh:
-        page = fh.read()
+    landing, page = _pages()
+    if page is None:
+        return "The chat page is missing. It is the file that has the message box.", 404
     if "</body>" in page:
         page = page.replace("</body>", CHAT_EXTRAS + "</body>", 1)
     else:
         page += CHAT_EXTRAS
-    return Response(page, mimetype="text/html", headers={"Cache-Control": "no-cache"})
+    return Response(page, mimetype="text/html", headers=NO_CACHE)
 
 
 @app.get("/health")
 def health():
     return "ok"
+
+
+@app.get("/status")
+def status():
+    """Open this while the chat is loading: 'busy' means a ticket is still being built."""
+    return "busy" if RUN_LOCK.locked() else "free"
 
 
 def _stream_response(q):

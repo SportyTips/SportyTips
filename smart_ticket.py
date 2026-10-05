@@ -1,4 +1,4 @@
-l"""Smart ticket builder for SportyTips.
+"""Smart ticket builder for SportyTips.
 
 Replaces the bot's ticket flow when SportyBet mode is on (USE_SPORTYBET=1).
 

@@ -2588,12 +2588,39 @@ def flow(
 
     if search_days is not None:
 
-        req["end"] = (
-            req["start"]
-            + timedelta(
-                days=search_days - 1
+        if search_days == 1:
+            # TODAY = from the current eligible time
+            # until the end of today's window.
+
+            local_now = datetime.now(
+                timezone.utc
+            ).astimezone(
+                bot.LOCAL_TZ
             )
-        )
+
+            tomorrow_midnight = (
+                local_now.replace(
+                    hour=0,
+                    minute=0,
+                    second=0,
+                    microsecond=0,
+                )
+                + timedelta(days=1)
+            )
+
+            req["end"] = (
+                tomorrow_midnight.astimezone(
+                    timezone.utc
+                )
+            )
+
+        else:
+            req["end"] = (
+                req["start"]
+                + timedelta(
+                    days=search_days - 1
+                )
+            )
 
     # ========================================================
     # GET FINAL TARGET / COUNT

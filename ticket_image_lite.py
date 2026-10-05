@@ -1,5 +1,5 @@
 """Draws the ticket picture.
-Style: navy and red header, white card, odds pills (like the SportyTips site).
+Style: navy and red header, white card, odds pills (like the SamuelBet AI site).
 
 Best quality: needs Pillow (add `pillow` to requirements.txt) and the font file
 ticket_font.ttf next to this file. If either is missing it still works, but with
@@ -13,9 +13,9 @@ import struct
 import unicodedata
 import zlib
 
-WATERMARK = "SPORTYTIPS"
-WATERMARK_ENABLED = False
-WATERMARK_ALPHA = 38
+WATERMARK = "SAMUELBET AI"   # change this text to change the watermark
+WATERMARK_ENABLED = False    # set True to draw the diagonal watermark again
+WATERMARK_ALPHA = 38         # 0 = invisible, 255 = solid
 
 W = 1000
 PAD = 40
@@ -32,11 +32,13 @@ MUTED = (138, 148, 163)
 LINE = (226, 230, 236)
 BAR = (243, 245, 248)
 
+# red diagonal on the right side of the picture
 RED_X0 = int(W * 0.60)
 RED_SLOPE = 0.08
 STRIPE_OFFSET = 70
 STRIPE_WIDTH = 90
 
+# ---------- 5x7 bitmap font ----------
 _FONT_SRC = {
     "A": "01110 10001 10001 11111 10001 10001 10001",
     "B": "11110 10001 10001 11110 10001 10001 11110",
@@ -104,6 +106,7 @@ def text_width(text, scale):
 
 
 def fit(text, scale, max_width, min_scale=3):
+    """Largest scale that fits; at the smallest scale cut with '...'."""
     text = clean(text)
     s = scale
     while s > min_scale and text_width(text, s) > max_width:
@@ -113,6 +116,7 @@ def fit(text, scale, max_width, min_scale=3):
     return text, s
 
 
+# ---------- canvas ----------
 class Canvas:
     def __init__(self, width, height, color):
         self.w, self.h = width, height
@@ -127,6 +131,7 @@ class Canvas:
             self.rows[y][x0 * 3:x1 * 3] = chunk
 
     def rrect(self, x0, y0, x1, y1, r, color):
+        """Rectangle with rounded corners (r = corner radius)."""
         r = max(0, min(r, (x1 - x0) // 2, (y1 - y0) // 2))
         chunk_color = bytes(color)
         for y in range(max(0, y0), min(self.h, y1)):
@@ -171,6 +176,7 @@ class Canvas:
                 row[i + 2] += (color[2] - row[i + 2]) * alpha // 255
 
     def slanted_text(self, x, y, text, scale, color, alpha, slope=0.5):
+        """Text that climbs to the right (diagonal watermark)."""
         for index, ch in enumerate(clean(text)):
             glyph = FONT[ch]
             gx = x + index * 6 * scale
@@ -196,6 +202,7 @@ class Canvas:
 
 
 def _make_bitmap_image(rows, title, subtitle, total_odds, win_chance, code=None):
+    """Old blocky version. Only used if Pillow or the font file is missing."""
     card_x0, card_x1 = PAD, W - PAD
     card_y0 = HEADER_H
     bar_h = 90
@@ -203,26 +210,31 @@ def _make_bitmap_image(rows, title, subtitle, total_odds, win_chance, code=None)
     height = card_y0 + card_h + 130
     c = Canvas(W, height, NAVY)
 
+    # red diagonal + darker stripe
     for y in range(height):
         xr = int(RED_X0 + y * RED_SLOPE)
         c.rect(xr, y, W, y + 1, RED)
         c.rect(xr + STRIPE_OFFSET, y, xr + STRIPE_OFFSET + STRIPE_WIDTH, y + 1, DARK_RED)
 
+    # brand (top left)
     c.rrect(PAD, 40, PAD + 64, 104, 16, RED)
     c.text(PAD + 32, 56, "S", 6, WHITE, anchor="m", bold=True)
-    c.text(PAD + 84, 62, "SPORTYTIPS", 4, WHITE, bold=True)
+    c.text(PAD + 84, 62, "SAMUELBET AI", 4, WHITE, bold=True)
 
+    # date pill (top right)
     sub, sub_scale = fit(subtitle, 3, 400, min_scale=2)
     pill_w = text_width(sub, sub_scale) + 56
     c.rrect(W - PAD - pill_w, 46, W - PAD, 100, 27, WHITE)
     c.text(W - PAD - pill_w // 2, 73 - (7 * sub_scale) // 2, sub, sub_scale, INK,
            anchor="m", bold=True)
 
+    # title + red underline
     head, head_scale = fit(title, 7, W - 2 * PAD, min_scale=4)
     c.text(PAD, 140, head, head_scale, WHITE, bold=True)
     c.rect(PAD, 140 + 7 * head_scale + 18, PAD + int(text_width(head, head_scale) * 0.6),
            140 + 7 * head_scale + 24, RED)
 
+    # white card
     c.rrect(card_x0, card_y0, card_x1, card_y0 + card_h, 40, WHITE)
 
     y = card_y0 + 14
@@ -230,6 +242,7 @@ def _make_bitmap_image(rows, title, subtitle, total_odds, win_chance, code=None)
     pill_w = 176
     pill_x1 = card_x1 - 28
     for index, row in enumerate(rows):
+        # ball icon
         c.circle(card_x0 + 44, y + 38, 13, GRAY)
         c.circle(card_x0 + 44, y + 38, 10, WHITE)
         c.circle(card_x0 + 44, y + 38, 6, INK)
@@ -240,6 +253,7 @@ def _make_bitmap_image(rows, title, subtitle, total_odds, win_chance, code=None)
         line, s = fit(row["pick"], 3, max_w, min_scale=2)
         c.text(text_x, y + 14 + 7 * 4 + 14, line, s, GRAY, bold=True)
 
+        # odds pill + kick-off time
         c.rrect(pill_x1 - pill_w, y + 14, pill_x1, y + 62, 24, NAVY)
         odd, odd_scale = fit(f"{row['odd']:.2f}", 5, pill_w - 40, min_scale=3)
         c.text(pill_x1 - pill_w // 2, y + 38 - (7 * odd_scale) // 2, odd, odd_scale,
@@ -247,8 +261,10 @@ def _make_bitmap_image(rows, title, subtitle, total_odds, win_chance, code=None)
         c.text(pill_x1 - pill_w // 2, y + 74, row["time"], 2, GRAY, anchor="m", bold=True)
 
         y += ROW_H
-        c.rect(card_x0 + 28, y - 2, card_x1 - 28, y, LINE)
+        if index < len(rows) - 1 or True:
+            c.rect(card_x0 + 28, y - 2, card_x1 - 28, y, LINE)
 
+    # combined odds bar
     y += 16
     c.rrect(card_x0 + 24, y, card_x1 - 24, y + bar_h, 28, BAR)
     c.text(card_x0 + 52, y + 22, "COMBINED ODDS", 3, INK, bold=True)
@@ -260,6 +276,7 @@ def _make_bitmap_image(rows, title, subtitle, total_odds, win_chance, code=None)
            total_scale, WHITE, anchor="m", bold=True)
     y += bar_h
 
+    # booking code bar
     if code:
         y += 14
         c.rrect(card_x0 + 24, y, card_x1 - 24, y + 62, 24, BAR)
@@ -270,9 +287,10 @@ def _make_bitmap_image(rows, title, subtitle, total_odds, win_chance, code=None)
         c.text(card_x1 - 24 - 12 - code_w // 2, y + 31 - (7 * code_scale) // 2, code_text,
                code_scale, WHITE, anchor="m", bold=True)
 
+    # footer
     foot_y = card_y0 + card_h + 34
     c.text(PAD, foot_y, "AI PICKS. SMARTER SLIPS.", 3, WHITE, bold=True)
-    c.text(W - PAD, foot_y, "SPORTYTIPS", 3, WHITE, anchor="r", bold=True)
+    c.text(W - PAD, foot_y, "SAMUELBET AI", 3, WHITE, anchor="r", bold=True)
     c.text(PAD, foot_y + 44, "ESTIMATES ONLY, NOT GUARANTEES. BET RESPONSIBLY (18+).",
            2, MUTED)
 
@@ -290,9 +308,12 @@ def _make_bitmap_image(rows, title, subtitle, total_odds, win_chance, code=None)
     return c.png()
 
 
+# ============================================================
+# Smooth version (Pillow + real font)
+# ============================================================
 try:
     from PIL import Image, ImageDraw, ImageFont
-except ImportError:
+except ImportError:          # Pillow not installed
     Image = None
 
 HERE = os.path.dirname(os.path.abspath(__file__))
@@ -302,7 +323,7 @@ FONT_CANDIDATES = [
     "/usr/share/fonts/truetype/liberation/LiberationSans-Bold.ttf",
     "/usr/share/fonts/truetype/dejavu/DejaVuSans-Bold.ttf",
 ]
-SCALE = 2
+SCALE = 2     # draw at 2x, then shrink: smooth edges
 
 
 def _find_font():
@@ -351,7 +372,7 @@ def _make_smooth_image(font_path, rows, title, subtitle, total_odds, win_chance,
     card_h = 14 + sum(row_heights) + 16 + bar_h + (76 if code else 0) + 26
     height = card_y0 + card_h + 130
     if height > 3200:
-        S = 1
+        S = 1          # very tall tickets: draw at normal size to save memory
 
     img = Image.new("RGB", (W * S, height * S), NAVY)
     d = ImageDraw.Draw(img)
@@ -380,6 +401,7 @@ def _make_smooth_image(font_path, rows, title, subtitle, total_odds, win_chance,
     def text(x, y, value, size, fill, anchor="lm"):
         d.text((X(x), X(y)), str(value), font=font(size), fill=fill, anchor=anchor)
 
+    # red diagonal + darker stripe
     def xr(y):
         return RED_X0 + y * RED_SLOPE
     d.polygon([(X(xr(0)), 0), (X(W), 0), (X(W), X(height)), (X(xr(height)), X(height))], fill=RED)
@@ -387,20 +409,24 @@ def _make_smooth_image(font_path, rows, title, subtitle, total_odds, win_chance,
                (X(xr(height) + STRIPE_OFFSET + STRIPE_WIDTH), X(height)),
                (X(xr(height) + STRIPE_OFFSET), X(height))], fill=DARK_RED)
 
+    # brand
     rr(PAD, 40, PAD + 64, 104, 16, RED)
     text(PAD + 32, 72, "S", 46, WHITE, "mm")
-    text(PAD + 84, 72, "SPORTYTIPS", 34, WHITE)
+    text(PAD + 84, 72, "SAMUELBET AI", 34, WHITE)
 
+    # date pill
     sub, sub_size = fit(subtitle, 27, 400, 18)
     pill_w = width_of(sub, sub_size) + 56
     rr(W - PAD - pill_w, 46, W - PAD, 100, 27, WHITE)
     text(W - PAD - pill_w / 2, 73, sub, sub_size, INK, "mm")
 
+    # title + red underline
     head, head_size = fit(str(title).upper(), 74, W - 2 * PAD, 40)
     text(PAD, 168, head, head_size, WHITE)
     line_y = 168 + int(head_size * 0.55) + 12
     d.rectangle([X(PAD), X(line_y), X(PAD + width_of(head, head_size) * 0.6), X(line_y + 6) - 1], fill=RED)
 
+    # white card
     rr(card_x0, card_y0, card_x1, card_y0 + card_h, 40, WHITE)
 
     y = card_y0 + 14
@@ -429,6 +455,7 @@ def _make_smooth_image(font_path, rows, title, subtitle, total_odds, win_chance,
         y += row_heights[row_index]
         d.rectangle([X(card_x0 + 28), X(y - 2), X(card_x1 - 28), X(y) - 1], fill=LINE)
 
+    # combined odds bar
     y += 16
     rr(card_x0 + 24, y, card_x1 - 24, y + bar_h, 28, BAR)
     text(card_x0 + 52, y + 32, "COMBINED ODDS", 25, INK)
@@ -439,6 +466,7 @@ def _make_smooth_image(font_path, rows, title, subtitle, total_odds, win_chance,
     text(card_x1 - 44 - big_w / 2, y + bar_h / 2, total, total_size, WHITE, "mm")
     y += bar_h
 
+    # booking code
     if code:
         y += 14
         rr(card_x0 + 24, y, card_x1 - 24, y + 62, 24, BAR)
@@ -448,9 +476,10 @@ def _make_smooth_image(font_path, rows, title, subtitle, total_odds, win_chance,
         rr(card_x1 - 36 - code_w, y + 8, card_x1 - 36, y + 54, 23, NAVY)
         text(card_x1 - 36 - code_w / 2, y + 31, code_text, code_size, WHITE, "mm")
 
+    # footer
     foot_y = card_y0 + card_h + 46
     text(PAD, foot_y, "AI picks. Smarter slips.", 27, WHITE)
-    text(W - PAD, foot_y, "SportyTips", 27, WHITE, "rm")
+    text(W - PAD, foot_y, "SamuelBet AI", 27, WHITE, "rm")
     text(PAD, foot_y + 46, "Estimates only, not guarantees. Bet responsibly (18+).", 18, MUTED)
 
     out = img.resize((W, height), getattr(Image, "Resampling", Image).LANCZOS)

@@ -145,7 +145,6 @@ def _f(value):
 
 
 def _single(odd):
-
     if not odd:
         return None
 
@@ -159,15 +158,12 @@ def _two_way(
     odd,
     other,
 ):
-
     if not odd:
         return None
 
     if other:
-
         a = 1 / odd
         b = 1 / other
-
         total = a + b
 
         if total:
@@ -187,7 +183,6 @@ def _side_of(
     outcome,
     two_way=False,
 ):
-
     label = str(
         outcome.get("desc")
         or outcome.get("name")
@@ -240,7 +235,6 @@ def _up_candidates(
     away,
     add,
 ):
-
     for market in markets or []:
 
         text = (
@@ -344,7 +338,6 @@ def event_candidates(
     event,
     markets,
 ):
-
     home = event.get(
         "homeTeamName",
         "Home",
@@ -365,7 +358,6 @@ def event_candidates(
         key,
         **extra,
     ):
-
         if (
             not odd
             or not probability
@@ -422,7 +414,6 @@ def event_candidates(
     pa = None
 
     if h and d and a:
-
         inv = [
             1 / h,
             1 / d,
@@ -1045,10 +1036,7 @@ def event_candidates(
 # FAVOURITE STRENGTH
 # ============================================================
 
-def favourite_strength(
-    event
-):
-
+def favourite_strength(event):
     markets = (
         event.get(
             "markets"
@@ -1114,10 +1102,7 @@ def favourite_strength(
 _DETAIL_LOCK = threading.Lock()
 
 
-def _slim_markets(
-    markets
-):
-
+def _slim_markets(markets):
     keep = []
 
     for market in markets or []:
@@ -1161,7 +1146,6 @@ def _event_markets_cached(
     self,
     event_id,
 ):
-
     cache = getattr(
         self,
         "_sportytips_market_cache",
@@ -1169,12 +1153,8 @@ def _event_markets_cached(
     )
 
     if cache is None:
-
         cache = {}
-
-        self._sportytips_market_cache = (
-            cache
-        )
+        self._sportytips_market_cache = cache
 
     now = time.time()
 
@@ -1183,7 +1163,6 @@ def _event_markets_cached(
     )
 
     if cached:
-
         timestamp, markets = cached
 
         if (
@@ -1211,7 +1190,6 @@ def _event_markets_cached(
         len(cache)
         > MAX_CACHED_MATCHES
     ):
-
         oldest = sorted(
             cache,
             key=lambda key:
@@ -1256,11 +1234,8 @@ def gather(
     straight_only=False,
     max_groups=GROUP_LIMIT,
 ):
-
     started = time.time()
 
-    # This uses the provider's own SportyBet
-    # event loader.
     events = provider.get_upcoming(
         start,
         end,
@@ -1291,7 +1266,6 @@ def gather(
         )
 
         if strength is not None:
-
             rated.append(
                 (
                     strength,
@@ -1305,13 +1279,7 @@ def gather(
         reverse=True,
     )
 
-    # If the provider's event list does
-    # not contain markets, don't throw
-    # everything away.
-    #
-    # Use the first events instead.
     if rated:
-
         wanted = [
             event
             for _, event
@@ -1321,7 +1289,6 @@ def gather(
         ]
 
     else:
-
         wanted = [
             event
             for event in events[
@@ -1660,14 +1627,10 @@ def gather(
 # ODDS PRODUCT
 # ============================================================
 
-def _product(
-    picks
-):
-
+def _product(picks):
     total = 1.0
 
     for pick in picks:
-
         total *= pick[
             "odd"
         ]
@@ -1683,7 +1646,6 @@ def _dp(
     groups,
     target,
 ):
-
     SCALE = 80
 
     if target <= 1:
@@ -1887,7 +1849,6 @@ def _dp_exact(
     groups,
     target,
 ):
-
     best = None
 
     aim = target
@@ -1942,10 +1903,7 @@ def _dp_exact(
 # KIND COUNTS
 # ============================================================
 
-def _kind_counts(
-    picks
-):
-
+def _kind_counts(picks):
     counts = {}
 
     for pick in picks:
@@ -1974,7 +1932,6 @@ def choose_target(
     target,
     caps=True,
 ):
-
     if not groups:
         return [], False
 
@@ -1984,7 +1941,6 @@ def choose_target(
     )
 
     if picks:
-
         return (
             picks,
             True,
@@ -2064,7 +2020,6 @@ def choose_count(
     count,
     caps=True,
 ):
-
     candidates = sorted(
         (
             candidate
@@ -2143,7 +2098,6 @@ def choose_count(
         )
 
         if len(chosen) >= count:
-
             return (
                 chosen,
                 True,
@@ -2159,10 +2113,7 @@ def choose_count(
 # REASONS
 # ============================================================
 
-def _reason_for(
-    candidate
-):
-
+def _reason_for(candidate):
     kind = candidate[
         "kind"
     ]
@@ -2297,7 +2248,6 @@ def _time_text(
     candidate,
     today,
 ):
-
     local = candidate[
         "kickoff"
     ].astimezone(
@@ -2317,9 +2267,7 @@ def _time_text(
     )
 
 
-def _confidence(
-    probability
-):
+def _confidence(probability):
 
     if probability >= 0.80:
         return "🟢"
@@ -2330,9 +2278,7 @@ def _confidence(
     return "🟠"
 
 
-def _fmt(
-    value
-):
+def _fmt(value):
 
     if value == int(value):
         return str(
@@ -2357,7 +2303,6 @@ def build_ticket(
     straight_only=False,
     max_days=None,
 ):
-
     if target:
 
         floor = max(
@@ -2525,7 +2470,6 @@ def flow(
     chat_id,
     text,
 ):
-
     provider = getattr(
         bot,
         "SPORTYBET_PROVIDER",
@@ -2871,6 +2815,10 @@ def flow(
         ),
     ]
 
+    # ========================================================
+    # FIXED DISPLAY BLOCK
+    # ========================================================
+
     for number, candidate in enumerate(
         chosen,
         start=1,
@@ -2878,47 +2826,50 @@ def flow(
 
         lines.append("")
 
+        time_text = html.escape(
+            _time_text(
+                candidate,
+                today,
+            )
+        )
+
+        league_text = html.escape(
+            candidate["league"]
+        )
+
+        home_text = html.escape(
+            candidate["home"]
+        )
+
+        away_text = html.escape(
+            candidate["away"]
+        )
+
+        label_text = html.escape(
+            candidate["label"]
+        )
+
         lines.append(
             f"<b>{number}.</b> "
-            f"🕒 "
-            f"{html.escape("
-                _time_text(
-                    candidate,
-                    today,
-                )
-            )}"
-            f" • 🏆 "
-            f"{html.escape(
-                candidate['league']
-            )}"
+            f"🕒 {time_text}"
+            f" • 🏆 {league_text}"
         )
 
         lines.append(
             f"⚽ "
-            f"{html.escape(
-                candidate['home']
-            )}"
+            f"{home_text}"
             f" vs "
-            f"{html.escape(
-                candidate['away']
-            )}"
+            f"{away_text}"
         )
 
         lines.append(
             f"✅ <b>"
-            f"{html.escape(
-                candidate['label']
-            )}"
+            f"{label_text}"
             f"</b> • 💰 "
             f"{candidate['odd']:.2f}"
             f" • "
-            f"{_confidence(
-                candidate['p']
-            )} "
-            f"{round(
-                candidate['p']
-                * 100
-            )}%"
+            f"{_confidence(candidate['p'])} "
+            f"{round(candidate['p'] * 100)}%"
         )
 
         lines.append(

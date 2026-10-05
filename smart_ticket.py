@@ -61,21 +61,13 @@ BRAND = "SPORTYTIPS"
 # ============================================================
 
 MAX_DETAIL_EVENTS = 10
-
 DETAIL_WORKERS = 6
-
 DETAIL_SECONDS = 7
-
 MAX_CACHED_MATCHES = 150
-
 MAX_PAGES = 4
-
 MAX_LEGS = 30
-
 MAX_OPTIONS_PER_MATCH = 5
-
 GROUP_LIMIT = 80
-
 OVERSHOOT = 0.06
 
 
@@ -97,12 +89,10 @@ MIN_ODDS = {
     "asian_handicap": 1.30,
 }
 
-
 MAX_ODDS_KIND = {
     "corners": 1.50,
     "corners_1h": 1.50,
 }
-
 
 KIND_BONUS = {
     "up": 0.04,
@@ -115,7 +105,6 @@ KIND_BONUS = {
     "streak": 0.03,
     "dc": 0.01,
 }
-
 
 KIND_CAP = {
     "over15": 0.20,
@@ -130,7 +119,6 @@ KIND_CAP = {
     "team_goals": 0.35,
     "streak": 0.25,
 }
-
 
 KIND_NAME = {
     "over15": "Over 1.5",
@@ -168,10 +156,7 @@ def _single(odd):
     )
 
 
-def _two_way(
-    odd,
-    other,
-):
+def _two_way(odd, other):
     if not odd:
         return None
 
@@ -193,10 +178,7 @@ def _two_way(
 # SIDE DETECTION
 # ============================================================
 
-def _side_of(
-    outcome,
-    two_way=False,
-):
+def _side_of(outcome, two_way=False):
     label = str(
         outcome.get("desc")
         or outcome.get("name")
@@ -282,7 +264,6 @@ def _up_candidates(
             found.group(1)
         )
 
-        # Only 1UP and 2UP can ever be accepted.
         if up_number not in (1, 2):
             continue
 
@@ -1026,7 +1007,6 @@ def event_candidates(
                 or ""
             )
 
-            # NEVER select negative handicap.
             if "+" not in label:
                 continue
 
@@ -1236,7 +1216,6 @@ def _event_markets_cached(
     return markets
 
 
-# Replace provider's detailed cache.
 sp.SportyBetProvider._event_markets_cached = (
     _event_markets_cached
 )
@@ -1276,10 +1255,6 @@ def gather(
             0,
             0,
         )
-
-    # ========================================================
-    # RANK EVENTS
-    # ========================================================
 
     rated = []
 
@@ -1322,10 +1297,6 @@ def gather(
                 "eventId"
             )
         ]
-
-    # ========================================================
-    # LOAD DETAILS IN PARALLEL
-    # ========================================================
 
     details = {}
 
@@ -1387,10 +1358,6 @@ def gather(
                 cancel_futures=True,
             )
 
-    # ========================================================
-    # PROBABILITY SETTINGS
-    # ========================================================
-
     min_p = (
         {
             "safe": 0.65,
@@ -1427,10 +1394,6 @@ def gather(
         )
 
     groups = []
-
-    # ========================================================
-    # CREATE CANDIDATES
-    # ========================================================
 
     for event in events:
 
@@ -1470,13 +1433,8 @@ def gather(
         for candidate in candidates:
 
             # =================================================
-            # CRITICAL STRAIGHT WIN RULE
-            #
-            # Straight Win allows ONLY:
-            #   1UP
-            #   2UP
-            #
-            # Every other market is rejected here.
+            # STRAIGHT WIN:
+            # ONLY 1UP / 2UP
             # =================================================
 
             if straight_only:
@@ -1486,9 +1444,6 @@ def gather(
                 ) != "up":
                     continue
 
-                # Safety check:
-                # even within "up", only 1UP/2UP
-                # are permitted.
                 if candidate.get(
                     "up_n"
                 ) not in (
@@ -1989,7 +1944,6 @@ def choose_target(
             True,
         )
 
-    # Fallback.
     ranked = []
 
     for group in groups:
@@ -2512,6 +2466,9 @@ def _reset_straight():
 def flow(
     chat_id,
     text,
+    search_days=None,
+    target_override=None,
+    count_override=None,
 ):
     provider = getattr(
         bot,
@@ -2544,14 +2501,113 @@ def flow(
     )
 
     # ========================================================
+    # CUSTOM BUILDER OVERRIDES
+    # ========================================================
+
+    # Target odds override.
+    if target_override is not None:
+
+        try:
+            target_override = float(
+                target_override
+            )
+
+            if target_override > 0:
+                req["target_odds"] = (
+                    target_override
+                )
+
+        except (
+            TypeError,
+            ValueError,
+        ):
+            pass
+
+    # Number-of-picks override.
+    if count_override is not None:
+
+        try:
+            count_override = int(
+                count_override
+            )
+
+            if count_override > 0:
+                req["picks"] = (
+                    count_override
+                )
+
+        except (
+            TypeError,
+            ValueError,
+        ):
+            pass
+
+    # Search-day override.
+    #
+    # Supported exact windows:
+    # 1 / 2 / 3 / 5 / 7 / 14 days
+    if search_days is not None:
+
+        try:
+            search_days = int(
+                search_days
+            )
+
+        except (
+            TypeError,
+            ValueError,
+        ):
+            search_days = None
+
+        if search_days not in (
+            1,
+            2,
+            3,
+            5,
+            7,
+            14,
+        ):
+            search_days = None
+
+    # ========================================================
+    # APPLY EXACT SEARCH WINDOW
+    # ========================================================
+
+    if search_days is not None:
+
+        req["end"] = (
+            req["start"]
+            + timedelta(
+                days=search_days - 1
+            )
+        )
+
+    # ========================================================
+    # GET FINAL TARGET / COUNT
+    # ========================================================
+
+    target = req.get(
+        "target_odds"
+    )
+
+    count = req.get(
+        "picks"
+    )
+
+    risk = (
+        req.get("risk")
+        or "normal"
+    )
+
+    if not target and not count:
+        count = 5
+
+    # ========================================================
     # STRAIGHT WIN DETECTION
     #
     # Straight Win means ONLY:
     #   1UP
     #   2UP
-    #
-    # It does NOT include 1X2, DC, goals, BTTS,
-    # team goals, corners, handicap or Asian handicap.
     # ========================================================
 
     straight_only = bool(
@@ -2562,8 +2618,6 @@ def flow(
         )
     )
 
-    # Also recognize an explicit request for BOTH 1UP and 2UP
-    # as Straight Win mode.
     if not straight_only:
 
         has_1up = bool(
@@ -2602,22 +2656,6 @@ def flow(
             )
         )
     )
-
-    target = req.get(
-        "target_odds"
-    )
-
-    count = req.get(
-        "picks"
-    )
-
-    risk = (
-        req.get("risk")
-        or "normal"
-    )
-
-    if not target and not count:
-        count = 5
 
     # ========================================================
     # INTRO
@@ -2683,7 +2721,10 @@ def flow(
             straight_only=straight_only,
             max_days=(
                 0
-                if straight_today
+                if (
+                    straight_today
+                    or search_days is not None
+                )
                 else None
             ),
         )
@@ -2707,6 +2748,11 @@ def flow(
 
         return
 
+    # Make the displayed day count match the
+    # custom builder's exact search window.
+    if search_days is not None:
+        built["days_used"] = search_days
+
     elapsed = (
         time.time()
         - started
@@ -2721,7 +2767,8 @@ def flow(
         f"{elapsed:.1f}s: "
         f"{len(chosen)} picks, "
         f"target={target}, "
-        f"straight={straight_only}"
+        f"straight={straight_only}, "
+        f"search_days={search_days}"
     )
 
     # ========================================================
@@ -2744,13 +2791,7 @@ def flow(
         return
 
     # ========================================================
-    # FINAL SAFETY CHECK
-    #
-    # This is an additional protection layer.
-    #
-    # If Straight Win is active, absolutely NOTHING except
-    # 1UP / 2UP is allowed to reach SportyBet booking-code
-    # creation.
+    # FINAL STRAIGHT WIN SAFETY CHECK
     # ========================================================
 
     if straight_only:
@@ -2966,7 +3007,7 @@ def flow(
     ]
 
     # ========================================================
-    # FIXED DISPLAY BLOCK
+    # PICKS
     # ========================================================
 
     for number, candidate in enumerate(
@@ -3232,7 +3273,6 @@ def _start_warmer():
 
     def loop():
 
-        # First refresh.
         threading.Thread(
             target=refresh,
             daemon=True,

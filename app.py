@@ -114,6 +114,9 @@ def client_ip():
             or request.remote_addr or "?")
 
 
+_active = set()          # sessions that have a ticket being built right now
+
+
 def run_turn(session, text, q):
     _ctx.q = q
     try:
@@ -122,7 +125,18 @@ def run_turn(session, text, q):
     except Exception as exc:
         q.put({"type": "text", "html": "❌ " + html.escape(str(exc))})
     finally:
+        _active.discard(session)
         q.put(None)
+
+
+def start_turn(session, text):
+    """Start a turn, or say we are busy. Stops requests piling up and freezing the server."""
+    if session in _active or RUN_LOCK.locked():
+        return None, (jsonify(error="I'm still building a ticket. Wait for it to finish, then try again."), 429)
+    _active.add(session)
+    q = queue.Queue()
+    threading.Thread(target=run_turn, args=(session, text, q), daemon=True).start()
+    return q, None
 
 
 CHAT_EXTRAS = r"""
@@ -238,8 +252,9 @@ def chat():
     if too_fast(client_ip()):
         return jsonify(error="Slow down. Try again in a minute."), 429
 
-    q = queue.Queue()
-    threading.Thread(target=run_turn, args=(session, text, q), daemon=True).start()
+    q, busy = start_turn(session, text)
+    if busy:
+        return busy
     return _stream_response(q)
 
 
@@ -262,8 +277,9 @@ def api_straight_win():
     # Inject the trigger message as if the user typed it
     text = "straight win long ticket" if window == "long" else "straight win today"
 
-    q = queue.Queue()
-    threading.Thread(target=run_turn, args=(session, text, q), daemon=True).start()
+    q, busy = start_turn(session, text)
+    if busy:
+        return busy
     return _stream_response(q)
 
 

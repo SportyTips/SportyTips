@@ -1278,25 +1278,33 @@ def gather(
         reverse=True,
     )
 
-    if rated:
-        wanted = [
-            event
-            for _, event
-            in rated[
-                :MAX_DETAIL_EVENTS
-            ]
-        ]
+    if straight_only:
+    detail_limit = min(
+        len(events),
+        40,
+    )
+else:
+    detail_limit = MAX_DETAIL_EVENTS
 
-    else:
-        wanted = [
-            event
-            for event in events[
-                :MAX_DETAIL_EVENTS
-            ]
-            if event.get(
-                "eventId"
-            )
+if rated:
+    wanted = [
+        event
+        for _, event
+        in rated[
+            :detail_limit
         ]
+    ]
+
+else:
+    wanted = [
+        event
+        for event in events[
+            :detail_limit
+        ]
+        if event.get(
+            "eventId"
+        )
+    ]
 
     details = {}
 

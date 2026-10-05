@@ -1,24 +1,18 @@
-"""Web frontend for SportyTips.
+"""Web front end for SamuelBet AI.
 
 Does NOT edit your bot files. It imports them, swaps the Telegram send
 functions for ones that stream to the browser, and calls the bot's own
 handle_text() for every message.
 
-Pages (it finds the chat page by itself: the file with the message box):
-  /       the homepage (home.html)
-  /chat   the chat (index.html)
-  /status  "free" or "busy" (shows if a ticket is still being built)
-
-Put this file next to main.py, launcher.py, sportybet_provider.py,
-ticket_image_lite.py, smart_ticket.py, upgrades.py, home.html and index.html.
+Put this file next to main.py, your launcher, sportybet_provider.py,
+ticket_image_lite.py and upgrades.py.
 
 Run locally:   python app.py
-Production:    gunicorn app:app -w 1 --threads 8 --timeout 600
+Production:    gunicorn app:app -w 1 --threads 8 --timeout 300
 (keep -w 1: the bot keeps its caches and chat memory in this process)
 
-Env vars:
-  USE_SPORTYBET=1 (required for tickets)
-  TELEGRAM_BOT_TOKEN is NOT needed for the web frontend.
+Env vars: API_FOOTBALL_KEY (required), ANTHROPIC_API_KEY (optional AI chat),
+USE_SPORTYBET=1 (needed for the ticket tools). TELEGRAM_BOT_TOKEN is NOT needed.
 """
 
 import base64
@@ -31,22 +25,30 @@ import re
 import threading
 import time
 
-from flask import Flask, Response, jsonify, redirect, request, send_from_directory
+from flask import Flask, Response, jsonify, redirect, request
 
+# Name of your launcher file without .py (the one that starts with
+# "Launcher: adds SportyBet-first tickets...").
 LAUNCHER_MODULE = os.getenv("LAUNCHER_MODULE", "launcher")
-BASE_DIR = os.path.dirname(os.path.abspath(__file__))
 
-RATE_LIMIT = 8
-RATE_WINDOW = 60
-TOOL_LIMIT = 30
-LOCK_WAIT_SECONDS = 240      # how long a message waits behind another ticket before giving up
+RATE_LIMIT = 8        # chat messages allowed per IP...
+RATE_WINDOW = 60      # ...per this many seconds
+TOOL_LIMIT = 30       # ticket tool clicks allowed per IP per RATE_WINDOW
 
 bot = importlib.import_module("main")
-launcher = importlib.import_module(LAUNCHER_MODULE)
+launcher = importlib.import_module(LAUNCHER_MODULE)   # applies its patches to `bot`
 try:
-    upgrades = importlib.import_module("upgrades")
+    upgrades = importlib.import_module("upgrades")    # 1UP/2UP, human chat, Pidgin
 except ImportError:
     upgrades = None
+try:
+    football_data = importlib.import_module("football_data")   # last 5 games + head-to-head
+except ImportError:
+    football_data = None
+try:
+    smart_ticket = importlib.import_module("smart_ticket")     # ticket builder
+except ImportError:
+    smart_ticket = None
 
 # ---------------------------------------------------------------
 # Replace Telegram output with a per-request queue
@@ -60,6 +62,7 @@ def _emit(item):
         q.put(item)
 
 
+# Lines containing these are API error / quota notes. They are hidden on the site.
 HIDE_LINES = re.compile(
     r"API-Football|API limit|API problem|API requests|Daily API|"
     r"Booking code failed|SportyBet: |plan only allows",
@@ -88,7 +91,7 @@ launcher.send_photo = web_send_photo
 # Server
 # ---------------------------------------------------------------
 app = Flask(__name__)
-RUN_LOCK = threading.Lock()
+RUN_LOCK = threading.Lock()      # the bot's globals are not thread-safe
 _hits = {}
 
 
@@ -108,79 +111,37 @@ def client_ip():
             or request.remote_addr or "?")
 
 
-def run_turn(session, text, q):
-    """Runs one message. Only one ticket is built at a time, so if another one is
-    still running we SAY so instead of loading in silence."""
-    _ctx.q = q
+LOCK_WAIT_SECONDS = 240      # how long a message waits behind another ticket before giving up
+
+
+def with_lock(q, work):
+    """Only one ticket is built at a time. If another is running, SAY so instead of loading in silence."""
     got_lock = RUN_LOCK.acquire(blocking=False)
     try:
         if not got_lock:
-            q.put({"type": "text",
-                   "html": "⏳ I'm still finishing another ticket. Yours is next, one moment..."})
+            q.put({"type": "text", "html": "⏳ I'm still finishing another ticket. Yours is next, one moment..."})
             got_lock = RUN_LOCK.acquire(timeout=LOCK_WAIT_SECONDS)
             if not got_lock:
-                q.put({"type": "text",
-                       "html": "I'm still busy with another ticket. Please try again in a minute."})
+                q.put({"type": "text", "html": "I'm still busy with another ticket. Please try again in a minute."})
                 return
-        bot.handle_text(session, text)
+        work()
     except Exception as exc:
-        q.put({"type": "text", "html": "❌ " + html.escape(str(exc))})
+        q.put({"type": "text", "html": "❌ " + html.escape(str(exc)[:200])})
     finally:
         if got_lock:
             RUN_LOCK.release()
         q.put(None)
 
 
-CHAT_EXTRAS = r"""
-<style>
-  .code-copy { margin-left: 10px; border: 0; background: #ff1f1f; color: #fff; font: inherit; font-size: 14px;
-    font-weight: 700; padding: 6px 15px; border-radius: 999px; cursor: pointer; vertical-align: middle; }
-  .code-copy:active { transform: scale(.96); }
-  .code-copy.done { background: #16a765; }
-  .content strong.is-code { font-size: 20px; letter-spacing: .04em; }
-</style>
-<script>
-(function () {
-  var box = document.getElementById("messages");
-  if (!box) return;
-  var CODE = /^[A-Z0-9]{5,12}$/;
-  function copyText(text, btn) {
-    function done() {
-      btn.textContent = "Copied"; btn.classList.add("done");
-      setTimeout(function () { btn.textContent = "Copy"; btn.classList.remove("done"); }, 1500);
-    }
-    function fallback() {
-      var t = document.createElement("textarea");
-      t.value = text; t.style.position = "fixed"; t.style.opacity = "0";
-      document.body.appendChild(t); t.select();
-      try { document.execCommand("copy"); } catch (e) {}
-      t.remove(); done();
-    }
-    if (navigator.clipboard && navigator.clipboard.writeText) {
-      navigator.clipboard.writeText(text).then(done, fallback);
-    } else { fallback(); }
-  }
-  function scan() {
-    box.querySelectorAll(".content strong").forEach(function (s) {
-      if (s.dataset.cc) return;
-      var text = s.textContent.trim();
-      if (!CODE.test(text)) return;
-      var prev = s.previousSibling;
-      var before = prev && prev.nodeType === 3 ? prev.textContent : "";
-      if (!/code:\s*$/i.test(before)) return;
-      s.dataset.cc = "1";
-      s.classList.add("is-code");
-      var b = document.createElement("button");
-      b.type = "button"; b.className = "code-copy"; b.textContent = "Copy";
-      b.onclick = function () { copyText(text, b); };
-      s.after(b);
-    });
-  }
-  new MutationObserver(scan).observe(box, { childList: true, subtree: true });
-  scan();
-})();
-</script>
-"""
+def run_turn(session, text, q, pidgin=False):
+    _ctx.q = q
+    if upgrades is not None:
+        upgrades.CTX.pidgin = pidgin
+    with_lock(q, lambda: bot.handle_text(session, text))
+
+
+BASE_DIR = os.path.dirname(os.path.abspath(__file__))
+NO_CACHE = {"Cache-Control": "no-cache"}
 
 
 def _read(name):
@@ -192,45 +153,32 @@ def _read(name):
 
 
 def _pages():
-    """(landing_page, chat_page). The chat page is the file that contains the message box,
-    so it works even if home.html and index.html have been swapped."""
+    """(home_page, chat_page). The chat page is the file that has the message box."""
     pages = [p for p in (_read("home.html"), _read("index.html")) if p]
     chat = next((p for p in pages if 'id="messages"' in p), None)
-    landing = next((p for p in pages if 'id="messages"' not in p), None)
-    return landing, chat
-
-
-NO_CACHE = {"Cache-Control": "no-cache"}
+    home = next((p for p in pages if 'id="messages"' not in p), None)
+    return home, chat
 
 
 @app.get("/")
-def home_page():
-    landing, chat = _pages()
-    if landing is None:
-        return redirect("/chat")          # no homepage file: go straight to chat
-    return Response(landing, mimetype="text/html", headers=NO_CACHE)
+def index():
+    home, chat = _pages()
+    if home is None:
+        return redirect("/chat")          # no separate home page: go straight to the chat
+    return Response(home, mimetype="text/html", headers=NO_CACHE)
 
 
 @app.get("/index.html")
-def chat_page_alias():
+def chat_alias():
     return redirect("/chat")
 
 
 @app.get("/chat")
 def chat_page():
-    landing, page = _pages()
-    if page is None:
+    home, chat = _pages()
+    if chat is None:
         return "The chat page is missing. It is the file that has the message box.", 404
-    if "</body>" in page:
-        page = page.replace("</body>", CHAT_EXTRAS + "</body>", 1)
-    else:
-        page += CHAT_EXTRAS
-    return Response(page, mimetype="text/html", headers=NO_CACHE)
-
-
-@app.get("/health")
-def health():
-    return "ok"
+    return Response(chat, mimetype="text/html", headers=NO_CACHE)
 
 
 @app.get("/status")
@@ -239,13 +187,35 @@ def status():
     return "busy" if RUN_LOCK.locked() else "free"
 
 
-def _stream_response(q):
+@app.get("/health")
+def health():
+    return "ok"
+
+
+@app.post("/api/chat")
+def chat():
+    data = request.get_json(silent=True) or {}
+    text = str(data.get("message", "")).strip()[:500]
+    session = str(data.get("session", ""))[:64]
+    pidgin = bool(data.get("pidgin"))
+    if not text or not session:
+        return jsonify(error="Empty message."), 400
+
+    if too_fast(client_ip()):
+        return jsonify(error="Slow down. Try again in a minute."), 429
+
+    q = queue.Queue()
+    threading.Thread(target=run_turn, args=(session, text, q, pidgin), daemon=True).start()
+    return stream_response(q)
+
+
+def stream_response(q):
     def stream():
         while True:
             try:
                 item = q.get(timeout=15)
             except queue.Empty:
-                yield "\n"
+                yield "\n"            # keep-alive while the bot waits on API limits
                 continue
             if item is None:
                 break
@@ -255,44 +225,45 @@ def _stream_response(q):
                     headers={"Cache-Control": "no-cache", "X-Accel-Buffering": "no"})
 
 
-@app.post("/api/chat")
-def chat():
+def run_build(session, spec, q, pidgin=False):
+    _ctx.q = q
+    if upgrades is not None:
+        upgrades.CTX.pidgin = pidgin
+    with_lock(q, lambda: smart_ticket.flow_spec("web-" + session, spec))
+
+
+@app.post("/api/build")
+def build():
+    """The ticket builder card: market, side, games, odds and day chosen by the user."""
     data = request.get_json(silent=True) or {}
-    text = str(data.get("message", "")).strip()[:500]
     session = str(data.get("session", ""))[:64]
-    if not text or not session:
-        return jsonify(error="Empty message."), 400
-
-    if too_fast(client_ip()):
-        return jsonify(error="Slow down. Try again in a minute."), 429
-
-    q = queue.Queue()
-    threading.Thread(target=run_turn, args=(session, text, q), daemon=True).start()
-    return _stream_response(q)
-
-
-# ---------------------------------------------------------------
-# Straight-win shortcuts (used by the two buttons in the web UI)
-# ---------------------------------------------------------------
-@app.post("/api/straight_win")
-def api_straight_win():
-    data = request.get_json(silent=True) or {}
-    window = str(data.get("window", "today")).lower()
-    session = str(data.get("session", ""))[:64]
-    if window not in ("today", "long"):
-        return jsonify(error="Unknown window."), 400
     if not session:
-        return jsonify(error="Missing session."), 400
-
+        return jsonify(error="Empty request."), 400
+    if smart_ticket is None:
+        return jsonify(error="The ticket builder is not installed on the server."), 503
     if too_fast(client_ip()):
         return jsonify(error="Slow down. Try again in a minute."), 429
 
-    # Inject the trigger message as if the user typed it
-    text = "straight win long ticket" if window == "long" else "straight win today"
+    def number(key, low, high, whole=False):
+        try:
+            value = float(data.get(key))
+        except (TypeError, ValueError):
+            return None
+        if not (low <= value <= high):
+            return None
+        return int(value) if whole else value
 
+    spec = {
+        "mode": data.get("mode") if data.get("mode") in ("up2", "up1", "win", "dc", "mixed") else "up2",
+        "side": data.get("side") if data.get("side") in ("home", "away", "any") else "any",
+        "window": data.get("window") if data.get("window") in ("today", "tonight", "tomorrow") else "today",
+        "games": number("games", 1, 30, whole=True),
+        "odds": number("odds", 1.01, 100000),
+        "risk": "safe",
+    }
     q = queue.Queue()
-    threading.Thread(target=run_turn, args=(session, text, q), daemon=True).start()
-    return _stream_response(q)
+    threading.Thread(target=run_build, args=(session, spec, q, bool(data.get("pidgin"))), daemon=True).start()
+    return stream_response(q)
 
 
 # ---------------------------------------------------------------
@@ -329,16 +300,53 @@ def api_check():
 
 @app.post("/api/edit")
 def api_edit():
+    picker = football_data.safest_for_leg if football_data else None
     return _ticket_tool(lambda p, code, data: p.edit_code(
-        code, remove=_ints(data.get("remove")), swap=_ints(data.get("swap")), picker=None))
+        code, remove=_ints(data.get("remove")), swap=_ints(data.get("swap")),
+        picker=(lambda leg: picker(p, leg)) if picker else None))
 
 
 @app.post("/api/safer")
 def api_safer():
-    return _ticket_tool(lambda p, code, data: p.make_safer(code))
+    def work(provider, code, data):
+        if football_data:
+            return football_data.rebuild_safer(provider, code)
+        result = provider.make_safer(code)
+        new_code = result.get("new_code")
+        ticket = provider.check_code(new_code or code)
+        ticket["changed"] = bool(new_code)
+        return ticket
+    return _ticket_tool(work)
+
+
+@app.post("/api/straight_win")
+def api_straight_win():
+    """Compatibility with older pages: same as typing 'straight win today'."""
+    data = request.get_json(silent=True) or {}
+    session = str(data.get("session", ""))[:64]
+    if not session:
+        return jsonify(error="Missing session."), 400
+    if too_fast(client_ip()):
+        return jsonify(error="Slow down. Try again in a minute."), 429
+    text = "straight win long ticket" if str(data.get("window", "today")).lower() == "long" else "straight win today"
+    q = queue.Queue()
+    threading.Thread(target=run_turn, args=(session, text, q), daemon=True).start()
+    return stream_response(q)
+
+
+@app.post("/api/why")
+def api_why():
+    def work(provider, code, data):
+        index = data.get("index")
+        if not isinstance(index, int):
+            raise ValueError("Missing pick number.")
+        if football_data is None:
+            return {"reason": "Match data is not set up on the server yet.", "has_data": False}
+        return football_data.why(provider, code, index)
+    return _ticket_tool(work)
 
 
 if __name__ == "__main__":
-    if bot.SPORTYBET_PROVIDER is None:
-        print("WARNING: USE_SPORTYBET is not set to 1, so tickets cannot be built.")
+    if not bot.API_FOOTBALL_KEY:
+        print("WARNING: API_FOOTBALL_KEY is missing.")
     app.run(host="0.0.0.0", port=int(os.getenv("PORT", "8000")), threaded=True)

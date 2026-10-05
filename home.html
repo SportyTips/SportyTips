@@ -4,11 +4,13 @@
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
 <meta name="theme-color" content="#04111f">
+<meta name="color-scheme" content="light">
 <title>SportyTips | Smarter slips, built in seconds</title>
 <meta name="description" content="Tell SportyTips how many odds you want. It scans SportyBet's matches, builds your ticket and gives you a booking code.">
 <link rel="icon" href="data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 64 64'%3E%3Crect width='64' height='64' rx='18' fill='%23ff1f1f'/%3E%3Ccircle cx='32' cy='32' r='19' fill='white'/%3E%3Cpolygon points='32,24.5 39.1,29.7 36.4,38.1 27.6,38.1 24.9,29.7' fill='%2304111f'/%3E%3C/svg%3E">
 <style>
   :root {
+    color-scheme: light;
     --navy: #04111f; --navy2: #0b2238; --red: #ff1f1f; --dark: #7a0a14;
     --ink: #0b1220; --gray: #586270; --muted: #8a94a3; --line: #e2e6ec; --bar: #f3f5f8; --green: #16a765;
   }
@@ -49,7 +51,7 @@
   .eyebrow i { width: 8px; height: 8px; border-radius: 50%; background: #2ee59d; box-shadow: 0 0 0 4px rgba(46,229,157,.22); }
   h1 { font-size: clamp(40px, 10vw, 66px); line-height: 1.02; letter-spacing: -.03em; margin: 18px 0 14px; font-weight: 800; }
   h1 .u { background: linear-gradient(transparent 82%, var(--red) 82%, var(--red) 94%, transparent 94%); }
-  .lead { color: #c4ccd8; font-size: 19px; max-width: 34ch; margin: 0; }
+  .lead { color: #e1e7f0; font-size: 19px; max-width: 34ch; margin: 0; }
 
   .cta { display: flex; flex-wrap: wrap; gap: 12px; margin-top: 28px; }
   .btn {
@@ -63,14 +65,14 @@
   @keyframes glow { 50% { box-shadow: 0 16px 48px rgba(255,31,31,.75); } }
   .btn-ghost { background: rgba(255,255,255,.08); color: #fff; border: 1.5px solid rgba(255,255,255,.35); font-size: 17px; padding: 16px 26px; }
 
-  .trust { list-style: none; padding: 0; margin: 26px 0 0; display: grid; gap: 9px; color: #cfd7e3; font-size: 15px; font-weight: 600; }
+  .trust { list-style: none; padding: 0; margin: 26px 0 0; display: grid; gap: 9px; color: #eef2f8; font-size: 15px; font-weight: 600; }
   .trust li { display: flex; align-items: center; gap: 10px; }
   .trust svg { width: 18px; height: 18px; flex: none; stroke: #2ee59d; fill: none; stroke-width: 3; stroke-linecap: round; stroke-linejoin: round; }
 
   /* example ticket */
   .ticket {
     background: #fff; color: var(--ink); border-radius: 28px; padding: 8px 16px 16px;
-    box-shadow: 0 30px 70px rgba(0,0,0,.5); transform: rotate(-1.5deg);
+    box-shadow: 0 30px 70px rgba(0,0,0,.5);
   }
   .tag { display: flex; justify-content: space-between; align-items: center; color: var(--muted); font-size: 12px; font-weight: 800; letter-spacing: .07em; text-transform: uppercase; padding: 12px 0 4px; }
   .tag b { color: var(--red); }
@@ -107,9 +109,9 @@
   .final { margin-top: 64px; background: var(--navy); color: #fff; position: relative; overflow: hidden; text-align: center; padding: 64px 0 56px; }
   .final::before { content: ""; position: absolute; inset: 0; background: var(--red); clip-path: polygon(78% 0, 100% 0, 100% 100%, 90% 100%); opacity: .9; }
   .final .wrap { position: relative; }
-  .final h2 { margin-bottom: 10px; }
-  .final p { color: #c4ccd8; margin: 0 auto 26px; max-width: 36ch; }
-  .legal { color: #8a94a3; font-size: 12.5px; margin-top: 22px; }
+  .final h2 { margin-bottom: 10px; color: #fff; }
+  .final p { color: #e1e7f0; margin: 0 auto 26px; max-width: 36ch; }
+  .legal { color: #c3ccd9; font-size: 12.5px; margin-top: 22px; }
 
   /* sticky button */
   .sticky {
@@ -161,11 +163,11 @@
 
   <div class="wrap">
     <nav class="nav">
-      <a class="brand" href="/" aria-label="SportyTips home">
+      <a class="brand" href="#" aria-label="SportyTips home">
         <svg viewBox="0 0 64 64"><use href="#logo"/></svg>
         <span>Sporty<span class="tips">Tips</span></span>
       </a>
-      <a class="nav-btn" href="/chat" data-go>Open chat</a>
+      <a class="nav-btn" href="index.html" data-go>Open chat</a>
     </nav>
 
     <div class="grid">
@@ -175,7 +177,7 @@
         <p class="lead">Tell me how many odds you want. I scan the matches, pick the strongest legs and hand you a SportyBet code.</p>
 
         <div class="cta" id="cta1">
-          <a class="btn btn-main" href="/chat" data-go>
+          <a class="btn btn-main" href="index.html" data-go>
             Start chatting
             <svg viewBox="0 0 24 24"><line x1="4" y1="12" x2="20" y2="12"/><polyline points="13 5 20 12 13 19"/></svg>
           </a>
@@ -232,7 +234,7 @@
     <div class="wrap" id="cta2">
       <h2>Ready for your next slip?</h2>
       <p>Open the chat and ask for your odds.</p>
-      <a class="btn btn-main" href="/chat" data-go>
+      <a class="btn btn-main" href="index.html" data-go>
         Start chatting
         <svg viewBox="0 0 24 24"><line x1="4" y1="12" x2="20" y2="12"/><polyline points="13 5 20 12 13 19"/></svg>
       </a>
@@ -242,7 +244,7 @@
 </main>
 
 <div class="sticky" id="sticky">
-  <a class="btn btn-main" href="/chat" data-go>
+  <a class="btn btn-main" href="index.html" data-go>
     Start chatting
     <svg viewBox="0 0 24 24"><line x1="4" y1="12" x2="20" y2="12"/><polyline points="13 5 20 12 13 19"/></svg>
   </a>

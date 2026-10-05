@@ -1,4 +1,4 @@
-"""Smart ticket builder for SportyTips.
+l"""Smart ticket builder for SportyTips.
 
 Replaces the bot's ticket flow when SportyBet mode is on (USE_SPORTYBET=1).
 
@@ -44,8 +44,8 @@ BRAND = "SPORTYTIPS"
 MIN_LEG_PROB = {"safe": 0.72, "normal": 0.62, "risky": 0.50}
 MAX_LEG_ODDS = {"safe": 1.90, "normal": 2.40, "risky": 3.50}
 MAX_LEGS = 60
-MAX_DETAIL_EVENTS = 150
-DETAIL_WORKERS = 12
+MAX_DETAIL_EVENTS = 80
+DETAIL_WORKERS = 10
 DETAIL_SECONDS = 90
 OVERSHOOT = 0.06
 GROUP_LIMIT = 400
@@ -887,51 +887,102 @@ def flow(chat_id, text):
 # ------------------------------------------------------------
 # FASTER MATCH LOADING (all pages at once instead of one by one)
 # ------------------------------------------------------------
+_LOAD_LOCK = threading.Lock()
+
+
+def _slim_event(event):
+    """Keep only what the bot uses from each match (saves a lot of memory)."""
+    slim = {key: event[key] for key in ("eventId", "homeTeamName", "awayTeamName",
+                                         "estimateStartTime", "sport") if key in event}
+    slim["markets"] = _slim_markets(event.get("markets"))
+    return slim
+
+
 def _fast_load_events(self):
-    if self._events and time.time() - self._events_time < sp.EVENTS_CACHE_SECONDS:
+    def fresh():
+        return self._events and time.time() - self._events_time < sp.EVENTS_CACHE_SECONDS
+
+    if fresh():
         return self._events
 
-    def fetch(page):
-        result = self._request(sp.UPCOMING_PATH, {
-            "sportId": "sr:sport:1",
-            "marketId": f"{sp.M_1X2},{sp.M_DC},{sp.M_TOTAL},{sp.M_BTTS}",
-            "pageSize": 100,
-            "pageNum": page,
-            "todayGames": "false",
-        })
-        return list(sp._walk_events(result.get("data")))
-
-    pages = {}
-    with ThreadPoolExecutor(8) as pool:
-        futures = {pool.submit(fetch, p): p for p in range(1, sp.MAX_EVENT_PAGES + 1)}
-        for future in as_completed(futures):
-            page = futures[future]
-            try:
-                pages[page] = future.result()
-            except Exception as exc:
-                print(f"SportyBet page {page} failed: {exc}")
-                pages[page] = None
-
-    if pages.get(1) is None:
-        if self._events:
-            print("SportyBet refresh failed, using the older match list.")
+    with _LOAD_LOCK:                      # only one load at a time
+        if fresh():
             return self._events
-        raise sp.SportyBetError("Could not load SportyBet matches (page 1 failed).")
 
-    events, seen_ids = [], set()
-    for page in sorted(pages):
-        for event in pages[page] or []:
-            event_id = event.get("eventId")
-            if event_id in seen_ids or sp.is_virtual(event):
-                continue
-            seen_ids.add(event_id)
-            events.append(event)
-    if events:
-        self._events, self._events_time = events, time.time()
-    return events or self._events
+        def fetch(page):
+            result = self._request(sp.UPCOMING_PATH, {
+                "sportId": "sr:sport:1",
+                "marketId": f"{sp.M_1X2},{sp.M_DC},{sp.M_TOTAL},{sp.M_BTTS}",
+                "pageSize": 100,
+                "pageNum": page,
+                "todayGames": "false",
+            })
+            return [_slim_event(e) for e in sp._walk_events(result.get("data"))]
+
+        pages = {}
+        with ThreadPoolExecutor(6) as pool:
+            futures = {pool.submit(fetch, p): p for p in range(1, sp.MAX_EVENT_PAGES + 1)}
+            for future in as_completed(futures):
+                page = futures[future]
+                try:
+                    pages[page] = future.result()
+                except Exception as exc:
+                    print(f"SportyBet page {page} failed: {exc}")
+                    pages[page] = None
+
+        if pages.get(1) is None:
+            if self._events:
+                print("SportyBet refresh failed, using the older match list.")
+                return self._events
+            raise sp.SportyBetError("Could not load SportyBet matches (page 1 failed).")
+
+        events, seen_ids = [], set()
+        for page in sorted(pages):
+            for event in pages[page] or []:
+                event_id = event.get("eventId")
+                if event_id in seen_ids or sp.is_virtual(event):
+                    continue
+                seen_ids.add(event_id)
+                events.append(event)
+        if events:
+            self._events, self._events_time = events, time.time()
+        return events or self._events
 
 
 sp.SportyBetProvider._load_events = _fast_load_events
+
+
+# Each match has 100+ markets; keep only the ones the bot uses, so the server
+# does not run out of memory on a small Render plan.
+KEEP_MARKET_IDS = {sp.M_1X2, sp.M_DC, sp.M_TOTAL, sp.M_BTTS, sp.M_HOME_TEAM_GOALS,
+                   sp.M_AWAY_TEAM_GOALS, sp.M_CORNERS, sp.M_CORNERS_1H, sp.M_STREAK_3,
+                   sp.M_DNB, sp.M_HANDICAP, sp.M_ASIAN_HANDICAP}
+MAX_CACHED_MATCHES = 300
+
+
+def _slim_markets(markets):
+    kept = []
+    for market in markets or []:
+        text = f"{market.get('desc') or ''} {market.get('name') or ''}"
+        if str(market.get("id")) in KEEP_MARKET_IDS or UP_LOOSE_RE.search(text):
+            kept.append(market)
+    return kept
+
+
+def _slim_markets_cached(self, event_id):
+    hit = self._up_cache.get(event_id)
+    if hit and time.time() - hit[0] < sp.UP_MARKETS_CACHE_SECONDS:
+        return hit[1]
+    markets = _slim_markets(self.get_event_markets(event_id))
+    self._up_cache[event_id] = (time.time(), markets)
+    if len(self._up_cache) > MAX_CACHED_MATCHES:
+        oldest = sorted(self._up_cache, key=lambda k: self._up_cache[k][0])
+        for key in oldest[:len(self._up_cache) - MAX_CACHED_MATCHES]:
+            self._up_cache.pop(key, None)
+    return markets
+
+
+sp.SportyBetProvider._event_markets_cached = _slim_markets_cached
 
 
 def _start_warmer():

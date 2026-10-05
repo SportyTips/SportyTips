@@ -21,7 +21,11 @@ BRAND = "SportyTips"
 # ============================================================
 # SETTINGS
 # ============================================================
-BOT_TOKEN = (os.getenv("TELEGRAM_BOT_TOKEN") or "").strip().strip("\"'")
+
+BOT_TOKEN = (
+    os.getenv("TELEGRAM_BOT_TOKEN") or ""
+).strip().strip("\"'")
+
 TELEGRAM_TIMEOUT = 40
 MAX_MESSAGE_LENGTH = 3500
 
@@ -31,14 +35,23 @@ LOCAL_TZ_NAME = "WAT"
 MIN_HOURS_BEFORE_KICKOFF = 1
 MAX_DAYS_AHEAD = 30
 
-ENABLED_MARKETS = {"win", "goals", "btts"}
+ENABLED_MARKETS = {
+    "win",
+    "goals",
+    "btts",
+}
 
 RISK_PROFILES = {
     "safe": {
         "min_prob": 0.65,
         "min_odds": 1.30,
         "overshoot": 1.15,
-        "markets": {"win", "goals", "btts", "dc"},
+        "markets": {
+            "win",
+            "goals",
+            "btts",
+            "dc",
+        },
         "extra_matches": 4,
     },
     "normal": {
@@ -61,6 +74,7 @@ RISK_PROFILES = {
 # ============================================================
 # SPORTYBET SWITCH
 # ============================================================
+
 def _flag(name):
     value = (
         os.getenv(name, "0")
@@ -78,9 +92,7 @@ def _flag(name):
     )
 
 
-USE_SPORTYBET = _flag(
-    "USE_SPORTYBET"
-)
+USE_SPORTYBET = _flag("USE_SPORTYBET")
 
 SPORTYBET_PROVIDER = None
 SPORTYBET_ERROR = None
@@ -89,9 +101,7 @@ if USE_SPORTYBET:
     try:
         from sportybet_provider import SportyBetProvider
 
-        SPORTYBET_PROVIDER = (
-            SportyBetProvider()
-        )
+        SPORTYBET_PROVIDER = SportyBetProvider()
 
     except Exception as exc:
         SPORTYBET_ERROR = (
@@ -138,6 +148,7 @@ class BotError(Exception):
 # ============================================================
 # TELEGRAM
 # ============================================================
+
 def telegram_request(
     method,
     params=None,
@@ -169,7 +180,6 @@ def telegram_request(
     )
 
     try:
-
         with urlopen(
             request,
             timeout=TELEGRAM_TIMEOUT,
@@ -222,9 +232,10 @@ def split_text(
             + 1
             > limit
         ):
-            chunks.append(
-                current.rstrip()
-            )
+            if current.strip():
+                chunks.append(
+                    current.rstrip()
+                )
 
             current = ""
 
@@ -275,13 +286,9 @@ RISKY_WORDS = (
     r")\b"
 )
 
-# IMPORTANT:
-# Recognizes BOTH:
+# Recognizes:
 #   straight win
 #   straight winning
-#
-# This is needed because the website button uses
-# "Straight Winning Ticket".
 STRAIGHT_WIN_RE = re.compile(
     r"\bstraight\s*-?\s*(?:win|winning)\b",
     re.I,
@@ -340,9 +347,7 @@ def parse_request(text):
         days = max(
             1,
             min(
-                int(
-                    days_match.group(1)
-                ),
+                int(days_match.group(1)),
                 MAX_DAYS_AHEAD,
             ),
         )
@@ -609,8 +614,54 @@ def describe_request(req):
 
 
 # ============================================================
+# REAL TICKET BUILDER
+# ============================================================
+
+def prediction_ticket_flow(
+    chat_id,
+    text,
+):
+    """Run the real SportyTips ticket builder."""
+
+    if SPORTYBET_PROVIDER is None:
+
+        send_message(
+            chat_id,
+            (
+                "❌ SportyBet mode is off. "
+                f"{escape(sportybet_off_reason())}"
+            ),
+        )
+
+        return
+
+    try:
+
+        import smart_ticket
+
+        smart_ticket.flow(
+            chat_id,
+            text,
+        )
+
+    except Exception as exc:
+
+        traceback.print_exc()
+
+        send_message(
+            chat_id,
+            (
+                "❌ Ticket builder error:\n"
+                f"{escape(type(exc).__name__)}: "
+                f"{escape(str(exc))}"
+            ),
+        )
+
+
+# ============================================================
 # LEGACY STUBS
 # ============================================================
+
 def build_options(
     *args,
     **kwargs,
@@ -631,41 +682,13 @@ def ai_system_prompt(
     *args,
     **kwargs,
 ):
-    """Legacy stub."""
-
     return ""
-
-
-def prediction_ticket_flow(
-    chat_id,
-    text,
-):
-    """Fallback when smart_ticket.py is not present."""
-
-    if SPORTYBET_PROVIDER is None:
-
-        send_message(
-            chat_id,
-            (
-                "❌ SportyBet mode is off. "
-                f"{escape(sportybet_off_reason())}"
-            ),
-        )
-
-        return
-
-    send_message(
-        chat_id,
-        (
-            "❌ Ticket builder is not loaded. "
-            "Check smart_ticket.py."
-        ),
-    )
 
 
 # ============================================================
 # /markets COMMAND
 # ============================================================
+
 def markets_message(
     event_id,
 ):
@@ -750,8 +773,9 @@ def markets_message(
 
 
 # ============================================================
-# STRAIGHT-WIN TWO-STEP CHAT
+# STRAIGHT-WIN STATE
 # ============================================================
+
 _pending = {}
 
 
@@ -790,6 +814,7 @@ def _run_ticket(
             chat_id,
             (
                 "❌ Error:\n"
+                f"{escape(type(exc).__name__)}: "
                 f"{escape(str(exc))}"
             ),
         )
@@ -893,65 +918,10 @@ def _handle_pending(
     return False
 
 
-def _start_straight_win(
-    chat_id,
-    window,
-    text,
-):
-
-    m = re.search(
-        r"(\d+(?:\.\d+)?)\s*"
-        r"(?:total\s+)?odds?\b",
-        text,
-        re.I,
-    )
-
-    if m:
-
-        odds = float(
-            m.group(1)
-        )
-
-        tag = (
-            "straight win long ticket"
-            if window == "long"
-            else "straight win today"
-        )
-
-        _run_ticket(
-            chat_id,
-            (
-                f"{tag} "
-                f"{format_odds(odds)} odds"
-            ),
-        )
-
-        return
-
-    _pending[chat_id] = {
-        "stage": "odds",
-        "window": window,
-    }
-
-    label = (
-        "long"
-        if window == "long"
-        else "today"
-    )
-
-    send_message(
-        chat_id,
-        (
-            "Straight win only "
-            f"({label}) — "
-            "what total odds are you targeting?"
-        ),
-    )
-
-
 # ============================================================
-# HANDLE MESSAGES
+# MESSAGE HANDLER
 # ============================================================
+
 def handle_text(
     chat_id,
     text,
@@ -961,6 +931,7 @@ def handle_text(
     lowered = message.lower()
 
     if lowered.startswith("/"):
+
         parts = lowered.split(
             None,
             1,
@@ -982,6 +953,10 @@ def handle_text(
         command = ""
         args = ""
 
+    # --------------------------------------------------------
+    # START
+    # --------------------------------------------------------
+
     if command == "/start":
 
         send_message(
@@ -991,6 +966,10 @@ def handle_text(
 
         return
 
+    # --------------------------------------------------------
+    # HELP
+    # --------------------------------------------------------
+
     if command == "/help":
 
         send_message(
@@ -999,6 +978,10 @@ def handle_text(
         )
 
         return
+
+    # --------------------------------------------------------
+    # RESET
+    # --------------------------------------------------------
 
     if command == "/reset":
 
@@ -1013,6 +996,10 @@ def handle_text(
         )
 
         return
+
+    # --------------------------------------------------------
+    # STATUS
+    # --------------------------------------------------------
 
     if command == "/status":
 
@@ -1034,6 +1021,10 @@ def handle_text(
             )
 
         return
+
+    # --------------------------------------------------------
+    # MARKETS
+    # --------------------------------------------------------
 
     if command == "/markets":
 
@@ -1058,6 +1049,10 @@ def handle_text(
 
         return
 
+    # --------------------------------------------------------
+    # NORMAL TICKET COMMAND
+    # --------------------------------------------------------
+
     if command == "/ticket":
 
         _run_ticket(
@@ -1071,6 +1066,10 @@ def handle_text(
 
         return
 
+    # --------------------------------------------------------
+    # PENDING STATE
+    # --------------------------------------------------------
+
     if not command and _handle_pending(
         chat_id,
         message,
@@ -1081,13 +1080,25 @@ def handle_text(
     # ========================================================
     # STRAIGHT WIN / STRAIGHT WINNING
     #
-    # Both phrases are accepted.
+    # IMPORTANT:
+    # Straight Win is handled directly by smart_ticket.py.
     #
-    # Examples:
-    #   straight win today
-    #   straight winning ticket
-    #   straight winning ticket today
+    # It allows ONLY:
+    #   1UP
+    #   2UP
+    #
+    # It does NOT allow:
+    #   1X2
+    #   Double Chance
+    #   Over/Under
+    #   BTTS
+    #   Team Goals
+    #   Corners
+    #   Handicap
+    #   Asian Handicap
+    #   DNB
     # ========================================================
+
     if (
         not command
         and STRAIGHT_WIN_RE.search(
@@ -1103,13 +1114,22 @@ def handle_text(
             else "today"
         )
 
-        _start_straight_win(
+        request = (
+            "straight win long ticket"
+            if window == "long"
+            else "straight win today"
+        )
+
+        _run_ticket(
             chat_id,
-            window,
-            message,
+            request,
         )
 
         return
+
+    # ========================================================
+    # SMALL TALK
+    # ========================================================
 
     reply = smalltalk_reply(
         lowered
@@ -1127,6 +1147,10 @@ def handle_text(
 
         return
 
+    # ========================================================
+    # NORMAL REQUEST
+    # ========================================================
+
     if (
         not command
         and looks_like_request(
@@ -1141,6 +1165,10 @@ def handle_text(
 
         return
 
+    # ========================================================
+    # UNKNOWN
+    # ========================================================
+
     send_message(
         chat_id,
         UNKNOWN_TEXT,
@@ -1150,6 +1178,7 @@ def handle_text(
 # ============================================================
 # KEYWORD-ONLY BRAIN
 # ============================================================
+
 PREDICTION_WORDS = [
     "prediction",
     "predict",
@@ -1188,6 +1217,10 @@ def looks_like_request(
         for word in PREDICTION_WORDS
     )
 
+
+# ============================================================
+# SMALL TALK
+# ============================================================
 
 SMALLTALK = [
     (
@@ -1249,6 +1282,7 @@ def smalltalk_reply(
 # ============================================================
 # TEXTS
 # ============================================================
+
 START_TEXT = (
     f"⚽ <b>Welcome to {BRAND}!</b>\n\n"
     "Ask me in simple words.\n\n"
@@ -1272,8 +1306,10 @@ HELP_TEXT = (
     "• safe 20 odds 2 days\n\n"
     "<b>Straight-win mode (1UP / 2UP only):</b>\n"
     "• straight win today\n"
-    "• straight win long ticket\n"
-    "(the bot asks for the odds target)\n\n"
+    "• straight win long ticket\n\n"
+    "<b>Straight Win uses only 1UP or 2UP.</b>\n"
+    "No 1X2, DNB, handicap, corners, "
+    "goals or BTTS.\n\n"
     "/status — check SportyBet mode\n"
     "/markets sr:match:12345678 — list markets for a match\n"
     "/reset — clear state"
@@ -1289,8 +1325,9 @@ UNKNOWN_TEXT = (
 
 
 # ============================================================
-# MAIN LOOP
+# TELEGRAM MAIN LOOP
 # ============================================================
+
 def get_updates(
     offset=None,
 ):

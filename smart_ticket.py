@@ -78,14 +78,14 @@ MAX_LEG_ODDS = {
 MAX_LEGS = 30
 
 # Maximum number of matches whose complete markets we try to retrieve.
-MAX_DETAIL_EVENTS = int(os.getenv("MAX_DETAIL_EVENTS", "70"))
+MAX_DETAIL_EVENTS = int(os.getenv("MAX_DETAIL_EVENTS", "100"))
 
 DETAIL_WORKERS = int(os.getenv("DETAIL_WORKERS", "12"))
 DETAIL_SECONDS = int(os.getenv("DETAIL_SECONDS", "40"))
 
 OVERSHOOT = 0.06
 
-GROUP_LIMIT = int(os.getenv("GROUP_LIMIT", "120"))
+GROUP_LIMIT = int(os.getenv("GROUP_LIMIT", "200"))
 
 # Double chance disabled.
 ALLOW_DOUBLE_CHANCE = False
@@ -1711,6 +1711,25 @@ def flow(
     count = req.get("picks")
     risk = req.get("risk") or "normal"
 
+    # Fallback: read "10 odds" straight from the text if the parser missed it.
+    if not target:
+        match = re.search(
+            r"(\d+(?:\.\d+)?)\s*(?:total\s*)?odds?\b",
+            text or "",
+            re.I,
+        )
+
+        if match:
+            try:
+                value = float(match.group(1))
+                if value >= 1.5:
+                    target = value
+                    count = None
+            except Exception:
+                pass
+
+    print(f"SportyTips request: text={text!r} target={target} count={count} risk={risk} label={req.get('label')}")
+
     if not target and not count:
         count = 5
 
@@ -1735,6 +1754,29 @@ def flow(
         return _orig_flow(chat_id, text)
 
     chosen = built["chosen"]
+
+    # Nothing found: retry once with wider market limits.
+    if not chosen and risk != "risky":
+        try:
+            retry = build_ticket(
+                provider,
+                req,
+                target,
+                count,
+                "risky",
+                notify=None,
+            )
+
+            if retry["chosen"]:
+                built = retry
+                chosen = retry["chosen"]
+                built["note"] = (
+                    (built["note"] + " " if built["note"] else "")
+                    + "I widened the market limits to find enough picks."
+                )
+
+        except Exception as exc:
+            print(f"Wider retry failed: {exc}")
 
     local_now = datetime.now(timezone.utc).astimezone(bot.LOCAL_TZ)
 

@@ -1,4 +1,4 @@
-"""SamuelBet AI - Telegram football bot (v4: bulk odds, AI chat, safe mode)."""
+"""SportyTips - Telegram football bot (v4: bulk odds, AI chat, safe mode)."""
 
 import json
 import math
@@ -10,6 +10,43 @@ from html import escape
 from urllib.error import HTTPError, URLError
 from urllib.parse import urlencode
 from urllib.request import Request, urlopen
+
+
+# ============================================================
+# EMOJI ESCAPE CODES (keeps this file plain ASCII, so it can
+# never be garbled by a wrong encoding again)
+# ============================================================
+
+E_BALL = "\u26BD"            # football
+E_TICKET = "\U0001F3AB"      # ticket
+E_TIPS = "\U0001F3AF"        # target
+E_CAL = "\U0001F4C5"         # calendar
+E_DAY = "\U0001F4C6"         # tear-off calendar
+E_CLOCK = "\U0001F552"       # clock
+E_LEAGUE = "\U0001F3C6"      # trophy
+E_HASH = "\U0001F522"        # numbers
+E_GEAR = "\u2699\uFE0F"      # gear
+E_SHIELD = "\U0001F6E1\uFE0F"  # shield
+E_FIRE = "\U0001F525"        # fire
+E_MONEY = "\U0001F4B0"       # money bag
+E_CHART = "\U0001F4CA"       # bar chart
+E_MODEL = "\U0001F4C8"       # chart up
+E_BANK = "\U0001F3E6"        # bank
+E_CODE = "\U0001F4F2"        # phone with arrow
+E_WARN = "\u26A0\uFE0F"      # warning
+E_INFO = "\u2139\uFE0F"      # info
+E_FAIL = "\u274C"            # cross mark
+E_CHECK = "\u2705"           # check mark
+E_LOCK = "\U0001F512"        # lock
+E_DROP = "\U0001F6AB"        # prohibited
+E_ANTENNA = "\U0001F4E1"     # antenna
+E_SEARCH = "\U0001F50E"      # magnifier
+E_WAIT = "\u23F3"            # hourglass
+E_BROOM = "\U0001F9F9"       # broom
+E_WRENCH = "\U0001F527"      # wrench
+E_ROBOT = "\U0001F916"       # robot
+DOT = "\u2022"               # bullet
+LINE = "\u2501" * 12         # heavy line
 
 
 # ============================================================
@@ -110,7 +147,7 @@ ALLOWED_LEAGUES = {
     135: "Serie A",
     61: "Ligue 1",
     94: "Liga Portugal",
-    203: "SÃ¼per Lig",
+    203: "S\u00fcper Lig",
     2: "UEFA Champions League",
     3: "UEFA Europa League",
     848: "UEFA Conference League",
@@ -171,7 +208,7 @@ LEAGUE_KEYWORDS = [
     (("serie a", "italy", "italian"), 135),
     (("ligue 1", "france", "french"), 61),
     (("liga portugal", "portugal", "portuguese"), 94),
-    (("super lig", "sÃ¼per lig", "turkey", "turkish"), 203),
+    (("super lig", "s\u00fcper lig", "turkey", "turkish"), 203),
     (("champions league", "champions"), 2),
     (("europa league", "europa"), 3),
     (("conference league", "conference"), 848),
@@ -247,7 +284,8 @@ def send_message(chat_id, text):
 
 
 # ============================================================
-# API-FOOTBALL
+# LEGACY API-FOOTBALL HELPERS (football-data.org overrides
+# for football_request / fixtures are defined near the bottom)
 # ============================================================
 
 _call_times = []
@@ -384,7 +422,7 @@ def note_plan_limit(error_text):
 def plan_note():
     if _plan_range:
         return (
-            "â¹ï¸ Your API-Football plan only allows dates from "
+            f"{E_INFO} Your football data plan only allows dates from "
             f"{_plan_range[0]} to {_plan_range[1]}, "
             "so later days were skipped."
         )
@@ -468,6 +506,13 @@ def league_priority(fixture):
 
 SAFE_WORDS = r"\b(safe|safer|safest|secure|low[- ]risk|bankers?)\b"
 RISKY_WORDS = r"\b(risky|riskier|riskiest|high[- ]risk|bold|aggressive|long ?shots?)\b"
+
+# Daily 2 odds (also matches the old "Best 2 odds" chip)
+DAILY_RE = re.compile(
+    r"\bdaily\s*-?\s*2\s*-?\s*odds?\b"
+    r"|^\s*best\s*2\s*odds?\s*$",
+    re.I,
+)
 
 
 def parse_request(text):
@@ -603,14 +648,17 @@ def describe_request(req):
 
     odds = format_odds(req["target_odds"]) if req["target_odds"] else "not set"
     picks = str(req["picks"]) if req["picks"] else "auto"
-    risk = {"safe": "ð¡ï¸ Safe", "risky": "ð¥ Risky"}.get(req.get("risk"), "Normal")
+    risk = {
+        "safe": f"{E_SHIELD} Safe",
+        "risky": f"{E_FIRE} Risky",
+    }.get(req.get("risk"), "Normal")
 
     return (
-        f"ð Window: {escape(req['label'])}\n"
-        f"ð¯ Target odds: {odds}\n"
-        f"ð¢ Picks: {picks}\n"
-        f"âï¸ Risk: {risk}\n"
-        f"ð Leagues: {escape(leagues)}"
+        f"{E_CAL} Window: {escape(req['label'])}\n"
+        f"{E_TIPS} Target odds: {odds}\n"
+        f"{E_HASH} Picks: {picks}\n"
+        f"{E_GEAR} Risk: {risk}\n"
+        f"{E_LEAGUE} Leagues: {escape(leagues)}"
     )
 
 
@@ -1314,30 +1362,30 @@ def select_ticket(options, target_odds, picks, overshoot=MAX_OVERSHOOT):
 
 def confidence_icon(prob):
     if prob >= 0.75:
-        return "ð¢"
+        return "\U0001F7E2"   # green circle
     if prob >= 0.62:
-        return "ð¡"
-    return "ð "
+        return "\U0001F7E1"   # yellow circle
+    return "\U0001F7E0"       # orange circle
 
 
 def format_ticket(req, ticket, analysis, total_matches):
-    lines = ["ð¯ <b>SAMUELBET AI - TICKET</b>"]
+    lines = [f"{E_TICKET} <b>SPORTYTIPS {DOT} TICKET</b>"]
 
-    summary = f"ð {escape(req['label'].capitalize())}"
+    summary = f"{E_CAL} {escape(req['label'].capitalize())}"
     if req["target_odds"]:
-        summary += f" â¢ target odds {format_odds(req['target_odds'])}"
+        summary += f" {DOT} target odds {format_odds(req['target_odds'])}"
     if req.get("risk") == "safe":
-        summary += " â¢ ð¡ï¸ safe mode"
+        summary += f" {DOT} {E_SHIELD} safe mode"
     elif req.get("risk") == "risky":
-        summary += " â¢ ð¥ risky mode"
+        summary += f" {DOT} {E_FIRE} risky mode"
     lines.append(summary)
-    lines.append(f"ð Times in {LOCAL_TZ_NAME}")
+    lines.append(f"{E_CLOCK} Times in {LOCAL_TZ_NAME}")
 
     if ticket is None:
         min_prob = RISK_PROFILES.get(req.get("risk"), RISK_PROFILES["normal"])["min_prob"]
         lines.append("")
         lines.append(
-            "â I could not build a ticket. No analysed match had a strong "
+            f"{E_FAIL} I could not build a ticket. No analysed match had a strong "
             f"pick (at least {int(min_prob * 100)}% estimated chance)."
         )
     else:
@@ -1350,29 +1398,29 @@ def format_ticket(req, ticket, analysis, total_matches):
 
             lines.append("")
             lines.append(
-                f"<b>{number}.</b> ð {kickoff.strftime('%a %H:%M')} â¢ "
-                f"ð {escape(league_name_of(fixture))}"
+                f"<b>{number}.</b> {E_CLOCK} {kickoff.strftime('%a %H:%M')} {DOT} "
+                f"{E_LEAGUE} {escape(league_name_of(fixture))}"
             )
-            lines.append(f"â½ {escape(home)} vs {escape(away)}")
-            lines.append(f"â <b>{escape(option['label'])}</b>")
+            lines.append(f"{E_BALL} {escape(home)} vs {escape(away)}")
+            lines.append(f"{E_TIPS} <b>{escape(option['label'])}</b>")
             lines.append(
-                f"ð° Odds {option['odd']:.2f} â¢ "
-                f"{confidence_icon(option['prob'])} {option['prob'] * 100:.0f}% chance â¢ "
-                f"{'ð' if option['has_model'] else 'ð¦'}"
+                f"{E_MONEY} Odds {option['odd']:.2f} {DOT} "
+                f"{confidence_icon(option['prob'])} {option['prob'] * 100:.0f}% chance {DOT} "
+                f"{E_MODEL if option['has_model'] else E_BANK}"
             )
 
         lines.append("")
-        lines.append("ââââââââââââ")
-        lines.append(f"ð° <b>Total odds: {ticket['total_odds']:.2f}</b>")
+        lines.append(LINE)
+        lines.append(f"{E_MONEY} <b>Total odds: {ticket['total_odds']:.2f}</b>")
         lines.append(
-            f"ð Estimated chance of all picks winning: "
+            f"{E_CHART} Estimated chance of all picks winning: "
             f"<b>{ticket['win_probability'] * 100:.0f}%</b>"
         )
 
         if not ticket["reached"]:
             lines.append("")
             lines.append(
-                f"â ï¸ I could not reach {format_odds(ticket['target'])} odds "
+                f"{E_WARN} I could not reach {format_odds(ticket['target'])} odds "
                 "safely with the matches available. This is the best I found."
             )
             if req.get("risk") == "safe":
@@ -1380,40 +1428,40 @@ def format_ticket(req, ticket, analysis, total_matches):
                              "Try fewer odds or a longer window.")
 
         bookmakers = sorted({o["bookmaker"] for o in ticket["picks"]})
-        lines.append(f"ð¦ Odds from {escape(', '.join(bookmakers))} (yours may differ)")
+        lines.append(f"{E_BANK} Odds from {escape(', '.join(bookmakers))} (yours may differ)")
         if SPORTYBET_PROVIDER is not None:
-            lines.append("â Every pick was checked on SportyBet.")
+            lines.append(f"{E_CHECK} Every pick was checked on SportyBet.")
             if ticket.get("booking_code"):
-                lines.append(f"ð² SportyBet code: <b>{escape(str(ticket['booking_code']))}</b>")
+                lines.append(f"{E_CODE} SportyBet code: <b>{escape(str(ticket['booking_code']))}</b>")
         else:
-            lines.append("ð Not checked on SportyBet yet. Make sure each pick exists there before you stake.")
+            lines.append(f"{E_SEARCH} Not checked on SportyBet yet. Make sure each pick exists there before you stake.")
 
-        lines.append("ð = form + odds   ð¦ = bookmaker odds only")
+        lines.append(f"{E_MODEL} = form + odds   {E_BANK} = bookmaker odds only")
 
     lines.append("")
     lines.append(
-        f"ð Analysed {analysis['with_odds']} of {total_matches} matches "
+        f"{E_CHART} Analysed {analysis['with_odds']} of {total_matches} matches "
         f"({analysis['no_odds']} had no odds)."
     )
 
     if analysis.get("dropped"):
-        lines.append(f"ð« Dropped {analysis['dropped']} pick(s) that SportyBet does not offer.")
+        lines.append(f"{E_DROP} Dropped {analysis['dropped']} pick(s) that SportyBet does not offer.")
 
     if analysis["quota_stop"]:
-        lines.append("â ï¸ Stopped early to save your daily API requests.")
+        lines.append(f"{E_WARN} Stopped early to save your daily API requests.")
 
     for error in analysis["errors"]:
-        lines.append(f"â ï¸ {escape(error[:200])}")
+        lines.append(f"{E_WARN} {escape(error[:200])}")
 
     for note in _scan_notes:
         lines.append(escape(note))
 
     if _api_remaining is not None:
-        lines.append(f"ð¡ API requests left today: {_api_remaining}")
+        lines.append(f"{E_ANTENNA} API requests left today: {_api_remaining}")
 
     lines.append("")
     lines.append(
-        "â ï¸ Predictions are estimates, not guarantees. Accumulators lose often. "
+        f"{E_WARN} Predictions are estimates, not guarantees. Accumulators lose often. "
         "Only stake what you can afford to lose (18+)."
     )
 
@@ -1428,7 +1476,7 @@ def prediction_ticket_flow(chat_id, text):
 
     if not fixtures:
         lines = [
-            "ð <b>SamuelBet AI</b>",
+            f"{E_SEARCH} <b>SportyTips</b>",
             "",
             "<b>Request understood:</b>",
             describe_request(req),
@@ -1440,7 +1488,7 @@ def prediction_ticket_flow(chat_id, text):
             lines.append(escape(note))
         if errors:
             lines.append("")
-            lines.append("â ï¸ <b>API problem:</b>")
+            lines.append(f"{E_WARN} <b>API problem:</b>")
             lines.extend(escape(e) for e in errors)
         send_message(chat_id, "\n".join(lines))
         return
@@ -1456,10 +1504,10 @@ def prediction_ticket_flow(chat_id, text):
 
     send_message(
         chat_id,
-        "ð <b>SamuelBet AI</b>\n\n"
+        f"{E_SEARCH} <b>SportyTips</b>\n\n"
         "<b>Request understood:</b>\n"
         f"{describe_request(req)}\n\n"
-        f"â³ Analysing {limit} of {len(fixtures)} matches. "
+        f"{E_WAIT} Analysing {limit} of {len(fixtures)} matches. "
         f"This can take {wait_text}...",
     )
 
@@ -1487,14 +1535,14 @@ def fixtures_message(req):
 
     if not fixtures:
         text = (
-            "â½ <b>SAMUELBET AI</b>\n\n"
+            f"{E_BALL} <b>SPORTYTIPS</b>\n\n"
             f"No eligible matches found ({escape(req['label'])}).\n\n"
             "Matches starting in less than 1 hour are skipped."
         )
         for note in _scan_notes:
             text += "\n\n" + escape(note)
         if errors:
-            text += "\n\nâ ï¸ <b>API problem:</b>\n"
+            text += f"\n\n{E_WARN} <b>API problem:</b>\n"
             text += "\n".join(escape(e) for e in errors)
         return text
 
@@ -1517,9 +1565,9 @@ def fixtures_message(req):
     shown.sort(key=sort_key)
 
     lines = [
-        "â½ <b>SAMUELBET AI</b>",
-        f"ð {escape(req['label'].capitalize())} - times in {LOCAL_TZ_NAME}",
-        f"ð {total} eligible match" + ("es" if total != 1 else ""),
+        f"{E_BALL} <b>SPORTYTIPS</b>",
+        f"{E_CAL} {escape(req['label'].capitalize())} - times in {LOCAL_TZ_NAME}",
+        f"{E_CHART} {total} eligible match" + ("es" if total != 1 else ""),
     ]
 
     current_day = None
@@ -1535,12 +1583,12 @@ def fixtures_message(req):
             current_day = day_label
             current_league = None
             lines.append("")
-            lines.append(f"ð <b>{escape(day_label)}</b>")
+            lines.append(f"{E_DAY} <b>{escape(day_label)}</b>")
 
         if league_name != current_league:
             current_league = league_name
             lines.append("")
-            lines.append(f"ð <b>{escape(league_name)}</b>")
+            lines.append(f"{E_LEAGUE} <b>{escape(league_name)}</b>")
 
         teams = fixture.get("teams", {})
         home = teams.get("home", {}).get("name", "Unknown")
@@ -1563,7 +1611,7 @@ def fixtures_message(req):
 
     if errors:
         lines.append("")
-        lines.append("â ï¸ Some days could not be loaded:")
+        lines.append(f"{E_WARN} Some days could not be loaded:")
         lines.extend(escape(e) for e in errors)
 
     return "\n".join(lines)
@@ -1575,9 +1623,9 @@ def debug_message():
 
     if not fixtures:
         return (
-            "ð§ <b>API-FOOTBALL DEBUG</b>\n\n"
+            f"{E_WRENCH} <b>FOOTBALL DATA DEBUG</b>\n\n"
             f"Date: {today}\n\n"
-            "â The API returned no fixtures for today."
+            f"{E_FAIL} The API returned no fixtures for today."
         )
 
     leagues_today = {}
@@ -1592,18 +1640,18 @@ def debug_message():
     missing = [lid for lid in ALLOWED_LEAGUES if lid not in leagues_today]
 
     lines = [
-        "ð§ <b>API-FOOTBALL DEBUG</b>",
-        f"ð Date: {today}",
-        f"â½ Total fixtures: {len(fixtures)}",
+        f"{E_WRENCH} <b>FOOTBALL DATA DEBUG</b>",
+        f"{E_CAL} Date: {today}",
+        f"{E_BALL} Total fixtures: {len(fixtures)}",
         "",
-        "â <b>Your leagues playing today:</b>",
+        f"{E_CHECK} <b>Your leagues playing today:</b>",
     ]
 
     if found:
         for lid in found:
-            lines.append(f"â¢ {escape(ALLOWED_LEAGUES[lid])} (ID {lid})")
+            lines.append(f"{DOT} {escape(ALLOWED_LEAGUES[lid])} (ID {lid})")
     else:
-        lines.append("â¢ None")
+        lines.append(f"{DOT} None")
 
     extras = sorted(
         (str(name), str(country))
@@ -1613,34 +1661,35 @@ def debug_message():
     )
 
     lines.append("")
-    lines.append("ð <b>International competitions today:</b>")
+    lines.append(f"{E_LEAGUE} <b>International competitions today:</b>")
     if extras:
         for name, country in extras:
-            lines.append(f"â¢ {escape(name)}")
+            lines.append(f"{DOT} {escape(name)}")
     else:
-        lines.append("â¢ None")
+        lines.append(f"{DOT} None")
 
     lines.append("")
-    lines.append("â <b>Your leagues NOT playing today:</b>")
+    lines.append(f"{E_FAIL} <b>Your leagues NOT playing today:</b>")
 
     if missing:
         for lid in missing:
-            lines.append(f"â¢ {escape(ALLOWED_LEAGUES[lid])} (ID {lid})")
+            lines.append(f"{DOT} {escape(ALLOWED_LEAGUES[lid])} (ID {lid})")
     else:
-        lines.append("â¢ None")
+        lines.append(f"{DOT} None")
 
     return "\n".join(lines)
 
 
 START_TEXT = (
-    "â½ <b>Welcome to SamuelBet AI!</b>\n\n"
+    f"{E_BALL} <b>Welcome to SportyTips!</b>\n\n"
     "Ask me in simple words.\n\n"
     "<b>Examples:</b>\n"
-    "â¢ give me 10 odds for tonight\n"
-    "â¢ safe 5 picks tomorrow\n"
-    "â¢ what's on in La Liga tomorrow?\n"
-    "â¢ make it safer\n"
-    "â¢ explain what double chance means\n\n"
+    f"{DOT} give me 10 odds for tonight\n"
+    f"{DOT} safe 5 picks tomorrow\n"
+    f"{DOT} daily 2 odds\n"
+    f"{DOT} what's on in La Liga tomorrow?\n"
+    f"{DOT} make it safer\n"
+    f"{DOT} explain what double chance means\n\n"
     "<b>Commands:</b>\n"
     "/fixtures - upcoming matches\n"
     "/debug - check what the API returns\n"
@@ -1649,29 +1698,30 @@ START_TEXT = (
 )
 
 HELP_TEXT = (
-    "â½ <b>SamuelBet AI Help</b>\n\n"
+    f"{E_BALL} <b>SportyTips Help</b>\n\n"
     "<b>Talk to me normally.</b> I understand follow-ups like "
     "\"make it safer\" or \"now do tomorrow\".\n\n"
     "<b>/fixtures</b> shows upcoming matches. Add a window or league:\n"
-    "â¢ /fixtures today\n"
-    "â¢ /fixtures tomorrow\n"
-    "â¢ /fixtures weekend\n"
-    "â¢ /fixtures 2 days (the maximum)\n"
-    "â¢ /fixtures premier league 5 days\n\n"
+    f"{DOT} /fixtures today\n"
+    f"{DOT} /fixtures tomorrow\n"
+    f"{DOT} /fixtures weekend\n"
+    f"{DOT} /fixtures 2 days (the maximum)\n"
+    f"{DOT} /fixtures premier league 5 days\n\n"
     "<b>Tickets:</b>\n"
-    "â¢ give me your best 10 odds for tonight\n"
-    "â¢ safe 15 odds for today only\n"
-    "â¢ risky 30 odds 2 days\n"
-    "â¢ 5 picks tomorrow la liga\n"
-    "â¢ brazil games tonight\n"
-    "â¢ nations league today\n\n"
+    f"{DOT} give me your best 10 odds for tonight\n"
+    f"{DOT} safe 15 odds for today only\n"
+    f"{DOT} risky 30 odds 2 days\n"
+    f"{DOT} 5 picks tomorrow la liga\n"
+    f"{DOT} brazil games tonight\n"
+    f"{DOT} nations league today\n"
+    f"{DOT} daily 2 odds (one safe ticket, once every 24 hours)\n\n"
     "/debug - check which of your leagues play today\n"
     "/reset - clear chat memory\n"
     "/start - start the bot"
 )
 
 UNKNOWN_TEXT = (
-    "â½ <b>SamuelBet AI</b>\n\n"
+    f"{E_BALL} <b>SportyTips</b>\n\n"
     "I didn't understand that yet.\n\n"
     "Try: give me 10 odds tomorrow, safe 5 picks tonight, "
     "or /fixtures today. See /help."
@@ -1708,13 +1758,13 @@ HOW_TO_ASK = (
 
 SMALLTALK = [
     (r"\b(how are you|how r u|how you dey|how far|how body|wetin dey|what'?s up|whats up|sup)\b",
-     "I'm good, thanks for asking! â½ Ready when you are. " + HOW_TO_ASK),
+     f"I'm good, thanks for asking! {E_BALL} Ready when you are. " + HOW_TO_ASK),
     (r"^\s*(hi|hello|hey|hiya|yo|good (morning|afternoon|evening)|howdy)\b",
-     "Hello! â½ " + HOW_TO_ASK),
+     f"Hello! {E_BALL} " + HOW_TO_ASK),
     (r"\b(thanks|thank you|thx|nice one|well done)\b",
-     "You're welcome! â½ Need another ticket? " + HOW_TO_ASK),
+     f"You're welcome! {E_BALL} Need another ticket? " + HOW_TO_ASK),
     (r"\b(who are you|what can you do|what do you do|your name)\b",
-     "I'm SamuelBet AI. I scan upcoming football matches and build tickets for a "
+     "I'm SportyTips. I scan upcoming football matches and build tickets for a "
      "target odds. " + HOW_TO_ASK),
 ]
 
@@ -1806,7 +1856,7 @@ def ai_system_prompt():
     leagues = ", ".join(k[0][0] for k in LEAGUE_KEYWORDS)
     countries = ", ".join(k[0][0] for k in EXTRA_KEYWORDS)
 
-    return f"""You are SamuelBet AI, a friendly football assistant inside a Telegram bot.
+    return f"""You are SportyTips, a friendly football assistant inside a Telegram bot.
 The user is in Nigeria. Right now it is {now.strftime('%A %d %B %Y, %H:%M')} {LOCAL_TZ_NAME}.
 
 Reply with ONLY one JSON object, nothing else:
@@ -1825,6 +1875,8 @@ ACTIONS
 - Risk level (optional): safe | risky. Use "safe" when the user asks for safer,
   sure, banker or low risk picks. Use "risky" when they want bolder picks.
 - Leagues or countries (optional): {leagues}, {countries}, nations league, afcon, u21
+- Daily ticket: if the user asks for "daily 2 odds" or "best 2 odds", set "action" to "ticket"
+  and "request" to exactly "daily 2 odds".
 Examples: "10 odds tonight", "safe 5 picks tomorrow premier league", "risky 30 odds 2 days", "brazil today".
 A safer ticket really means LOWER TOTAL ODDS (fewer or stronger picks). If the user asks for
 safer picks but wants a big odds target, still build it, and say in "reply" that lower total
@@ -1923,14 +1975,14 @@ def handle_text(chat_id, text):
     if command == "/reset":
         _chat_history.pop(chat_id, None)
         _last_request.pop(chat_id, None)
-        send_message(chat_id, "ð§¹ Chat memory cleared.")
+        send_message(chat_id, f"{E_BROOM} Chat memory cleared.")
         return
 
     if command == "/debug":
         try:
             send_message(chat_id, debug_message())
         except Exception as exc:
-            send_message(chat_id, f"â Debug error:\n{escape(str(exc))}")
+            send_message(chat_id, f"{E_FAIL} Debug error:\n{escape(str(exc))}")
         return
 
     if command == "/fixtures":
@@ -1938,14 +1990,22 @@ def handle_text(chat_id, text):
             req = parse_request(args if args else "2 days")
             send_message(chat_id, fixtures_message(req))
         except Exception as exc:
-            send_message(chat_id, f"â Fixture error:\n{escape(str(exc))}")
+            send_message(chat_id, f"{E_FAIL} Fixture error:\n{escape(str(exc))}")
         return
 
     if command == "/ticket":
         try:
             prediction_ticket_flow(chat_id, args if args else lowered)
         except Exception as exc:
-            send_message(chat_id, f"â Error:\n{escape(str(exc))}")
+            send_message(chat_id, f"{E_FAIL} Error:\n{escape(str(exc))}")
+        return
+
+    # ---- Daily 2 odds: handled directly, before the AI or keyword mode ----
+    if command == "/daily" or (not command and DAILY_RE.search(message)):
+        try:
+            prediction_ticket_flow(chat_id, "daily 2 odds")
+        except Exception as exc:
+            send_message(chat_id, f"{E_FAIL} Error:\n{escape(str(exc))}")
         return
 
     # ---- normal chat: let the AI understand it ----
@@ -1963,7 +2023,7 @@ def handle_text(chat_id, text):
             try:
                 ai_dispatch(chat_id, message, decision)
             except Exception as exc:
-                send_message(chat_id, f"â Error:\n{escape(str(exc))}")
+                send_message(chat_id, f"{E_FAIL} Error:\n{escape(str(exc))}")
             return
 
     # ---- free mode (no AI key, or the AI failed) ----
@@ -1990,13 +2050,13 @@ def handle_text(chat_id, text):
             try:
                 prediction_ticket_flow(chat_id, request_text)
             except Exception as exc:
-                send_message(chat_id, f"â Error:\n{escape(str(exc))}")
+                send_message(chat_id, f"{E_FAIL} Error:\n{escape(str(exc))}")
             return
 
     if ai_problem:
         send_message(
             chat_id,
-            "ð My AI chat is not working right now, so I can only do football "
+            f"{E_ROBOT} My AI chat is not working right now, so I can only do football "
             "requests.\n\n"
             f"<b>Problem:</b> {escape(ai_problem)}\n\n"
             + escape(HOW_TO_ASK),
@@ -2004,7 +2064,6 @@ def handle_text(chat_id, text):
         return
 
     send_message(chat_id, UNKNOWN_TEXT)
-
 
 
 # ============================================================
@@ -2058,7 +2117,7 @@ def football_request(endpoint, params=None, retries=2):
             with urlopen(request, timeout=API_TIMEOUT) as response:
                 return json.loads(response.read().decode("utf-8"))
         except HTTPError as exc:
-            body = exc.read().decode("utf-8", errors="replace")
+            exc.read()
             last_error = f"football-data HTTP {exc.code}"
             if exc.code == 429 and attempt < retries:
                 time.sleep(10)
@@ -2147,7 +2206,7 @@ def main():
     if not ANTHROPIC_API_KEY:
         print("WARNING: ANTHROPIC_API_KEY is missing. AI chat is off, keyword mode only.")
 
-    print("SamuelBet AI is running.")
+    print("SportyTips is running.")
     offset = None
 
     while True:
@@ -2170,7 +2229,7 @@ def main():
                 handle_text(chat_id, text)
 
         except KeyboardInterrupt:
-            print("SamuelBet AI stopped.")
+            print("SportyTips stopped.")
             break
 
         except Exception as exc:

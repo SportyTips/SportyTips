@@ -1682,10 +1682,12 @@ def flow(
     chat_id,
     text,
     search_days=None,
+    target_override=None,
+    count_override=None,
     **kwargs,
 ):
-    # search_days: number of days to search (e.g. 2 for "2 days").
-    # **kwargs: swallows any other new argument the caller may add.
+    # main.py calls this with search_days, target_override and
+    # count_override. **kwargs swallows anything new added later.
 
     provider = getattr(bot, "SPORTYBET_PROVIDER", None)
 
@@ -1698,17 +1700,20 @@ def flow(
     except Exception:
         return _orig_flow(chat_id, text)
 
-    # Apply the requested search window and fix the header label.
-    if search_days:
+    # parse_request already handles today / tomorrow / weekend / "N days".
+    # Only use search_days when the text carried no window of its own.
+    if search_days and req.get("label") == "next 24 hours":
         try:
             days = int(search_days)
-            req["end"] = req["start"] + timedelta(days=days)
-            req["label"] = f"next {days} day{'s' if days > 1 else ''}"
+
+            if days > 1:
+                req["end"] = req["start"] + timedelta(days=days)
+                req["label"] = f"next {days} days"
         except Exception:
             pass
 
-    target = req.get("target_odds")
-    count = req.get("picks")
+    target = target_override or req.get("target_odds")
+    count = count_override or req.get("picks")
     risk = req.get("risk") or "normal"
 
     # Fallback: read "10 odds" straight from the text if the parser missed it.

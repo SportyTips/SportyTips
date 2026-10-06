@@ -1,4 +1,4 @@
-"""Smart ticket builder for SamuelBet AI.
+"""Smart ticket builder for SportyTips.
 
 SportyBet ticket flow.
 
@@ -78,14 +78,14 @@ MAX_LEG_ODDS = {
 MAX_LEGS = 30
 
 # Maximum number of matches whose complete markets we try to retrieve.
-MAX_DETAIL_EVENTS = int(os.getenv("MAX_DETAIL_EVENTS", "180"))
+MAX_DETAIL_EVENTS = int(os.getenv("MAX_DETAIL_EVENTS", "70"))
 
-DETAIL_WORKERS = 5
-DETAIL_SECONDS = 120
+DETAIL_WORKERS = int(os.getenv("DETAIL_WORKERS", "12"))
+DETAIL_SECONDS = int(os.getenv("DETAIL_SECONDS", "40"))
 
 OVERSHOOT = 0.06
 
-GROUP_LIMIT = 400
+GROUP_LIMIT = int(os.getenv("GROUP_LIMIT", "120"))
 
 # Double chance disabled.
 ALLOW_DOUBLE_CHANCE = False
@@ -94,7 +94,7 @@ ALLOW_DOUBLE_CHANCE = False
 DATA_BONUS = 0.12
 
 USE_AI_REVIEW = True
-WEB_SEARCHES = 6
+WEB_SEARCHES = 2
 MAX_DROPS = 4
 
 # Markets we actually want.
@@ -1396,7 +1396,7 @@ def _ai_json(prompt, system):
 
         try:
 
-            with urlopen(request, timeout=110) as response:
+            with urlopen(request, timeout=40) as response:
 
                 data = json.loads(response.read().decode("utf-8"))
 
@@ -1420,7 +1420,7 @@ def _ai_json(prompt, system):
     return None
 
 
-REVIEW_SYSTEM = """You are the analyst behind SamuelBet AI.
+REVIEW_SYSTEM = """You are the analyst behind SportyTips.
 
 Each pick has football FACTS from last-5 form, goals and head-to-head data.
 
@@ -1875,7 +1875,7 @@ def flow(
 
     lines = [
         (
-            "🎯 <b>SAMUELBET AI - "
+            "🎯 <b>SPORTYTIPS - "
             f"{html.escape(title)}</b>"
         ),
         (

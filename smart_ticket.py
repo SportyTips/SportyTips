@@ -97,6 +97,16 @@ USE_AI_REVIEW = True
 WEB_SEARCHES = 2
 MAX_DROPS = 4
 
+# Straight-win mode: 1UP / 2UP picks only.
+STRAIGHT_MIN_P = float(os.getenv("STRAIGHT_MIN_P", "0.80"))
+STRAIGHT_MIN_LEGS = 5
+STRAIGHT_DEFAULT_LEGS = 15
+
+STRAIGHT_RE = re.compile(
+    r"\bstraight\s*-?\s*(?:win|winning|wins)\b",
+    re.I,
+)
+
 # Markets we actually want.
 KIND_BONUS = {
     "up": 0.05,
@@ -842,6 +852,7 @@ def gather(
     exclude,
     min_p_shift=0.0,
     notify=None,
+    straight=False,
 ):
     """Gather SportyBet markets and football evidence."""
 
@@ -896,6 +907,15 @@ def gather(
 
     max_odd = MAX_LEG_ODDS.get(risk, MAX_LEG_ODDS["normal"])
 
+    # Probability needed AFTER the football data has been studied.
+    post_min_p = min_p
+
+    if straight:
+        # Loose first filter, strict filter after studying the data.
+        min_p = 0.45
+        post_min_p = STRAIGHT_MIN_P
+        max_odd = 2.60
+
     groups = []
 
     for event in events:
@@ -920,6 +940,9 @@ def gather(
                 candidate["kind"],
                 candidate["label"],
             ):
+                continue
+
+            if straight and candidate["kind"] != "up":
                 continue
 
             if not (floor <= candidate["odd"] <= max_odd):
@@ -989,7 +1012,7 @@ def gather(
             if not candidate.get("has_data"):
                 continue
 
-            if candidate.get("p", 0) < min_p:
+            if candidate.get("p", 0) < post_min_p:
                 continue
 
             valid.append(candidate)
@@ -1349,6 +1372,45 @@ def choose_count(groups, count):
     return chosen, len(chosen) >= count
 
 
+def choose_straight(groups, target, count):
+    """Straight-win ticket: the most certain 1UP / 2UP pick per match."""
+
+    best = []
+
+    for group in groups:
+
+        ups = [c for c in group if c.get("kind") == "up"]
+
+        if ups:
+            best.append(max(ups, key=lambda c: c.get("p", 0)))
+
+    best.sort(key=lambda c: c.get("p", 0), reverse=True)
+
+    if not best:
+        return [], False
+
+    if count:
+        count = min(int(count), MAX_LEGS)
+        return best[:count], len(best) >= count
+
+    if target:
+
+        chosen = []
+        total = 1.0
+
+        for candidate in best[:MAX_LEGS]:
+
+            chosen.append(candidate)
+            total *= candidate["odd"]
+
+            if total >= target:
+                return chosen, True
+
+        return chosen, False
+
+    return best[:STRAIGHT_DEFAULT_LEGS], True
+
+
 # ============================================================
 # AI REVIEW
 # ============================================================
@@ -1573,6 +1635,7 @@ def build_ticket(
     risk,
     exclude=frozenset(),
     notify=None,
+    straight=False,
 ):
     """Build only from football-evidence-backed selections."""
 
@@ -1588,6 +1651,9 @@ def build_ticket(
 
     if risk == "risky":
         floor = max(floor, 1.35)
+
+    if straight:
+        floor = 1.05
 
     extra_days = 0
     note = ""
@@ -1610,18 +1676,32 @@ def build_ticket(
             exclude,
             (0.05 if (target and target <= 20) else 0.0),
             notify,
+            straight=straight,
         )
 
         if not groups:
             extra_days += 1
             continue
 
-        if target:
+        if straight:
+            chosen, reached = choose_straight(groups, target, count)
+
+        elif target:
             chosen, reached = choose_target(groups, target)
+
         else:
             chosen, reached = choose_count(groups, count)
 
-        if chosen:
+        # Straight win with no target: look further ahead for more picks.
+        too_few = (
+            straight
+            and not target
+            and not count
+            and len(chosen) < STRAIGHT_MIN_LEGS
+            and extra_days < 2
+        )
+
+        if chosen and not too_few:
             break
 
         extra_days += 1
@@ -1692,13 +1772,23 @@ def flow(
     provider = getattr(bot, "SPORTYBET_PROVIDER", None)
 
     if provider is None:
-        return _orig_flow(chat_id, text)
+        bot.send_message(
+            chat_id,
+            "❌ SportyBet mode is off on this server.",
+        )
+        return
 
     try:
         req = bot.parse_request(text)
 
-    except Exception:
-        return _orig_flow(chat_id, text)
+    except Exception as exc:
+        print(f"parse_request failed: {exc}")
+        bot.send_message(
+            chat_id,
+            "❌ I couldn't understand that request. "
+            "Try: 10 odds today",
+        )
+        return
 
     # parse_request already handles today / tomorrow / weekend / "N days".
     # Only use search_days when the text carried no window of its own.
@@ -1715,6 +1805,16 @@ def flow(
     target = target_override or req.get("target_odds")
     count = count_override or req.get("picks")
     risk = req.get("risk") or "normal"
+
+    straight = bool(STRAIGHT_RE.search(text or ""))
+
+    if (
+        straight
+        and re.search(r"\blong\b", text or "", re.I)
+        and req.get("label") == "next 24 hours"
+    ):
+        req["end"] = req["start"] + timedelta(days=5)
+        req["label"] = "next 5 days"
 
     # Fallback: read "10 odds" straight from the text if the parser missed it.
     if not target:
@@ -1750,18 +1850,27 @@ def flow(
             count,
             risk,
             notify=None,
+            straight=straight,
         )
 
     except Exception as exc:
 
-        print(f"Smart ticket failed: {exc}")
+        print(f"Smart ticket failed: {type(exc).__name__}: {exc}")
 
-        return _orig_flow(chat_id, text)
+        import traceback
+        traceback.print_exc()
+
+        bot.send_message(
+            chat_id,
+            "❌ Something went wrong while building the ticket. "
+            "Please try again in a minute.",
+        )
+        return
 
     chosen = built["chosen"]
 
     # Nothing found: retry once with wider market limits.
-    if not chosen and risk != "risky":
+    if not chosen and risk != "risky" and not straight:
         try:
             retry = build_ticket(
                 provider,
@@ -1784,6 +1893,20 @@ def flow(
             print(f"Wider retry failed: {exc}")
 
     local_now = datetime.now(timezone.utc).astimezone(bot.LOCAL_TZ)
+
+    if not chosen and straight:
+
+        bot.send_message(
+            chat_id,
+            (
+                "❌ I couldn't find enough 1UP / 2UP picks "
+                f"at {round(STRAIGHT_MIN_P * 100)}% or higher "
+                "right now. Try again later or ask for a "
+                "straight win long ticket."
+            ),
+        )
+
+        return
 
     if not chosen:
 
@@ -1845,6 +1968,7 @@ def flow(
                     count,
                     risk,
                     exclude=exclude,
+                    straight=straight,
                 )
 
                 if rebuilt["chosen"]:
@@ -1914,11 +2038,12 @@ def flow(
 
     today = local_now.date()
 
-    title = (
-        f"{_fmt(target)} ODDS"
-        if target
-        else f"{len(chosen)} PICKS"
-    )
+    if straight:
+        title = f"STRAIGHT WIN - {len(chosen)} PICKS"
+    elif target:
+        title = f"{_fmt(target)} ODDS"
+    else:
+        title = f"{len(chosen)} PICKS"
 
     lines = [
         (
@@ -2072,9 +2197,13 @@ def flow(
         png = ticket_image_lite.make_ticket_image(
             rows,
             (
-                f"{_fmt(target)} Odds"
-                if target
-                else f"{len(chosen)} Picks"
+                "Straight Win"
+                if straight
+                else (
+                    f"{_fmt(target)} Odds"
+                    if target
+                    else f"{len(chosen)} Picks"
+                )
             ),
             req["label"].capitalize(),
             total_odds,

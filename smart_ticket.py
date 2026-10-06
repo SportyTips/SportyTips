@@ -104,6 +104,13 @@ AI_TIMEOUT = int(os.getenv("AI_TIMEOUT", "25"))
 STUDY_CACHE_SECONDS = int(os.getenv("STUDY_CACHE_SECONDS", "1800"))
 _study_cache = {}
 
+# SportyBet-only mode. When off (default), no API-Football calls are made
+# and picks are built from SportyBet's own markets and odds.
+# Set USE_FOOTBALL_DATA=1 on Render to bring form / H2H data back.
+USE_FOOTBALL_DATA = os.getenv(
+    "USE_FOOTBALL_DATA", "0"
+).strip().lower() in ("1", "true", "yes", "on")
+
 # Straight-win mode: 1UP / 2UP picks only.
 STRAIGHT_MIN_P = float(os.getenv("STRAIGHT_MIN_P", "0.55"))
 STRAIGHT_MIN_LEGS = 13
@@ -1036,7 +1043,17 @@ def gather(
 
     groups = groups[:GROUP_LIMIT]
 
-    studied = study(groups, notify)
+    if USE_FOOTBALL_DATA:
+        studied = study(groups, notify)
+
+    else:
+        # SportyBet-only: every candidate is usable as it stands.
+        studied = 0
+
+        for group in groups:
+            for candidate in group:
+                candidate["has_data"] = True
+                candidate["facts"] = None
 
     # Only football-evidence-backed candidates
     # are allowed into the final ticket.
@@ -1687,6 +1704,40 @@ def ai_review(chosen, local_now):
 # BUILD TICKET
 # ============================================================
 
+def _reason_for(candidate):
+    """One-line reason. Uses football data when present, else SportyBet."""
+
+    facts = candidate.get("facts")
+
+    if facts:
+        try:
+            import football_data as fd
+
+            return fd.reason_for(
+                candidate,
+                facts,
+                candidate["home"],
+                candidate["away"],
+            )
+        except Exception:
+            pass
+
+    p = round(candidate.get("p", 0) * 100)
+    side_p = candidate.get("market_side_p")
+    side = candidate.get("side")
+
+    if side_p and side in ("home", "away"):
+        team = candidate["home"] if side == "home" else candidate["away"]
+
+        return (
+            f"SportyBet's markets rate {team} about "
+            f"{round(side_p * 100)}% to win, and this pick "
+            f"about {p}% likely."
+        )
+
+    return f"SportyBet's markets rate this pick about {p}% likely."
+
+
 def _fmt(value):
     try:
         value = float(value)
@@ -2036,10 +2087,10 @@ def _flow_main(
         bot.send_message(
             chat_id,
             (
-                "❌ I couldn't build a "
-                "football-evidence-backed "
-                "ticket from the available "
-                "matches for that request."
+                "❌ I couldn't build a ticket "
+                "from the available SportyBet "
+                "matches for that request. "
+                "Try a different time window or odds."
             ),
         )
 
@@ -2054,7 +2105,13 @@ def _flow_main(
     reviewed = False
 
     # Straight win and Daily 2 odds skip the slow AI news review.
-    if USE_AI_REVIEW and ANTHROPIC_API_KEY and not straight and not daily:
+    if (
+        USE_AI_REVIEW
+        and USE_FOOTBALL_DATA
+        and ANTHROPIC_API_KEY
+        and not straight
+        and not daily
+    ):
 
         reviewed = True
 
@@ -2113,8 +2170,6 @@ def _flow_main(
     # FINAL CALCULATIONS
     # ========================================================
 
-    import football_data as fd
-
     chosen.sort(key=lambda c: c["kickoff"])
 
     total_odds = 1.0
@@ -2128,12 +2183,7 @@ def _flow_main(
         candidate["reason"] = reasons.get(
             (candidate["event_id"], candidate["key"]),
             (
-                fd.reason_for(
-                    candidate,
-                    candidate.get("facts"),
-                    candidate["home"],
-                    candidate["away"],
-                ),
+                _reason_for(candidate),
                 "keep",
             ),
         )[0]
@@ -2273,6 +2323,13 @@ def _flow_main(
 
         lines.append(
             "⚠️ SportyBet booking code could not be created."
+        )
+
+    if not USE_FOOTBALL_DATA:
+
+        lines.append(
+            "ℹ️ Picks are ranked from SportyBet's own markets "
+            "and odds, not form or head-to-head."
         )
 
     if reviewed:

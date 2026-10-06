@@ -98,17 +98,25 @@ USE_AI_REVIEW = True
 WEB_SEARCHES = 2
 MAX_DROPS = 4
 
+# Speed: the AI news review gets a shorter time limit, and football
+# facts already studied are remembered so repeat searches are instant.
+AI_TIMEOUT = int(os.getenv("AI_TIMEOUT", "25"))
+STUDY_CACHE_SECONDS = int(os.getenv("STUDY_CACHE_SECONDS", "1800"))
+_study_cache = {}
+
 # Straight-win mode: 1UP / 2UP picks only.
-STRAIGHT_MIN_P = float(os.getenv("STRAIGHT_MIN_P", "0.80"))
-STRAIGHT_MIN_LEGS = 5
+STRAIGHT_MIN_P = float(os.getenv("STRAIGHT_MIN_P", "0.55"))
+STRAIGHT_MIN_LEGS = 13
 STRAIGHT_DEFAULT_LEGS = 15
 
-# Daily 2 odds: one very safe ticket, refreshed once every 24 hours.
+# Daily 2 odds: one ticket, refreshed once every 24 hours.
+# CHANGED: no 85% gate any more. The best available combination is used,
+# ranked by form + head-to-head probability.
 DAILY_TARGET = 2.0
 DAILY_LOW = 1.90
 DAILY_HIGH = 2.40
 DAILY_MAX_ODD = 1.90
-DAILY_MIN_P = float(os.getenv("DAILY_MIN_P", "0.85"))
+DAILY_MIN_P = float(os.getenv("DAILY_MIN_P", "0.0"))
 DAILY_SECONDS = 24 * 60 * 60
 
 DAILY_RE = re.compile(
@@ -747,13 +755,24 @@ def study(groups, notify=None):
         try:
 
             event = group[0]["event"]
+            event_id = event.get("eventId")
 
-            fixture = fd.find_fixture(event)
+            hit = _study_cache.get(event_id)
 
-            if not fixture:
-                continue
+            if hit and time.time() - hit[0] < STUDY_CACHE_SECONDS:
+                facts = hit[1]
 
-            facts = fd.get_facts(fixture)
+            else:
+                fixture = fd.find_fixture(event)
+
+                if not fixture:
+                    continue
+
+                facts = fd.get_facts(fixture)
+
+                # Only remember successes, so a failed lookup is retried.
+                if facts:
+                    _study_cache[event_id] = (time.time(), facts)
 
             if not facts:
                 continue
@@ -1432,7 +1451,14 @@ def choose_straight(groups, target, count):
 
 
 def choose_daily(groups):
-    """Daily 2 odds: the combination with the best joint chance."""
+    """Daily 2 odds: best joint chance from form + head-to-head.
+
+    No minimum-probability gate. Every studied match is ranked by its
+    probability (already adjusted by last-5 form and H2H in
+    football_data.py) and the combination with the best joint chance
+    that lands near 2.0 odds is used. If nothing fits the tight range,
+    a wider range is tried before giving up.
+    """
 
     import itertools
 
@@ -1440,38 +1466,42 @@ def choose_daily(groups):
 
     for group in groups:
 
-        if group:
-            best.append(max(group, key=lambda c: c.get("p", 0)))
+        usable = [c for c in group if c.get("p", 0) > 0]
+
+        if usable:
+            best.append(max(usable, key=lambda c: c.get("p", 0)))
 
     best.sort(key=lambda c: c.get("p", 0), reverse=True)
 
-    pool = best[:12]
+    pool = best[:20]
 
-    top = None
-    top_chance = 0.0
+    for low, high in ((DAILY_LOW, DAILY_HIGH), (1.70, 2.80)):
 
-    for size in (1, 2, 3):
+        top = None
+        top_chance = 0.0
 
-        for combo in itertools.combinations(pool, size):
+        for size in (1, 2, 3):
 
-            total = 1.0
-            chance = 1.0
+            for combo in itertools.combinations(pool, size):
 
-            for candidate in combo:
-                total *= candidate["odd"]
-                chance *= candidate["p"]
+                total = 1.0
+                chance = 1.0
 
-            if not (DAILY_LOW <= total <= DAILY_HIGH):
-                continue
+                for candidate in combo:
+                    total *= candidate["odd"]
+                    chance *= candidate["p"]
 
-            if chance > top_chance:
-                top = combo
-                top_chance = chance
+                if not (low <= total <= high):
+                    continue
 
-    if not top:
-        return [], False
+                if chance > top_chance:
+                    top = combo
+                    top_chance = chance
 
-    return list(top), True
+        if top:
+            return list(top), True
+
+    return [], False
 
 
 # ============================================================
@@ -1521,7 +1551,7 @@ def _ai_json(prompt, system):
 
         try:
 
-            with urlopen(request, timeout=40) as response:
+            with urlopen(request, timeout=AI_TIMEOUT) as response:
 
                 data = json.loads(response.read().decode("utf-8"))
 
@@ -1905,7 +1935,10 @@ def _flow_main(
             except Exception:
                 pass
 
-    print(f"SportyTips request: text={text!r} target={target} count={count} risk={risk} label={req.get('label')}")
+    print(
+        f"SportyTips request: text={text!r} target={target} "
+        f"count={count} risk={risk} label={req.get('label')}"
+    )
 
     if daily:
         target = DAILY_TARGET
@@ -1977,10 +2010,8 @@ def _flow_main(
         bot.send_message(
             chat_id,
             (
-                "❌ No match is safe enough for Daily 2 odds right now. "
-                "I only use picks I rate "
-                f"{round(DAILY_MIN_P * 100)}% or higher, so some days "
-                "there is no ticket. Try again later."
+                "❌ No match has enough form and head-to-head data for "
+                "Daily 2 odds right now. Try again later."
             ),
         )
 
@@ -1991,9 +2022,9 @@ def _flow_main(
         bot.send_message(
             chat_id,
             (
-                "❌ I couldn't find enough 1UP / 2UP picks "
-                f"at {round(STRAIGHT_MIN_P * 100)}% or higher "
-                "right now. Try again later or ask for a "
+                "❌ I couldn't find any 1UP / 2UP picks with "
+                "enough form and head-to-head data right now. "
+                "Try again later or ask for a "
                 "straight win long ticket."
             ),
         )
@@ -2020,8 +2051,12 @@ def _flow_main(
 
     reasons = {}
     swapped = []
+    reviewed = False
 
-    if USE_AI_REVIEW and ANTHROPIC_API_KEY:
+    # Straight win and Daily 2 odds skip the slow AI news review.
+    if USE_AI_REVIEW and ANTHROPIC_API_KEY and not straight and not daily:
+
+        reviewed = True
 
         reasons = ai_review(chosen, local_now)
 
@@ -2240,7 +2275,7 @@ def _flow_main(
             "⚠️ SportyBet booking code could not be created."
         )
 
-    if ANTHROPIC_API_KEY and USE_AI_REVIEW:
+    if reviewed:
 
         lines.append(
             (

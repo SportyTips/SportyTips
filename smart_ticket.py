@@ -52,10 +52,14 @@ MAX_LEG_ODDS = {
 
 MAX_LEGS = 30
 
-# We no longer analyse only the bookmaker's favourite 70.
-# This is a maximum number of matches whose complete markets
+# Maximum number of matches whose complete markets
 # we try to retrieve.
-MAX_DETAIL_EVENTS = int(os.getenv("MAX_DETAIL_EVENTS", "180"))
+MAX_DETAIL_EVENTS = int(
+    os.getenv(
+        "MAX_DETAIL_EVENTS",
+        "180",
+    )
+)
 
 DETAIL_WORKERS = 5
 DETAIL_SECONDS = 120
@@ -64,10 +68,10 @@ OVERSHOOT = 0.06
 
 GROUP_LIMIT = 400
 
-# Double chance is disabled.
+# Double chance disabled.
 ALLOW_DOUBLE_CHANCE = False
 
-# Football-data picks receive a bonus during ticket construction.
+# Football-data picks receive a bonus.
 DATA_BONUS = 0.12
 
 USE_AI_REVIEW = True
@@ -136,9 +140,10 @@ def _safe_float(value, default=None):
 def _two_way(odd, other):
     """Bookmaker-implied two-way probability.
 
-    This is ONLY used as an initial market baseline.
+    This is only used as an initial market baseline.
     football_data.py must adjust the final probability.
     """
+
     if not odd or odd <= 1:
         return None
 
@@ -150,14 +155,20 @@ def _two_way(odd, other):
         if total:
             return a / total
 
-    return min(0.95 / odd, 0.97)
+    return min(
+        0.95 / odd,
+        0.97,
+    )
 
 
 def _single(odd):
     if not odd or odd <= 1:
         return None
 
-    return min(0.95 / odd, 0.97)
+    return min(
+        0.95 / odd,
+        0.97,
+    )
 
 
 def _side_of(outcome, two_way=False):
@@ -169,7 +180,9 @@ def _side_of(outcome, two_way=False):
         or ""
     ).strip().lower()
 
-    oid = str(outcome.get("id"))
+    oid = str(
+        outcome.get("id")
+    )
 
     if label.startswith("home"):
         return "home"
@@ -193,16 +206,8 @@ def _side_of(outcome, two_way=False):
 
 
 def _is_positive_handicap(line):
-    """Only allow a genuinely positive handicap.
+    """Only allow a genuinely positive handicap."""
 
-    Examples:
-      +0.5
-      +1
-      +1.25
-      +1.5
-
-    Negative handicaps are rejected.
-    """
     try:
         return float(line) > 0
     except Exception:
@@ -212,11 +217,22 @@ def _is_positive_handicap(line):
 def _candidate_is_allowed(kind, label=""):
     """Final market safety filter."""
 
-    kind = str(kind or "").lower()
-    label = str(label or "").lower()
+    kind = str(
+        kind or ""
+    ).lower()
+
+    label = str(
+        label or ""
+    ).lower()
 
     # Explicitly forbidden.
-    if kind in {"under", "dnb", "dc", "yellow_cards", "cards"}:
+    if kind in {
+        "under",
+        "dnb",
+        "dc",
+        "yellow_cards",
+        "cards",
+    }:
         return False
 
     if "draw no bet" in label:
@@ -225,15 +241,24 @@ def _candidate_is_allowed(kind, label=""):
     if "under " in label:
         return False
 
-    if "yellow card" in label or "cards" in label:
+    if (
+        "yellow card" in label
+        or "cards" in label
+    ):
         return False
 
-    # Don't accidentally allow negative handicap labels.
+    # Never allow negative handicap.
     if kind == "handicap":
-        match = re.search(r"([+-]\d+(?:\.\d+)?)\s*handicap", label)
+        match = re.search(
+            r"([+-]\d+(?:\.\d+)?)\s*handicap",
+            label,
+        )
+
         if match:
             try:
-                if float(match.group(1)) <= 0:
+                if float(
+                    match.group(1)
+                ) <= 0:
                     return False
             except Exception:
                 return False
@@ -248,17 +273,39 @@ def _candidate_is_allowed(kind, label=""):
 def event_candidates(event, markets):
     """Build usable SportyBet selections from one fixture."""
 
-    home = event.get("homeTeamName", "Home")
-    away = event.get("awayTeamName", "Away")
+    home = event.get(
+        "homeTeamName",
+        "Home",
+    )
+
+    away = event.get(
+        "awayTeamName",
+        "Away",
+    )
 
     out = []
 
-    def add(kind, label, odd, p, key, **extra):
-        if not _candidate_is_allowed(kind, label):
+    def add(
+        kind,
+        label,
+        odd,
+        p,
+        key,
+        **extra,
+    ):
+        if not _candidate_is_allowed(
+            kind,
+            label,
+        ):
             return
 
-        odd = _safe_float(odd)
-        p = _safe_float(p)
+        odd = _safe_float(
+            odd
+        )
+
+        p = _safe_float(
+            p
+        )
 
         if not odd or odd <= 1:
             return
@@ -274,582 +321,20 @@ def event_candidates(event, markets):
             "key": key,
         }
 
-        item.update(extra)
-        out.append(item)
+        item.update(
+            extra
+        )
+
+        out.append(
+            item
+        )
 
     ph = None
     pa = None
 
-    # --------------------------------------------------------
+    # ========================================================
     # 1X2
-    # --------------------------------------------------------
-
-    h = sp.find_odds(
-        markets,
-        (sp.M_1X2, "", sp.OUT_1X2["home"])
-    )
-
-    d = sp.find_odds(
-        markets,
-        (sp.M_1X2, "", sp.OUT_1X2["draw"])
-    )
-
-    a = sp.find_odds(
-        markets,
-        (sp.M_1X2, "", sp.OUT_1X2["away"])
-    )
-
-    if h and d and a:
-        inv = [1 / h, 1 / d, 1 / a]
-        total = sum(inv)
-
-        if total:
-            ph = inv[0] / total
-            pd = inv[1] / total
-            pa = inv[2] / total
-
-        # Double chance deliberately disabled.
-        if ALLOW_DOUBLE_CHANCE:
-            k1 = (
-                sp.M_DC,
-                "",
-                sp.OUT_DC["1x"],
-            )
-
-            k2 = (
-                sp.M_DC,
-                "",
-                sp.OUT_DC["x2"],
-            )
-
-            add(
-                "dc",
-                f"{home} or Draw",
-                sp.find_odds(markets, k1),
-                ph + pd if ph is not None else None,
-                k1,
-                side="home",
-            )
-
-            add(
-                "dc",
-                f"Draw or {away}",
-                sp.find_odds(markets, k2),
-                pd + pa if pa is not None else None,
-                k2,
-                side="away",
-            )
-
-    # --------------------------------------------------------
-    # TOTAL GOALS
-    # --------------------------------------------------------
-
-    for market in markets or []:
-        if str(market.get("id")) != sp.M_TOTAL:
-            continue
-
-        spec = market.get("specifier") or ""
-
-        if not spec.startswith("total="):
-            continue
-
-        line = _f(spec.replace("total=", ""))
-
-        if line is None:
-            continue
-
-        # We only want normal half-goal / whole-goal lines.
-        if (line * 2) % 1 != 0:
-            continue
-
-        over = None
-        under = None
-
-        for outcome in market.get("outcomes", []):
-            if outcome.get("isActive") is False:
-                continue
-
-            oid = str(outcome.get("id"))
-
-            if oid == sp.OUT_TOTAL["over"]:
-                over = _f(outcome.get("odds"))
-
-            elif oid == sp.OUT_TOTAL["under"]:
-                under = _f(outcome.get("odds"))
-
-        mid = str(market.get("id"))
-
-        # OVER ONLY.
-        add(
-            "over15" if line == 1.5 else "over",
-            f"Over {line:g} goals",
-            over,
-            _two_way(over, under),
-            (mid, spec, sp.OUT_TOTAL["over"]),
-            line=line,
-        )
-
-        # IMPORTANT:
-        # Under is deliberately NOT added.
-        # ----------------------------------------------------
-
-    # --------------------------------------------------------
-    # BTTS
-    # --------------------------------------------------------
-
-    yes = sp.find_odds(
-        markets,
-        (sp.M_BTTS, "", sp.OUT_BTTS["yes"])
-    )
-
-    no = sp.find_odds(
-        markets,
-        (sp.M_BTTS, "", sp.OUT_BTTS["no"])
-    )
-
-    add(
-        "btts",
-        "Both teams to score",
-        yes,
-        _two_way(yes, no),
-        (sp.M_BTTS, "", sp.OUT_BTTS["yes"]),
-        btts="yes",
-    )
-
-    # We do not add BTTS No by default.
-    # User wants football attacking evidence rather than a defensive
-    # bookmaker-based fallback.
-
-    # --------------------------------------------------------
-    # OTHER MARKETS
-    # --------------------------------------------------------
-
-    for market in markets or []:
-
-        mid = str(market.get("id"))
-
-        if mid in (
-            sp.M_1X2,
-            sp.M_DC,
-            sp.M_TOTAL,
-            sp.M_BTTS,
-        ):
-            continue
-
-        name = (
-            f"{market.get('desc') or ''} "
-            f"{market.get('name') or ''}"
-        ).lower()
-
-        spec = market.get("specifier") or ""
-
-        outcomes = [
-            o for o in market.get("outcomes", [])
-            if o.get("isActive") is not False
-        ]
-
-        # ----------------------------------------------------
-        # 1UP / 2UP
-        # ----------------------------------------------------
-
-        up_match = re.search(
-            r"1x2\W+([12])\s*-?\s*up\b",
-            name,
-        )
-
-        if up_match:
-            number = up_match.group(1)
-
-            for outcome in outcomes:
-                side = _side_of(outcome)
-                odd = _f(outcome.get("odds"))
-
-                if side not in ("home", "away") or not odd:
-                    continue
-
-                team = home if side == "home" else away
-
-                market_probability = (
-                    ph if side == "home" else pa
-                )
-
-                add(
-                    "up",
-                    f"{team} to win ({number}UP)",
-                    odd,
-                    _single(odd),
-                    (
-                        mid,
-                        spec,
-                        str(outcome.get("id")),
-                    ),
-                    side=side,
-                    up_level=int(number),
-                    market_side_p=market_probability,
-                )
-
-            continue
-
-        # ----------------------------------------------------
-        # WIN EITHER HALF
-        # ----------------------------------------------------
-
-        if (
-            "either half" in name
-            and not any(
-                x in name
-                for x in (
-                    "both",
-                    "1st",
-                    "2nd",
-                    "first",
-                    "second",
-                )
-            )
-        ):
-            for side, team in (
-                ("home", home),
-                ("away", away),
-            ):
-                for outcome in outcomes:
-                    label = str(
-                        outcome.get("desc")
-                        or outcome.get("name")
-                        or ""
-                    ).strip().lower()
-
-                    odd = _f(outcome.get("odds"))
-
-                    if not odd:
-                        continue
-
-                    if side in label or (
-                        side in name and label == "yes"
-                    ):
-                        add(
-                            "either_half",
-                            f"{team} to win either half",
-                            odd,
-                            _single(odd),
-                            (
-                                mid,
-                                spec,
-                                str(outcome.get("id")),
-                            ),
-                            side=side,
-                            market_side_p=(
-                                ph if side == "home" else pa
-                            ),
-                        )
-                        break
-
-            continue
-
-        # ----------------------------------------------------
-        # DNB IS DELIBERATELY IGNORED
-        # ----------------------------------------------------
-
-        if "draw no bet" in name:
-            continue
-
-        # ----------------------------------------------------
-        # CORNERS
-        # ----------------------------------------------------
-
-        if (
-            "corner" in name
-            and spec.startswith("total=")
-            and not any(
-                x in name
-                for x in (
-                    "1st",
-                    "2nd",
-                    "first",
-                    "second",
-                    "half",
-                    "home",
-                    "away",
-                    "team",
-                    "race",
-                    "handicap",
-                    "odd",
-                    "even",
-                    "1x2",
-                    "exact",
-                    "range",
-                )
-            )
-        ):
-            line = _f(spec.replace("total=", ""))
-
-            if line is None:
-                continue
-
-            if (line * 2) % 1 != 0:
-                continue
-
-            over = None
-            over_id = None
-
-            for outcome in outcomes:
-                label = str(
-                    outcome.get("desc")
-                    or outcome.get("name")
-                    or ""
-                ).strip().lower()
-
-                oid = str(outcome.get("id"))
-                odd = _f(outcome.get("odds"))
-
-                if (
-                    label.startswith("over")
-                    or oid == sp.OUT_TOTAL["over"]
-                ):
-                    over = odd
-                    over_id = oid
-
-            # Only Over corners.
-            add(
-                "corners",
-                f"Over {line:g} corners",
-                over,
-                _single(over),
-                (mid, spec, over_id),
-                line=line,
-            )
-
-            continue
-
-        # ----------------------------------------------------
-        # POSITIVE HANDICAP ONLY
-        # ----------------------------------------------------
-
-        if (
-            "handicap" in name
-            and "corner" not in name
-            and spec.startswith("hcp=")
-            and len(outcomes) == 2
-            and not any(
-                x in name
-                for x in (
-                    "1st",
-                    "2nd",
-                    "half",
-                    "3-way",
-                    "3 way",
-                    "three",
-                )
-            )
-        ):
-            try:
-                line = float(
-                    spec.replace("hcp=", "")
-                )
-            except ValueError:
-                continue
-
-            # NEVER accept a negative handicap.
-            if not _is_positive_handicap(line):
-                continue
-
-            odds = [
-                _f(o.get("odds"))
-                for o in outcomes
-            ]
-
-            for outcome, odd, other in zip(
-                outcomes,
-                odds,
-                odds[::-1],
-            ):
-                side = _side_of(
-                    outcome,
-                    two_way=True,
-                )
-
-                if not side or not odd:
-                    continue
-
-                # SportyBet may represent the handicap from the
-                # opposite side. We only expose positive handicap
-                # selections to the user.
-                team = (
-                    home
-                    if side == "home"
-                    else away
-                )
-
-                label = (
-                    f"{team} +{line:g} handicap"
-                )
-
-                add(
-                    "handicap",
-                    label,
-                    odd,
-                    _two_way(odd, other),
-                    (
-                        mid,
-                        spec,
-                        str(outcome.get("id")),
-                    ),
-                    side=side,
-                    handicap=line,
-                )
-
-            continue
-
-        # ----------------------------------------------------
-        # TEAM GOAL MARKETS
-        # ----------------------------------------------------
-
-        if (
-            "team" in name
-            and "goal" in name
-            and spec.startswith("total=")
-            and "corner" not in name
-        ):
-            line = _f(
-                spec.replace("total=", "")
-            )
-
-            if line is None:
-                continue
-
-            # Prefer Over team goals.
-            for outcome in outcomes:
-                label = str(
-                    outcome.get("desc")
-                    or outcome.get("name")
-                    or ""
-                ).strip()
-
-                low = label.lower()
-
-                if not low.startswith("over"):
-                    continue
-
-                odd = _f(outcome.get("odds"))
-
-                if not odd:
-                    continue
-
-                # Try to identify the team from the market name.
-                if home.lower() in name:
-                    team = home
-                    side = "home"
-                elif away.lower() in name:
-                    team = away
-                    side = "away"
-                else:
-                    continue
-
-                add(
-                    "team_goals",
-                    f"{team} Over {line:g} team goals",
-                    odd,
-                    _single(odd),
-                    (
-                        mid,
-                        spec,
-                        str(outcome.get("id")),
-                    ),
-                    side=side,
-                    line=line,
-                )
-
-            continue
-
-    return out
-
-
-# ============================================================
-# FOOTBALL DATA STUDY
-# ============================================================
-
-def study(groups, notify=None):
-    """Study football evidence for available matches.
-
-    This does NOT require every group to have data.
-    It simply studies as many valid matches as the football-data
-    API allowance permits.
-    """
-
-    import football_data as fd
-
-    if fd.ENRICH_MAX <= 0 or not groups:
-        return 0
-
-    # Do not force an arbitrary number.
-    # ENRICH_MAX is simply the API allowance.
-    top = groups[:fd.ENRICH_MAX]
-
-    if notify:
-        notify(len(top))
-
-    studied = 0
-    started = time.time()
-
-    for group in top:
-
-        if (
-            time.time() - started
-            > fd.ENRICH_SECONDS
-        ):
-            break
-
-        try:
-            event = group[0]["event"]
-
-            fixture = fd.find_fixture(event)
-
-            if not fixture:
-                continue
-
-            facts = fd.get_facts(fixture)
-
-            if not facts:
-                continue
-
-            studied += 1
-
-            for candidate in group:
-                try:
-                    candidate["p"] = fd.adjusted_p(
-                        candidate,
-                        facts,
-                    )
-                except Exception:
-                    # If adjustment fails, don't pretend
-                    # the bookmaker price is football evidence.
-                    candidate["p"] = 0.0
-                    continue
-
-                candidate["facts"] = facts
-                candidate["has_data"] = True
-
-        except Exception as exc:
-            # Backend only.
-            print(
-                f"Football study failed: {exc}"
-            )
-
-    return studied
-
-
-# ============================================================
-# SPORTYBET MATCH RANKING
-# ============================================================
-
-def favourite_strength(event):
-    """Initial market availability ranking.
-
-    This is NOT the football prediction.
-    It only helps decide which matches deserve market-detail
-    retrieval first when SportyBet has a very large list.
-    """
-
-    markets = event.get("markets") or []
+    # ========================================================
 
     h = sp.find_odds(
         markets,
@@ -878,10 +363,854 @@ def favourite_strength(event):
         ),
     )
 
-    if not (h and d and a):
+    if h and d and a:
+        inv = [
+            1 / h,
+            1 / d,
+            1 / a,
+        ]
+
+        total = sum(inv)
+
+        if total:
+            ph = inv[0] / total
+            pd = inv[1] / total
+            pa = inv[2] / total
+
+        # Double chance deliberately disabled.
+        if ALLOW_DOUBLE_CHANCE:
+
+            k1 = (
+                sp.M_DC,
+                "",
+                sp.OUT_DC["1x"],
+            )
+
+            k2 = (
+                sp.M_DC,
+                "",
+                sp.OUT_DC["x2"],
+            )
+
+            add(
+                "dc",
+                f"{home} or Draw",
+                sp.find_odds(
+                    markets,
+                    k1,
+                ),
+                (
+                    ph + pd
+                    if ph is not None
+                    else None
+                ),
+                k1,
+                side="home",
+            )
+
+            add(
+                "dc",
+                f"Draw or {away}",
+                sp.find_odds(
+                    markets,
+                    k2,
+                ),
+                (
+                    pd + pa
+                    if pa is not None
+                    else None
+                ),
+                k2,
+                side="away",
+            )
+
+    # ========================================================
+    # TOTAL GOALS
+    # ========================================================
+
+    for market in markets or []:
+
+        if str(
+            market.get("id")
+        ) != sp.M_TOTAL:
+            continue
+
+        spec = (
+            market.get(
+                "specifier"
+            )
+            or ""
+        )
+
+        if not spec.startswith(
+            "total="
+        ):
+            continue
+
+        line = _f(
+            spec.replace(
+                "total=",
+                "",
+            )
+        )
+
+        if line is None:
+            continue
+
+        if (
+            line * 2
+        ) % 1 != 0:
+            continue
+
+        over = None
+        under = None
+
+        for outcome in market.get(
+            "outcomes",
+            [],
+        ):
+
+            if (
+                outcome.get(
+                    "isActive"
+                )
+                is False
+            ):
+                continue
+
+            oid = str(
+                outcome.get(
+                    "id"
+                )
+            )
+
+            if oid == sp.OUT_TOTAL[
+                "over"
+            ]:
+                over = _f(
+                    outcome.get(
+                        "odds"
+                    )
+                )
+
+            elif oid == sp.OUT_TOTAL[
+                "under"
+            ]:
+                under = _f(
+                    outcome.get(
+                        "odds"
+                    )
+                )
+
+        mid = str(
+            market.get("id")
+        )
+
+        # OVER ONLY.
+        add(
+            (
+                "over15"
+                if line == 1.5
+                else "over"
+            ),
+            f"Over {line:g} goals",
+            over,
+            _two_way(
+                over,
+                under,
+            ),
+            (
+                mid,
+                spec,
+                sp.OUT_TOTAL[
+                    "over"
+                ],
+            ),
+            line=line,
+        )
+
+        # Under deliberately not added.
+
+    # ========================================================
+    # BTTS
+    # ========================================================
+
+    yes = sp.find_odds(
+        markets,
+        (
+            sp.M_BTTS,
+            "",
+            sp.OUT_BTTS["yes"],
+        ),
+    )
+
+    no = sp.find_odds(
+        markets,
+        (
+            sp.M_BTTS,
+            "",
+            sp.OUT_BTTS["no"],
+        ),
+    )
+
+    add(
+        "btts",
+        "Both teams to score",
+        yes,
+        _two_way(
+            yes,
+            no,
+        ),
+        (
+            sp.M_BTTS,
+            "",
+            sp.OUT_BTTS["yes"],
+        ),
+        btts="yes",
+    )
+
+    # ========================================================
+    # OTHER MARKETS
+    # ========================================================
+
+    for market in markets or []:
+
+        mid = str(
+            market.get("id")
+        )
+
+        if mid in (
+            sp.M_1X2,
+            sp.M_DC,
+            sp.M_TOTAL,
+            sp.M_BTTS,
+        ):
+            continue
+
+        name = (
+            f"{market.get('desc') or ''} "
+            f"{market.get('name') or ''}"
+        ).lower()
+
+        spec = (
+            market.get(
+                "specifier"
+            )
+            or ""
+        )
+
+        outcomes = [
+            o
+            for o in market.get(
+                "outcomes",
+                [],
+            )
+            if o.get(
+                "isActive"
+            ) is not False
+        ]
+
+        # ====================================================
+        # 1UP / 2UP
+        # ====================================================
+
+        up_match = re.search(
+            r"1x2\W+([12])\s*-?\s*up\b",
+            name,
+        )
+
+        if up_match:
+
+            number = up_match.group(1)
+
+            for outcome in outcomes:
+
+                side = _side_of(
+                    outcome
+                )
+
+                odd = _f(
+                    outcome.get(
+                        "odds"
+                    )
+                )
+
+                if (
+                    side
+                    not in (
+                        "home",
+                        "away",
+                    )
+                    or not odd
+                ):
+                    continue
+
+                team = (
+                    home
+                    if side == "home"
+                    else away
+                )
+
+                market_probability = (
+                    ph
+                    if side == "home"
+                    else pa
+                )
+
+                add(
+                    "up",
+                    f"{team} to win ({number}UP)",
+                    odd,
+                    _single(
+                        odd
+                    ),
+                    (
+                        mid,
+                        spec,
+                        str(
+                            outcome.get(
+                                "id"
+                            )
+                        ),
+                    ),
+                    side=side,
+                    up_level=int(
+                        number
+                    ),
+                    market_side_p=(
+                        market_probability
+                    ),
+                )
+
+            continue
+
+        # ====================================================
+        # WIN EITHER HALF
+        # ====================================================
+
+        if (
+            "either half" in name
+            and not any(
+                x in name
+                for x in (
+                    "both",
+                    "1st",
+                    "2nd",
+                    "first",
+                    "second",
+                )
+            )
+        ):
+
+            for side, team in (
+                ("home", home),
+                ("away", away),
+            ):
+
+                for outcome in outcomes:
+
+                    label = str(
+                        outcome.get(
+                            "desc"
+                        )
+                        or outcome.get(
+                            "name"
+                        )
+                        or ""
+                    ).strip().lower()
+
+                    odd = _f(
+                        outcome.get(
+                            "odds"
+                        )
+                    )
+
+                    if not odd:
+                        continue
+
+                    if (
+                        side in label
+                        or (
+                            side in name
+                            and label
+                            == "yes"
+                        )
+                    ):
+
+                        add(
+                            "either_half",
+                            f"{team} to win either half",
+                            odd,
+                            _single(
+                                odd
+                            ),
+                            (
+                                mid,
+                                spec,
+                                str(
+                                    outcome.get(
+                                        "id"
+                                    )
+                                ),
+                            ),
+                            side=side,
+                            market_side_p=(
+                                ph
+                                if side
+                                == "home"
+                                else pa
+                            ),
+                        )
+
+                        break
+
+            continue
+
+        # ====================================================
+        # DNB IGNORED
+        # ====================================================
+
+        if "draw no bet" in name:
+            continue
+
+        # ====================================================
+        # CORNERS
+        # ====================================================
+
+        if (
+            "corner" in name
+            and spec.startswith(
+                "total="
+            )
+            and not any(
+                x in name
+                for x in (
+                    "1st",
+                    "2nd",
+                    "first",
+                    "second",
+                    "half",
+                    "home",
+                    "away",
+                    "team",
+                    "race",
+                    "handicap",
+                    "odd",
+                    "even",
+                    "1x2",
+                    "exact",
+                    "range",
+                )
+            )
+        ):
+
+            line = _f(
+                spec.replace(
+                    "total=",
+                    "",
+                )
+            )
+
+            if line is None:
+                continue
+
+            if (
+                line * 2
+            ) % 1 != 0:
+                continue
+
+            over = None
+            over_id = None
+
+            for outcome in outcomes:
+
+                label = str(
+                    outcome.get(
+                        "desc"
+                    )
+                    or outcome.get(
+                        "name"
+                    )
+                    or ""
+                ).strip().lower()
+
+                oid = str(
+                    outcome.get(
+                        "id"
+                    )
+                )
+
+                odd = _f(
+                    outcome.get(
+                        "odds"
+                    )
+                )
+
+                if (
+                    label.startswith(
+                        "over"
+                    )
+                    or oid
+                    == sp.OUT_TOTAL[
+                        "over"
+                    ]
+                ):
+                    over = odd
+                    over_id = oid
+
+            add(
+                "corners",
+                f"Over {line:g} corners",
+                over,
+                _single(
+                    over
+                ),
+                (
+                    mid,
+                    spec,
+                    over_id,
+                ),
+                line=line,
+            )
+
+            continue
+
+        # ====================================================
+        # POSITIVE HANDICAP ONLY
+        # ====================================================
+
+        if (
+            "handicap" in name
+            and "corner" not in name
+            and spec.startswith(
+                "hcp="
+            )
+            and len(
+                outcomes
+            ) == 2
+            and not any(
+                x in name
+                for x in (
+                    "1st",
+                    "2nd",
+                    "half",
+                    "3-way",
+                    "3 way",
+                    "three",
+                )
+            )
+        ):
+
+            try:
+                line = float(
+                    spec.replace(
+                        "hcp=",
+                        "",
+                    )
+                )
+            except ValueError:
+                continue
+
+            if not _is_positive_handicap(
+                line
+            ):
+                continue
+
+            odds = [
+                _f(
+                    o.get(
+                        "odds"
+                    )
+                )
+                for o in outcomes
+            ]
+
+            for outcome, odd, other in zip(
+                outcomes,
+                odds,
+                odds[::-1],
+            ):
+
+                side = _side_of(
+                    outcome,
+                    two_way=True,
+                )
+
+                if (
+                    not side
+                    or not odd
+                ):
+                    continue
+
+                team = (
+                    home
+                    if side == "home"
+                    else away
+                )
+
+                label = (
+                    f"{team} +{line:g} handicap"
+                )
+
+                add(
+                    "handicap",
+                    label,
+                    odd,
+                    _two_way(
+                        odd,
+                        other,
+                    ),
+                    (
+                        mid,
+                        spec,
+                        str(
+                            outcome.get(
+                                "id"
+                            )
+                        ),
+                    ),
+                    side=side,
+                    handicap=line,
+                )
+
+            continue
+
+        # ====================================================
+        # TEAM GOALS
+        # ====================================================
+
+        if (
+            "team" in name
+            and "goal" in name
+            and spec.startswith(
+                "total="
+            )
+            and "corner" not in name
+        ):
+
+            line = _f(
+                spec.replace(
+                    "total=",
+                    "",
+                )
+            )
+
+            if line is None:
+                continue
+
+            for outcome in outcomes:
+
+                label = str(
+                    outcome.get(
+                        "desc"
+                    )
+                    or outcome.get(
+                        "name"
+                    )
+                    or ""
+                ).strip()
+
+                low = label.lower()
+
+                if not low.startswith(
+                    "over"
+                ):
+                    continue
+
+                odd = _f(
+                    outcome.get(
+                        "odds"
+                    )
+                )
+
+                if not odd:
+                    continue
+
+                if (
+                    home.lower()
+                    in name
+                ):
+                    team = home
+                    side = "home"
+
+                elif (
+                    away.lower()
+                    in name
+                ):
+                    team = away
+                    side = "away"
+
+                else:
+                    continue
+
+                add(
+                    "team_goals",
+                    f"{team} Over {line:g} team goals",
+                    odd,
+                    _single(
+                        odd
+                    ),
+                    (
+                        mid,
+                        spec,
+                        str(
+                            outcome.get(
+                                "id"
+                            )
+                        ),
+                    ),
+                    side=side,
+                    line=line,
+                )
+
+            continue
+
+    return out
+
+
+# ============================================================
+# FOOTBALL DATA STUDY
+# ============================================================
+
+def study(groups, notify=None):
+    """Study football evidence for available matches."""
+
+    import football_data as fd
+
+    if (
+        fd.ENRICH_MAX <= 0
+        or not groups
+    ):
+        return 0
+
+    top = groups[
+        :fd.ENRICH_MAX
+    ]
+
+    if notify:
+        notify(
+            len(top)
+        )
+
+    studied = 0
+    started = time.time()
+
+    for group in top:
+
+        if (
+            time.time()
+            - started
+            > fd.ENRICH_SECONDS
+        ):
+            break
+
+        try:
+
+            event = group[0][
+                "event"
+            ]
+
+            fixture = fd.find_fixture(
+                event
+            )
+
+            if not fixture:
+                continue
+
+            facts = fd.get_facts(
+                fixture
+            )
+
+            if not facts:
+                continue
+
+            studied += 1
+
+            for candidate in group:
+
+                try:
+                    candidate[
+                        "p"
+                    ] = fd.adjusted_p(
+                        candidate,
+                        facts,
+                    )
+
+                except Exception:
+
+                    candidate[
+                        "p"
+                    ] = 0.0
+
+                    continue
+
+                candidate[
+                    "facts"
+                ] = facts
+
+                candidate[
+                    "has_data"
+                ] = True
+
+        except Exception as exc:
+
+            print(
+                f"Football study failed: {exc}"
+            )
+
+    return studied
+
+
+# ============================================================
+# SPORTYBET MATCH RANKING
+# ============================================================
+
+def favourite_strength(event):
+    """Initial market availability ranking."""
+
+    markets = (
+        event.get(
+            "markets"
+        )
+        or []
+    )
+
+    h = sp.find_odds(
+        markets,
+        (
+            sp.M_1X2,
+            "",
+            sp.OUT_1X2["home"],
+        ),
+    )
+
+    d = sp.find_odds(
+        markets,
+        (
+            sp.M_1X2,
+            "",
+            sp.OUT_1X2["draw"],
+        ),
+    )
+
+    a = sp.find_odds(
+        markets,
+        (
+            sp.M_1X2,
+            "",
+            sp.OUT_1X2["away"],
+        ),
+    )
+
+    if not (
+        h
+        and d
+        and a
+    ):
         return 0.0
 
     try:
+
         inv = [
             1 / h,
             1 / d,
@@ -907,14 +1236,7 @@ def favourite_strength(event):
 # ============================================================
 
 def _detail_order(events):
-    """Spread market-detail retrieval across the fixture list.
-
-    The old version took only the top 70 bookmaker favourites.
-    That can completely miss useful matches from other leagues.
-
-    We keep the strongest fixtures first but also sample through
-    the entire list.
-    """
+    """Spread market-detail retrieval across the fixture list."""
 
     if len(events) <= MAX_DETAIL_EVENTS:
         return list(events)
@@ -928,32 +1250,41 @@ def _detail_order(events):
     selected = []
     seen = set()
 
-    # First take a reasonable portion of strongest fixtures.
     priority_count = min(
         MAX_DETAIL_EVENTS // 2,
         len(ranked),
     )
 
-    for event in ranked[:priority_count]:
-        eid = event.get("eventId")
+    for event in ranked[
+        :priority_count
+    ]:
+
+        eid = event.get(
+            "eventId"
+        )
 
         if eid in seen:
             continue
 
-        selected.append(event)
-        seen.add(eid)
+        selected.append(
+            event
+        )
 
-    # Then distribute the remaining slots through the
-    # complete SportyBet fixture list.
+        seen.add(
+            eid
+        )
+
     remaining = (
         MAX_DETAIL_EVENTS
         - len(selected)
     )
 
     if remaining > 0:
+
         step = max(
             1,
-            len(events) // remaining,
+            len(events)
+            // remaining,
         )
 
         for index in range(
@@ -961,19 +1292,35 @@ def _detail_order(events):
             len(events),
             step,
         ):
-            event = events[index]
-            eid = event.get("eventId")
+
+            event = events[
+                index
+            ]
+
+            eid = event.get(
+                "eventId"
+            )
 
             if eid in seen:
                 continue
 
-            selected.append(event)
-            seen.add(eid)
+            selected.append(
+                event
+            )
 
-            if len(selected) >= MAX_DETAIL_EVENTS:
+            seen.add(
+                eid
+            )
+
+            if (
+                len(selected)
+                >= MAX_DETAIL_EVENTS
+            ):
                 break
 
-    return selected[:MAX_DETAIL_EVENTS]
+    return selected[
+        :MAX_DETAIL_EVENTS
+    ]
 
 
 def gather(
@@ -986,7 +1333,7 @@ def gather(
     min_p_shift=0.0,
     notify=None,
 ):
-    """Gather available SportyBet markets and football evidence."""
+    """Gather SportyBet markets and football evidence."""
 
     events = provider.get_upcoming(
         start,
@@ -996,12 +1343,14 @@ def gather(
     if not events:
         return [], 0, 0, 0
 
-    # Retrieve detailed markets from a broad spread of matches.
-    wanted = _detail_order(events)
+    wanted = _detail_order(
+        events
+    )
 
     details = {}
 
     if wanted:
+
         with ThreadPoolExecutor(
             max_workers=DETAIL_WORKERS
         ) as pool:
@@ -1009,8 +1358,12 @@ def gather(
             futures = {}
 
             for event in wanted:
+
                 try:
-                    event_id = event["eventId"]
+
+                    event_id = event[
+                        "eventId"
+                    ]
 
                     futures[
                         pool.submit(
@@ -1023,16 +1376,24 @@ def gather(
                     continue
 
             try:
+
                 for future in as_completed(
                     futures,
                     timeout=DETAIL_SECONDS,
                 ):
-                    event = futures[future]
+
+                    event = futures[
+                        future
+                    ]
 
                     try:
+
                         details[
-                            event["eventId"]
+                            event[
+                                "eventId"
+                            ]
                         ] = future.result()
+
                     except Exception:
                         pass
 
@@ -1058,17 +1419,24 @@ def gather(
 
         markets = (
             details.get(
-                event["eventId"]
+                event[
+                    "eventId"
+                ]
             )
-            or event.get("markets")
+            or event.get(
+                "markets"
+            )
             or []
         )
 
         try:
+
             fixture = sp.sporty_fixture(
                 event
             )
+
         except Exception:
+
             fixture = {
                 "league": {
                     "name": "Football"
@@ -1083,43 +1451,82 @@ def gather(
             markets,
         ):
 
-            # No unsupported market.
             if not _candidate_is_allowed(
-                candidate["kind"],
-                candidate["label"],
+                candidate[
+                    "kind"
+                ],
+                candidate[
+                    "label"
+                ],
             ):
                 continue
 
-            # Odds still matter for ticket construction,
-            # but not for deciding football strength.
             if not (
                 floor
-                <= candidate["odd"]
+                <= candidate[
+                    "odd"
+                ]
                 <= max_odd
             ):
                 continue
 
-            # Before football data is added, do not treat
-            # the bookmaker probability as final evidence.
             if (
-                candidate["p"]
+                candidate[
+                    "p"
+                ]
                 < min_p
             ):
                 continue
 
             key = (
-                event["eventId"],
-                candidate["key"],
+                event[
+                    "eventId"
+                ],
+                candidate[
+                    "key"
+                ],
             )
 
             if key in exclude:
                 continue
 
-            if candidate["label"] in seen:
+            if (
+                candidate[
+                    "label"
+                ]
+                in seen
+            ):
                 continue
 
             seen.add(
-                candidate["label"]
+                candidate[
+                    "label"
+                ]
+            )
+
+            start_time = (
+                event.get(
+                    "estimateStartTime"
+                )
+                or 0
+            )
+
+            try:
+                kickoff = datetime.fromtimestamp(
+                    start_time / 1000,
+                    tz=timezone.utc,
+                )
+            except Exception:
+                kickoff = datetime.now(
+                    timezone.utc
+                )
+
+            league_data = (
+                fixture.get(
+                    "league",
+                    {},
+                )
+                or {}
             )
 
             candidate.update(
@@ -1136,24 +1543,10 @@ def gather(
                         "awayTeamName",
                         "Away",
                     ),
-                    "kickoff": datetime.fromtimestamp(
-                        (
-                            event.get(
-                                "estimateStartTime"
-                            )
-                            or 0
-                        )
-                        / 1000,
-                        tz=timezone.utc,
-                    ),
-                    "league": (
-                        fixture.get(
-                            "league",
-                            {},
-                        ).get(
-                            "name",
-                            "Football",
-                        )
+                    "kickoff": kickoff,
+                    "league": league_data.get(
+                        "name",
+                        "Football",
                     ),
                     "has_data": False,
                 }
@@ -1168,8 +1561,6 @@ def gather(
                 kept
             )
 
-    # Study the strongest candidates.
-    # The football evidence then becomes the deciding factor.
     groups.sort(
         key=lambda group: max(
             c["p"]
@@ -1187,24 +1578,28 @@ def gather(
         notify,
     )
 
-    # IMPORTANT:
-    # After the study, only candidates with football data
-    # are allowed into the actual ticket.
+    # Only football-evidence-backed candidates
+    # are allowed into the final ticket.
     evidence_groups = []
 
     for group in groups:
+
         valid = []
 
         for candidate in group:
+
             if not candidate.get(
                 "has_data"
             ):
                 continue
 
-            if candidate.get(
-                "p",
-                0,
-            ) < min_p:
+            if (
+                candidate.get(
+                    "p",
+                    0,
+                )
+                < min_p
+            ):
                 continue
 
             valid.append(
@@ -1237,8 +1632,10 @@ def _dp(groups, target):
     S = 200
 
     try:
+
         tw = math.ceil(
-            math.log(target) * S
+            math.log(target)
+            * S
         )
 
         wm = max(
@@ -1258,9 +1655,13 @@ def _dp(groups, target):
     except Exception:
         return None
 
-    INF = float("inf")
+    INF = float(
+        "inf"
+    )
 
-    dp = [INF] * (
+    dp = [
+        INF
+    ] * (
         wm + 1
     )
 
@@ -1299,6 +1700,7 @@ def _dp(groups, target):
                 continue
 
             try:
+
                 weight = round(
                     math.log(
                         odd
@@ -1353,6 +1755,7 @@ def _dp(groups, target):
                 if value < new[
                     x + weight
                 ]:
+
                     new[
                         x + weight
                     ] = value
@@ -1365,6 +1768,7 @@ def _dp(groups, target):
                     )
 
         dp = new
+
         choices.append(
             choice
         )
@@ -1390,6 +1794,7 @@ def _dp(groups, target):
         return None
 
     picked = []
+
     x = best
 
     for gi in range(
@@ -1415,7 +1820,6 @@ def _dp(groups, target):
 
     picked.reverse()
 
-    # Never exceed MAX_LEGS.
     return picked[
         :MAX_LEGS
     ]
@@ -1460,7 +1864,9 @@ def _dp_exact(groups, target):
             and (
                 best is None
                 or actual
-                < _product(best)
+                < _product(
+                    best
+                )
             )
         ):
             best = picks
@@ -1500,7 +1906,7 @@ def _prune(
     legs,
     scale,
 ):
-    """Prevent one market from taking over the ticket."""
+    """Prevent one market from taking over."""
 
     drop = set()
 
@@ -1582,7 +1988,7 @@ def choose_target(
     groups,
     target,
 ):
-    """Choose a football-evidence-backed ticket around target odds."""
+    """Choose an evidence-backed ticket around target odds."""
 
     if not groups or not target:
         return [], False
@@ -1596,8 +2002,7 @@ def choose_target(
         if candidate.get(
             "odd",
             0,
-        )
-        > 1
+        ) > 1
     )
 
     if not all_weights:
@@ -1670,10 +2075,13 @@ def choose_target(
                 ),
             )
 
-            if counts.get(
-                kind,
-                0,
-            ) > allowed:
+            if (
+                counts.get(
+                    kind,
+                    0,
+                )
+                > allowed
+            ):
                 valid_mix = False
                 break
 
@@ -1684,7 +2092,6 @@ def choose_target(
             chosen
         )
 
-    # Do NOT manufacture a ticket from odds alone.
     return [], False
 
 
@@ -1692,9 +2099,12 @@ def choose_count(
     groups,
     count,
 ):
-    """Choose a requested number of evidence-backed picks."""
+    """Choose requested evidence-backed picks."""
 
-    if not groups or count <= 0:
+    if (
+        not groups
+        or count <= 0
+    ):
         return [], False
 
     count = min(
@@ -1733,6 +2143,8 @@ def choose_count(
         ),
         reverse=True,
     )
+
+    chosen = []
 
     for scale in (
         1.0,
@@ -1840,6 +2252,7 @@ def _ai_json(
         }
 
         if use_tools:
+
             body[
                 "tools"
             ] = [
@@ -1872,6 +2285,7 @@ def _ai_json(
         )
 
         try:
+
             with urlopen(
                 request,
                 timeout=110,
@@ -1903,7 +2317,7 @@ def _ai_json(
             )
             for block in data.get(
                 "content",
-                []
+                [],
             )
             if block.get(
                 "type"
@@ -1967,6 +2381,21 @@ def ai_review(
             "facts"
         )
 
+        # IMPORTANT:
+        # Calculate the draft reason separately.
+        # This avoids the broken nested f-string that caused:
+        # SyntaxError: f-string: expecting '}'
+        draft_reason = fd.reason_for(
+            candidate,
+            facts,
+            candidate[
+                "home"
+            ],
+            candidate[
+                "away"
+            ],
+        )
+
         lines.append(
             f"{i}. "
             f"{candidate['home']} vs "
@@ -1977,12 +2406,7 @@ def ai_review(
             f"FACTS: "
             f"{fd.facts_digest(facts)}\n"
             f"DRAFT: "
-            f"{fd.reason_for("
-                candidate,
-                facts,
-                candidate['home'],
-                candidate['away']
-            )}"
+            f"{draft_reason}"
         )
 
     prompt = (
@@ -2016,11 +2440,13 @@ def ai_review(
     for item in items:
 
         try:
+
             index = int(
                 item.get(
                     "i"
                 )
             )
+
         except (
             TypeError,
             ValueError,
@@ -2043,18 +2469,21 @@ def ai_review(
 
         flag = (
             "drop"
-            if str(
-                item.get(
-                    "flag",
-                    "",
-                )
-            ).lower()
-            == "drop"
-            and reason
+            if (
+                str(
+                    item.get(
+                        "flag",
+                        "",
+                    )
+                ).lower()
+                == "drop"
+                and reason
+            )
             else "keep"
         )
 
         if reason:
+
             candidate = chosen[
                 index
             ]
@@ -2204,6 +2633,7 @@ def build_ticket(
             continue
 
         if target:
+
             chosen, reached = (
                 choose_target(
                     groups,
@@ -2212,6 +2642,7 @@ def build_ticket(
             )
 
         else:
+
             chosen, reached = (
                 choose_count(
                     groups,
@@ -2225,6 +2656,7 @@ def build_ticket(
         extra_days += 1
 
     else:
+
         chosen = []
         reached = False
         total_events = 0
@@ -2232,6 +2664,7 @@ def build_ticket(
         studied = 0
 
     if extra_days and chosen:
+
         note = (
             "I also used matches from "
             f"the next {extra_days} day"
@@ -2275,6 +2708,7 @@ def _launcher_send_photo(
         )
 
         if send:
+
             send(
                 chat_id,
                 png,
@@ -2282,6 +2716,7 @@ def _launcher_send_photo(
             )
 
     except Exception as exc:
+
         print(
             f"Ticket picture failed: {exc}"
         )
@@ -2308,10 +2743,13 @@ def flow(
         )
 
     try:
+
         req = bot.parse_request(
             text
         )
+
     except Exception:
+
         return _orig_flow(
             chat_id,
             text,
@@ -2335,23 +2773,8 @@ def flow(
     if not target and not count:
         count = 5
 
-    if target:
-        wait = (
-            "about a minute"
-            if target >= 20
-            else "a little while"
-        )
-    else:
-        wait = "a little while"
-
-    bot.send_message(
-        chat_id,
-        (
-            "⏳ Checking the available "
-            "SportyBet fixtures and studying "
-            "the football data..."
-        ),
-    )
+    # No backend progress message is sent to Telegram.
+    # The user only receives the final result.
 
     try:
 
@@ -2401,9 +2824,9 @@ def flow(
 
         return
 
-    # --------------------------------------------------------
+    # ========================================================
     # AI NEWS REVIEW
-    # --------------------------------------------------------
+    # ========================================================
 
     reasons = {}
     swapped = []
@@ -2485,6 +2908,7 @@ def flow(
                 ]:
 
                     built = rebuilt
+
                     chosen = rebuilt[
                         "chosen"
                     ]
@@ -2497,9 +2921,9 @@ def flow(
 
                 swapped = []
 
-    # --------------------------------------------------------
+    # ========================================================
     # FINAL CALCULATIONS
-    # --------------------------------------------------------
+    # ========================================================
 
     import football_data as fd
 
@@ -2549,9 +2973,9 @@ def flow(
             ),
         )[0]
 
-    # --------------------------------------------------------
+    # ========================================================
     # REAL SPORTYBET BOOKING CODE
-    # --------------------------------------------------------
+    # ========================================================
 
     code = None
 
@@ -2580,9 +3004,9 @@ def flow(
             f"Booking code failed: {exc}"
         )
 
-    # --------------------------------------------------------
+    # ========================================================
     # TELEGRAM MESSAGE
-    # --------------------------------------------------------
+    # ========================================================
 
     today = local_now.date()
 
@@ -2647,6 +3071,7 @@ def flow(
         target
         and not built["reached"]
     ):
+
         lines.append(
             (
                 f"⚠️ I could not safely reach "
@@ -2656,11 +3081,13 @@ def flow(
         )
 
     if built["note"]:
+
         lines.append(
             f"ℹ️ {html.escape(built['note'])}"
         )
 
     for candidate, why in swapped:
+
         lines.append(
             (
                 "🔁 Swapped "
@@ -2690,13 +3117,16 @@ def flow(
     )
 
     if code:
+
         lines.append(
             (
                 "📲 SportyBet code: "
                 f"<b>{html.escape(str(code))}</b>"
             )
         )
+
     else:
+
         lines.append(
             "⚠️ SportyBet booking code could not be created."
         )
@@ -2705,6 +3135,7 @@ def flow(
         bot.ANTHROPIC_API_KEY
         and USE_AI_REVIEW
     ):
+
         lines.append(
             (
                 "💬 Team-news checks are also "
@@ -2718,6 +3149,7 @@ def flow(
         and target
         and target >= 50
     ):
+
         lines.append(
             (
                 "⚠️ Big-odds tickets are naturally "
@@ -2729,19 +3161,19 @@ def flow(
         "⚠️ Predictions are estimates, not guarantees (18+)."
     )
 
-    # NO backend counts.
-    # NO "159 matches checked".
-    # NO "0 matches studied".
-    # NO API diagnostics.
+    # No backend counts.
+    # No API diagnostics.
+    # No "159 matches checked".
+    # No "0 matches studied".
 
     bot.send_message(
         chat_id,
         "\n".join(lines),
     )
 
-    # --------------------------------------------------------
+    # ========================================================
     # TICKET IMAGE
-    # --------------------------------------------------------
+    # ========================================================
 
     try:
 

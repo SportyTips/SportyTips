@@ -1,0 +1,2853 @@
+import html
+import importlib
+import math
+import os
+import re
+import threading
+import time
+from concurrent.futures import ThreadPoolExecutor, as_completed
+from concurrent.futures import TimeoutError as FutureTimeout
+from datetime import datetime, timedelta, timezone
+from urllib.error import HTTPError, URLError
+from urllib.request import Request, urlopen
+import json
+
+import main as bot
+import sportybet_provider as sp
+
+ANTHROPIC_API_KEY = (
+    getattr(bot, "ANTHROPIC_API_KEY", None)
+    or os.getenv("ANTHROPIC_API_KEY")
+)
+
+AI_MODEL = (
+    getattr(bot, "AI_MODEL", None)
+    or os.getenv("AI_MODEL", "claude-sonnet-4-6")
+)
+
+
+def _parse_ai_json(text):
+    parse = getattr(bot, "parse_ai_json", None)
+
+    if parse:
+        return parse(text)
+
+    try:
+        start = text.index("{")
+        end = text.rindex("}") + 1
+        return json.loads(text[start:end])
+    except Exception:
+        return None
+
+
+MIN_LEG_PROB = {
+    "safe": 0.74,
+    "normal": 0.68,
+    "risky": 0.55,
+}
+
+MAX_LEG_ODDS = {
+    "safe": 1.90,
+    "normal": 2.20,
+    "risky": 3.20,
+}
+
+MAX_LEGS = 30
+
+MAX_DETAIL_EVENTS = int(os.getenv("MAX_DETAIL_EVENTS", "100"))
+
+DETAIL_WORKERS = int(os.getenv("DETAIL_WORKERS", "12"))
+DETAIL_SECONDS = int(os.getenv("DETAIL_SECONDS", "40"))
+
+OVERSHOOT = 0.06
+
+GROUP_LIMIT = int(os.getenv("GROUP_LIMIT", "200"))
+
+ALLOW_DOUBLE_CHANCE = False
+
+DATA_BONUS = 0.12
+
+USE_AI_REVIEW = os.getenv("USE_AI_REVIEW", "1").strip().lower() in ("1", "true", "yes", "on")
+WEB_SEARCHES = int(os.getenv("WEB_SEARCHES", "6"))
+MAX_DROPS = 4
+
+AI_TIMEOUT = int(os.getenv("AI_TIMEOUT", "50"))
+STUDY_CACHE_SECONDS = int(os.getenv("STUDY_CACHE_SECONDS", "1800"))
+_study_cache = {}
+
+USE_FOOTBALL_DATA = os.getenv(
+    "USE_FOOTBALL_DATA", "0"
+).strip().lower() in ("1", "true", "yes", "on")
+
+STRAIGHT_MIN_P = float(os.getenv("STRAIGHT_MIN_P", "0.45"))
+STRAIGHT_GOAL_MIN_P = float(os.getenv("STRAIGHT_GOAL_MIN_P", "0.45"))
+STRAIGHT_1UP_MIN_P = float(os.getenv("STRAIGHT_1UP_MIN_P", "0.50"))
+STRAIGHT_2UP_MIN_P = float(os.getenv("STRAIGHT_2UP_MIN_P", "0.65"))
+STRAIGHT_2GOALS_MIN_P = float(os.getenv("STRAIGHT_2GOALS_MIN_P", "0.70"))
+STRAIGHT_MIN_LEGS = 13
+STRAIGHT_DEFAULT_LEGS = 15
+
+DAILY_TARGET = 2.0
+DAILY_LOW = 1.90
+DAILY_HIGH = 2.40
+DAILY_MAX_ODD = 1.90
+DAILY_MIN_P = float(os.getenv("DAILY_MIN_P", "0.0"))
+DAILY_SECONDS = 24 * 60 * 60
+
+DAILY_MIN_ODD = 1.30
+DAILY_BTTS_MIN = 1.60
+DAILY_CORNER_MAX = 1.50
+
+DAILY_RE = re.compile(
+    r"\bdaily\s*-?\s*2\s*-?\s*odds?\b|^\s*best\s*2\s*odds?\s*$",
+    re.I,
+)
+
+STRAIGHT_RE = re.compile(
+    r"\bstraight\s*-?\s*(?:win|winning|wins)\b",
+    re.I,
+)
+
+KIND_BONUS = {
+    "up": 0.05,
+    "corners": 0.04,
+    "handicap": 0.04,
+    "either_half": 0.03,
+    "btts": 0.02,
+    "over15": 0.02,
+    "over": 0.02,
+    "team_goals": 0.03,
+}
+
+LEG_PENALTY = 0.06
+
+KIND_CAP = {
+    "over15": 0.20,
+    "over": 0.30,
+    "btts": 0.25,
+    "up": 0.40,
+    "either_half": 0.25,
+    "corners": 0.30,
+    "handicap": 0.30,
+    "team_goals": 0.25,
+}
+
+KIND_NAME = {
+    "over15": "Over 1.5",
+    "over": "Over goals",
+    "btts": "Both teams to score",
+    "up": "1UP / 2UP",
+    "either_half": "Win either half",
+    "corners": "Corners",
+    "handicap": "Positive handicap",
+    "team_goals": "Team goals",
+    "dc12": "Home or Away (12)",
+    "dnb": "Draw no bet",
+    "streak": "3+ in a row",
+}
+
+
+def _f(value):
+    try:
+        return sp._float(value)
+    except Exception:
+        try:
+            return float(value)
+        except Exception:
+            return None
+
+
+def _safe_float(value, default=None):
+    value = _f(value)
+    return default if value is None else value
+
+
+def _two_way(odd, other):
+
+    if not odd or odd <= 1:
+        return None
+
+    if other and other > 1:
+        a = 1 / odd
+        b = 1 / other
+        total = a + b
+
+        if total:
+            return a / total
+
+    return min(0.95 / odd, 0.97)
+
+
+def _single(odd):
+    if not odd or odd <= 1:
+        return None
+
+    return min(0.95 / odd, 0.97)
+
+
+def _side_of(outcome, two_way=False):
+
+    label = str(
+        outcome.get("desc")
+        or outcome.get("name")
+        or ""
+    ).strip().lower()
+
+    oid = str(outcome.get("id"))
+
+    if label.startswith("home"):
+        return "home"
+
+    if label.startswith("away"):
+        return "away"
+
+    if label.startswith("draw"):
+        return None
+
+    if oid == "1":
+        return "home"
+
+    if oid == "3":
+        return "away"
+
+    if two_way and oid == "2":
+        return "away"
+
+    return None
+
+
+def _is_positive_handicap(line):
+
+    try:
+        return float(line) > 0
+    except Exception:
+        return False
+
+
+def _candidate_is_allowed(kind, label=""):
+
+    kind = str(kind or "").lower()
+    label = str(label or "").lower()
+
+    if kind in {"under", "dnb", "dc", "yellow_cards", "cards"}:
+        return False
+
+    if "draw no bet" in label:
+        return False
+
+    if "under " in label:
+        return False
+
+    if "yellow card" in label or "cards" in label:
+        return False
+
+    if kind == "handicap":
+        match = re.search(
+            r"([+-]\d+(?:\.\d+)?)\s*handicap",
+            label,
+        )
+
+        if match:
+            try:
+                if float(match.group(1)) <= 0:
+                    return False
+            except Exception:
+                return False
+
+    return True
+
+
+def event_candidates(event, markets):
+
+    home = event.get("homeTeamName", "Home")
+    away = event.get("awayTeamName", "Away")
+
+    out = []
+
+    def add(kind, label, odd, p, key, **extra):
+        if not _candidate_is_allowed(kind, label):
+            return
+
+        odd = _safe_float(odd)
+        p = _safe_float(p)
+
+        if not odd or odd <= 1:
+            return
+
+        if not p or p <= 0:
+            return
+
+        item = {
+            "kind": kind,
+            "label": label,
+            "odd": odd,
+            "p": p,
+            "key": key,
+        }
+
+        item.update(extra)
+        out.append(item)
+
+    ph = None
+    pa = None
+
+
+    h = sp.find_odds(markets, (sp.M_1X2, "", sp.OUT_1X2["home"]))
+    d = sp.find_odds(markets, (sp.M_1X2, "", sp.OUT_1X2["draw"]))
+    a = sp.find_odds(markets, (sp.M_1X2, "", sp.OUT_1X2["away"]))
+
+    if h and d and a:
+        inv = [1 / h, 1 / d, 1 / a]
+        total = sum(inv)
+
+        if total:
+            ph = inv[0] / total
+            pd = inv[1] / total
+            pa = inv[2] / total
+
+        if ALLOW_DOUBLE_CHANCE:
+
+            k1 = (sp.M_DC, "", sp.OUT_DC["1x"])
+            k2 = (sp.M_DC, "", sp.OUT_DC["x2"])
+
+            add(
+                "dc",
+                f"{home} or Draw",
+                sp.find_odds(markets, k1),
+                (ph + pd if ph is not None else None),
+                k1,
+                side="home",
+            )
+
+            add(
+                "dc",
+                f"Draw or {away}",
+                sp.find_odds(markets, k2),
+                (pd + pa if pa is not None else None),
+                k2,
+                side="away",
+            )
+
+
+    for market in markets or []:
+
+        if str(market.get("id")) != sp.M_TOTAL:
+            continue
+
+        spec = market.get("specifier") or ""
+
+        if not spec.startswith("total="):
+            continue
+
+        line = _f(spec.replace("total=", ""))
+
+        if line is None:
+            continue
+
+        if (line * 2) % 1 != 0:
+            continue
+
+        over = None
+        under = None
+
+        for outcome in market.get("outcomes", []):
+
+            if outcome.get("isActive") is False:
+                continue
+
+            oid = str(outcome.get("id"))
+
+            if oid == sp.OUT_TOTAL["over"]:
+                over = _f(outcome.get("odds"))
+
+            elif oid == sp.OUT_TOTAL["under"]:
+                under = _f(outcome.get("odds"))
+
+        mid = str(market.get("id"))
+
+        add(
+            ("over15" if line == 1.5 else "over"),
+            f"Over {line:g} goals",
+            over,
+            _two_way(over, under),
+            (mid, spec, sp.OUT_TOTAL["over"]),
+            line=line,
+        )
+
+
+    yes = sp.find_odds(markets, (sp.M_BTTS, "", sp.OUT_BTTS["yes"]))
+    no = sp.find_odds(markets, (sp.M_BTTS, "", sp.OUT_BTTS["no"]))
+
+    add(
+        "btts",
+        "Both teams to score",
+        yes,
+        _two_way(yes, no),
+        (sp.M_BTTS, "", sp.OUT_BTTS["yes"]),
+        btts="yes",
+    )
+
+
+    for market in markets or []:
+
+        mid = str(market.get("id"))
+
+        if mid in (sp.M_1X2, sp.M_DC, sp.M_TOTAL, sp.M_BTTS):
+            continue
+
+        name = (
+            f"{market.get('desc') or ''} "
+            f"{market.get('name') or ''}"
+        ).lower()
+
+        spec = market.get("specifier") or ""
+
+        outcomes = [
+            o
+            for o in market.get("outcomes", [])
+            if o.get("isActive") is not False
+        ]
+
+
+        up_match = re.search(r"1x2\W+([12])\s*-?\s*up\b", name)
+
+        if up_match:
+
+            number = up_match.group(1)
+
+            for outcome in outcomes:
+
+                side = _side_of(outcome)
+                odd = _f(outcome.get("odds"))
+
+                if side not in ("home", "away") or not odd:
+                    continue
+
+                team = home if side == "home" else away
+                market_probability = ph if side == "home" else pa
+
+                add(
+                    "up",
+                    f"{team} to win ({number}UP)",
+                    odd,
+                    _single(odd),
+                    (mid, spec, str(outcome.get("id"))),
+                    side=side,
+                    up_level=int(number),
+                    market_side_p=market_probability,
+                )
+
+            continue
+
+
+        if (
+            "either half" in name
+            and not any(
+                x in name
+                for x in ("both", "1st", "2nd", "first", "second")
+            )
+        ):
+
+            for side, team in (("home", home), ("away", away)):
+
+                for outcome in outcomes:
+
+                    label = str(
+                        outcome.get("desc")
+                        or outcome.get("name")
+                        or ""
+                    ).strip().lower()
+
+                    odd = _f(outcome.get("odds"))
+
+                    if not odd:
+                        continue
+
+                    if (
+                        side in label
+                        or (side in name and label == "yes")
+                    ):
+
+                        add(
+                            "either_half",
+                            f"{team} to win either half",
+                            odd,
+                            _single(odd),
+                            (mid, spec, str(outcome.get("id"))),
+                            side=side,
+                            market_side_p=(ph if side == "home" else pa),
+                        )
+
+                        break
+
+            continue
+
+
+        if "draw no bet" in name:
+            continue
+
+
+        if (
+            "corner" in name
+            and spec.startswith("total=")
+            and not any(
+                x in name
+                for x in (
+                    "1st",
+                    "2nd",
+                    "first",
+                    "second",
+                    "half",
+                    "home",
+                    "away",
+                    "team",
+                    "race",
+                    "handicap",
+                    "odd",
+                    "even",
+                    "1x2",
+                    "exact",
+                    "range",
+                )
+            )
+        ):
+
+            line = _f(spec.replace("total=", ""))
+
+            if line is None:
+                continue
+
+            if (line * 2) % 1 != 0:
+                continue
+
+            over = None
+            over_id = None
+
+            for outcome in outcomes:
+
+                label = str(
+                    outcome.get("desc")
+                    or outcome.get("name")
+                    or ""
+                ).strip().lower()
+
+                oid = str(outcome.get("id"))
+                odd = _f(outcome.get("odds"))
+
+                if (
+                    label.startswith("over")
+                    or oid == sp.OUT_TOTAL["over"]
+                ):
+                    over = odd
+                    over_id = oid
+
+            add(
+                "corners",
+                f"Over {line:g} corners",
+                over,
+                _single(over),
+                (mid, spec, over_id),
+                line=line,
+            )
+
+            continue
+
+
+        if (
+            "handicap" in name
+            and "corner" not in name
+            and spec.startswith("hcp=")
+            and len(outcomes) == 2
+            and not any(
+                x in name
+                for x in ("1st", "2nd", "half", "3-way", "3 way", "three")
+            )
+        ):
+
+            line = _hcp_line(spec)
+
+            if not line:
+                continue
+
+            odds = [_f(o.get("odds")) for o in outcomes]
+
+            for outcome, odd, other in zip(outcomes, odds, odds[::-1]):
+
+                side = _side_of(outcome, two_way=True)
+
+                if not side or not odd:
+                    continue
+
+                if side == "home" and line > 0:
+                    team = home
+                elif side == "away" and line < 0:
+                    team = away
+                else:
+                    continue
+
+                label = f"{team} +{abs(line):g} handicap"
+
+                add(
+                    "handicap",
+                    label,
+                    odd,
+                    _two_way(odd, other),
+                    (mid, spec, str(outcome.get("id"))),
+                    side=side,
+                    handicap=abs(line),
+                )
+
+            continue
+
+
+        if (
+            "team" in name
+            and "goal" in name
+            and spec.startswith("total=")
+            and "corner" not in name
+        ):
+
+            line = _f(spec.replace("total=", ""))
+
+            if line is None:
+                continue
+
+            for outcome in outcomes:
+
+                label = str(
+                    outcome.get("desc")
+                    or outcome.get("name")
+                    or ""
+                ).strip()
+
+                low = label.lower()
+
+                if not low.startswith("over"):
+                    continue
+
+                odd = _f(outcome.get("odds"))
+
+                if not odd:
+                    continue
+
+                if home.lower() in name:
+                    team = home
+                    side = "home"
+
+                elif away.lower() in name:
+                    team = away
+                    side = "away"
+
+                else:
+                    continue
+
+                add(
+                    "team_goals",
+                    f"{team} Over {line:g} team goals",
+                    odd,
+                    _single(odd),
+                    (mid, spec, str(outcome.get("id"))),
+                    side=side,
+                    line=line,
+                )
+
+            continue
+
+    return out
+
+
+def _label_of(o):
+    return str(o.get("desc") or o.get("name") or "").strip().lower()
+
+
+def _daily_side(outcomes, o, three_way=False):
+
+    side = _side_of(o, two_way=not three_way)
+
+    if side:
+        return side
+
+    if not three_way and len(outcomes) == 2:
+        return "home" if outcomes[0] is o else "away"
+
+    return None
+
+
+def _hcp_line(spec):
+
+    raw = spec.replace("hcp=", "")
+
+    try:
+        if ":" in raw:
+            a, b = raw.split(":")
+            return float(a) - float(b)
+
+        return float(raw)
+    except Exception:
+        return None
+
+
+def daily_candidates(event, markets):
+
+    home = event.get("homeTeamName", "Home")
+    away = event.get("awayTeamName", "Away")
+    out = []
+
+    def add(kind, label, odd, p, key, low=None, high=None, **extra):
+        odd = _safe_float(odd)
+        p = _safe_float(p)
+
+        if not odd or not p:
+            return
+
+        if odd < (low or DAILY_MIN_ODD):
+            return
+
+        if high and odd > high:
+            return
+
+        item = {
+            "kind": kind,
+            "label": label,
+            "odd": odd,
+            "p": p,
+            "key": key,
+        }
+        item.update(extra)
+        out.append(item)
+
+    for c in event_candidates(event, markets):
+        if (
+            c["kind"] in ("up", "either_half")
+            and c["odd"] >= DAILY_MIN_ODD
+        ):
+            out.append(c)
+
+    for market in markets or []:
+
+        mid = str(market.get("id"))
+        spec = market.get("specifier") or ""
+
+        outcomes = [
+            o
+            for o in market.get("outcomes", [])
+            if o.get("isActive") is not False
+        ]
+
+        if not outcomes:
+            continue
+
+        if mid == "10":
+            for o in outcomes:
+                lab = _label_of(o)
+
+                is12 = (
+                    ("home" in lab and "away" in lab)
+                    or lab in ("12", "1 or 2")
+                    or (not lab and str(o.get("id")) == "10")
+                )
+
+                if is12:
+                    odd = _f(o.get("odds"))
+
+                    add(
+                        "dc12",
+                        f"{home} or {away} (12)",
+                        odd,
+                        _single(odd),
+                        (mid, spec, str(o.get("id"))),
+                    )
+
+        elif mid == "18" and spec.startswith("total="):
+            line = _f(spec.replace("total=", ""))
+
+            if line is None or (line * 2) % 1 != 0:
+                continue
+
+            for o in outcomes:
+                if (
+                    _label_of(o).startswith("over")
+                    or str(o.get("id")) == sp.OUT_TOTAL["over"]
+                ):
+                    odd = _f(o.get("odds"))
+
+                    add(
+                        "over",
+                        f"Over {line:g} goals",
+                        odd,
+                        _single(odd),
+                        (mid, spec, str(o.get("id"))),
+                        line=line,
+                    )
+
+        elif mid == "29":
+            for o in outcomes:
+                lab = _label_of(o)
+                odd = _f(o.get("odds"))
+
+                if lab.startswith("yes"):
+                    name = "Both teams to score"
+                elif lab.startswith("no"):
+                    name = "Both teams NOT to score"
+                else:
+                    continue
+
+                add(
+                    "btts",
+                    name,
+                    odd,
+                    _single(odd),
+                    (mid, spec, str(o.get("id"))),
+                    low=DAILY_BTTS_MIN,
+                )
+
+        elif mid in ("19", "20") and spec.startswith("total="):
+            line = _f(spec.replace("total=", ""))
+
+            if line not in (0.5, 1.5):
+                continue
+
+            team = home if mid == "19" else away
+
+            for o in outcomes:
+                if _label_of(o).startswith("over"):
+                    odd = _f(o.get("odds"))
+
+                    add(
+                        "team_goals",
+                        f"{team} Over {line:g} team goals",
+                        odd,
+                        _single(odd),
+                        (mid, spec, str(o.get("id"))),
+                        line=line,
+                    )
+
+        elif mid == "60020":
+            for o in outcomes:
+                if _label_of(o).startswith("no"):
+                    odd = _f(o.get("odds"))
+
+                    add(
+                        "streak",
+                        "Any team 3+ in a row: No",
+                        odd,
+                        _single(odd),
+                        (mid, spec, str(o.get("id"))),
+                    )
+
+        elif mid == "166" and spec.startswith("total="):
+            line = _f(spec.replace("total=", ""))
+
+            if line not in (6.5, 7.5):
+                continue
+
+            for o in outcomes:
+                if _label_of(o).startswith("over"):
+                    odd = _f(o.get("odds"))
+
+                    add(
+                        "corners",
+                        f"Over {line:g} corners",
+                        odd,
+                        _single(odd),
+                        (mid, spec, str(o.get("id"))),
+                        high=DAILY_CORNER_MAX,
+                        line=line,
+                    )
+
+        elif mid == "177" and spec.startswith("total="):
+            line = _f(spec.replace("total=", ""))
+
+            if line != 3.5:
+                continue
+
+            for o in outcomes:
+                if _label_of(o).startswith("over"):
+                    odd = _f(o.get("odds"))
+
+                    add(
+                        "corners",
+                        "Over 3.5 corners (1st half)",
+                        odd,
+                        _single(odd),
+                        (mid, spec, str(o.get("id"))),
+                        high=DAILY_CORNER_MAX,
+                        line=line,
+                    )
+
+        elif mid == "64":
+            for o in outcomes:
+                side = _daily_side(outcomes, o)
+
+                if not side:
+                    continue
+
+                odd = _f(o.get("odds"))
+                team = home if side == "home" else away
+
+                other = _f(
+                    next(
+                        (x.get("odds") for x in outcomes if x is not o),
+                        None,
+                    )
+                )
+
+                add(
+                    "dnb",
+                    f"{team} draw no bet",
+                    odd,
+                    _two_way(odd, other),
+                    (mid, spec, str(o.get("id"))),
+                    side=side,
+                )
+
+        elif mid in ("65", "66") and spec.startswith("hcp="):
+            line = _hcp_line(spec)
+
+            if not line:
+                continue
+
+            three_way = mid == "65"
+
+            for o in outcomes:
+                side = _daily_side(outcomes, o, three_way)
+
+                if side == "home" and line > 0:
+                    team = home
+                elif side == "away" and line < 0:
+                    team = away
+                else:
+                    continue
+
+                odd = _f(o.get("odds"))
+
+                if three_way:
+                    p = _single(odd)
+                else:
+                    other = _f(
+                        next(
+                            (x.get("odds") for x in outcomes if x is not o),
+                            None,
+                        )
+                    )
+                    p = _two_way(odd, other)
+
+                add(
+                    "handicap",
+                    f"{team} +{abs(line):g} handicap",
+                    odd,
+                    p,
+                    (mid, spec, str(o.get("id"))),
+                    side=side,
+                    handicap=abs(line),
+                )
+
+    return out
+
+
+def _pick_for(cands, kind, **attrs):
+    for c in cands:
+        if c.get("kind") != kind:
+            continue
+
+        if all(c.get(k) == v for k, v in attrs.items()):
+            return c
+
+    return None
+
+
+def _team_over(markets, home, away, side, line):
+    want = "19" if side == "home" else "20"
+    team = home if side == "home" else away
+
+    for market in markets or []:
+
+        if str(market.get("id")) != want:
+            continue
+
+        spec = market.get("specifier") or ""
+
+        if not spec.startswith("total="):
+            continue
+
+        if _f(spec.replace("total=", "")) != line:
+            continue
+
+        for o in market.get("outcomes", []):
+
+            if o.get("isActive") is False:
+                continue
+
+            if not _label_of(o).startswith("over"):
+                continue
+
+            odd = _f(o.get("odds"))
+
+            if not odd or odd <= 1:
+                continue
+
+            goals = 1 if line == 0.5 else 2
+
+            return {
+                "kind": "team_goals",
+                "label": f"{team} to score {goals}+ goals (Over {line:g})",
+                "odd": odd,
+                "p": _single(odd),
+                "key": (want, spec, str(o.get("id"))),
+                "side": side,
+                "line": line,
+            }
+
+    return None
+
+
+def straight_candidates(event, markets):
+    home = event.get("homeTeamName", "Home")
+    away = event.get("awayTeamName", "Away")
+
+    h = sp.find_odds(markets, (sp.M_1X2, "", sp.OUT_1X2["home"]))
+    d = sp.find_odds(markets, (sp.M_1X2, "", sp.OUT_1X2["draw"]))
+    a = sp.find_odds(markets, (sp.M_1X2, "", sp.OUT_1X2["away"]))
+
+    if not (h and d and a):
+        return []
+
+    inv = [1 / h, 1 / d, 1 / a]
+    total = sum(inv)
+
+    if not total:
+        return []
+
+    chances = {"home": inv[0] / total, "away": inv[2] / total}
+
+    base = event_candidates(event, markets)
+    out = []
+
+    for side in ("home", "away"):
+
+        w = chances[side]
+
+        if w < STRAIGHT_GOAL_MIN_P:
+            continue
+
+        mine = [c for c in base if c.get("side") == side]
+
+        def up(level):
+            return _pick_for(mine, "up", up_level=level)
+
+        def goals(line):
+            return (
+                _team_over(markets, home, away, side, line)
+                or _pick_for(mine, "team_goals", line=line)
+            )
+
+        if w >= STRAIGHT_2GOALS_MIN_P:
+            pick = goals(1.5) or up(2) or up(1)
+
+        elif w >= STRAIGHT_2UP_MIN_P:
+            pick = up(2) or up(1)
+
+        elif w >= STRAIGHT_1UP_MIN_P:
+            pick = up(1)
+
+        else:
+            pick = goals(0.5)
+
+        if pick:
+            pick = dict(pick)
+            pick["market_side_p"] = w
+            pick["side"] = side
+            out.append(pick)
+
+    return out
+
+
+def study(groups, notify=None):
+
+    import football_data as fd
+
+    if fd.ENRICH_MAX <= 0 or not groups:
+        return 0
+
+    top = groups[:fd.ENRICH_MAX]
+
+    if notify:
+        notify(len(top))
+
+    studied = 0
+    started = time.time()
+
+    for group in top:
+
+        if time.time() - started > fd.ENRICH_SECONDS:
+            break
+
+        try:
+
+            event = group[0]["event"]
+            event_id = event.get("eventId")
+
+            hit = _study_cache.get(event_id)
+
+            if hit and time.time() - hit[0] < STUDY_CACHE_SECONDS:
+                facts = hit[1]
+
+            else:
+                fixture = fd.find_fixture(event)
+
+                if not fixture:
+                    continue
+
+                facts = fd.get_facts(fixture)
+
+                if facts:
+                    _study_cache[event_id] = (time.time(), facts)
+
+            if not facts:
+                continue
+
+            studied += 1
+
+            for candidate in group:
+
+                try:
+                    candidate["p"] = fd.adjusted_p(candidate, facts)
+
+                except Exception:
+                    candidate["p"] = 0.0
+                    continue
+
+                candidate["facts"] = facts
+                candidate["has_data"] = True
+
+        except Exception as exc:
+            print(f"Football study failed: {exc}")
+
+    return studied
+
+
+def favourite_strength(event):
+
+    markets = event.get("markets") or []
+
+    h = sp.find_odds(markets, (sp.M_1X2, "", sp.OUT_1X2["home"]))
+    d = sp.find_odds(markets, (sp.M_1X2, "", sp.OUT_1X2["draw"]))
+    a = sp.find_odds(markets, (sp.M_1X2, "", sp.OUT_1X2["away"]))
+
+    if not (h and d and a):
+        return 0.0
+
+    try:
+        inv = [1 / h, 1 / d, 1 / a]
+        total = sum(inv)
+
+        if not total:
+            return 0.0
+
+        return max(inv[0], inv[2]) / total
+
+    except Exception:
+        return 0.0
+
+
+def _detail_order(events):
+
+    if len(events) <= MAX_DETAIL_EVENTS:
+        return list(events)
+
+    ranked = sorted(events, key=favourite_strength, reverse=True)
+
+    selected = []
+    seen = set()
+
+    priority_count = min(MAX_DETAIL_EVENTS // 2, len(ranked))
+
+    for event in ranked[:priority_count]:
+
+        eid = event.get("eventId")
+
+        if eid in seen:
+            continue
+
+        selected.append(event)
+        seen.add(eid)
+
+    remaining = MAX_DETAIL_EVENTS - len(selected)
+
+    if remaining > 0:
+
+        step = max(1, len(events) // remaining)
+
+        for index in range(0, len(events), step):
+
+            event = events[index]
+            eid = event.get("eventId")
+
+            if eid in seen:
+                continue
+
+            selected.append(event)
+            seen.add(eid)
+
+            if len(selected) >= MAX_DETAIL_EVENTS:
+                break
+
+    return selected[:MAX_DETAIL_EVENTS]
+
+
+def gather(
+    provider,
+    start,
+    end,
+    risk,
+    floor,
+    exclude,
+    min_p_shift=0.0,
+    notify=None,
+    straight=False,
+    daily=False,
+):
+
+    events = provider.get_upcoming(start, end)
+
+    if not events:
+        return [], 0, 0, 0
+
+    wanted = _detail_order(events)
+
+    details = {}
+
+    if wanted:
+
+        with ThreadPoolExecutor(max_workers=DETAIL_WORKERS) as pool:
+
+            futures = {}
+
+            for event in wanted:
+
+                try:
+                    event_id = event["eventId"]
+
+                    futures[
+                        pool.submit(
+                            provider._event_markets_cached,
+                            event_id,
+                        )
+                    ] = event
+
+                except Exception:
+                    continue
+
+            try:
+
+                for future in as_completed(futures, timeout=DETAIL_SECONDS):
+
+                    event = futures[future]
+
+                    try:
+                        details[event["eventId"]] = future.result()
+                    except Exception:
+                        pass
+
+            except FutureTimeout:
+                pass
+
+    min_p = (
+        MIN_LEG_PROB.get(risk, MIN_LEG_PROB["normal"])
+        - min_p_shift
+    )
+
+    max_odd = MAX_LEG_ODDS.get(risk, MAX_LEG_ODDS["normal"])
+
+    post_min_p = min_p
+
+    if straight:
+        min_p = 0.45
+        post_min_p = STRAIGHT_MIN_P
+        max_odd = 2.60
+
+    if daily:
+        min_p = 0.45
+        post_min_p = DAILY_MIN_P
+        max_odd = DAILY_MAX_ODD
+
+    groups = []
+
+    for event in events:
+
+        markets = (
+            details.get(event["eventId"])
+            or event.get("markets")
+            or []
+        )
+
+        try:
+            fixture = sp.sporty_fixture(event)
+        except Exception:
+            fixture = {"league": {"name": "Football"}}
+
+        kept = []
+        seen = set()
+
+        if daily:
+            source = daily_candidates(event, markets)
+        elif straight:
+            source = straight_candidates(event, markets)
+        else:
+            source = event_candidates(event, markets)
+
+        for candidate in source:
+
+            if not daily and not _candidate_is_allowed(
+                candidate["kind"],
+                candidate["label"],
+            ):
+                continue
+
+            if not (floor <= candidate["odd"] <= max_odd):
+                continue
+
+            if candidate["p"] < min_p:
+                continue
+
+            key = (event["eventId"], candidate["key"])
+
+            if key in exclude:
+                continue
+
+            if candidate["label"] in seen:
+                continue
+
+            seen.add(candidate["label"])
+
+            start_time = event.get("estimateStartTime") or 0
+
+            try:
+                kickoff = datetime.fromtimestamp(
+                    start_time / 1000,
+                    tz=timezone.utc,
+                )
+            except Exception:
+                kickoff = datetime.now(timezone.utc)
+
+            league_data = fixture.get("league", {}) or {}
+
+            candidate.update(
+                {
+                    "event": event,
+                    "event_id": event["eventId"],
+                    "home": event.get("homeTeamName", "Home"),
+                    "away": event.get("awayTeamName", "Away"),
+                    "kickoff": kickoff,
+                    "league": league_data.get("name", "Football"),
+                    "has_data": False,
+                }
+            )
+
+            kept.append(candidate)
+
+        if kept:
+            groups.append(kept)
+
+    groups.sort(
+        key=lambda group: max(c["p"] for c in group),
+        reverse=True,
+    )
+
+    groups = groups[:GROUP_LIMIT]
+
+    if USE_FOOTBALL_DATA:
+        studied = study(groups, notify)
+
+    else:
+        studied = 0
+
+        for group in groups:
+            for candidate in group:
+                candidate["has_data"] = True
+                candidate["facts"] = None
+
+    evidence_groups = []
+
+    for group in groups:
+
+        valid = []
+
+        for candidate in group:
+
+            if not candidate.get("has_data"):
+                continue
+
+            if candidate.get("p", 0) < post_min_p:
+                continue
+
+            valid.append(candidate)
+
+        if valid:
+            evidence_groups.append(valid)
+
+    return (
+        evidence_groups,
+        len(events),
+        len(details),
+        studied,
+    )
+
+
+def _dp(groups, target):
+
+    if not groups or not target:
+        return None
+
+    S = 200
+
+    try:
+
+        tw = math.ceil(math.log(target) * S)
+
+        wm = max(
+            tw,
+            int(math.log(target * (1 + OVERSHOOT)) * S),
+        )
+
+    except Exception:
+        return None
+
+    INF = float("inf")
+
+    dp = [INF] * (wm + 1)
+    dp[0] = 0.0
+
+    choices = []
+
+    for group in groups:
+
+        new = dp[:]
+        choice = [None] * (wm + 1)
+
+        for oi, candidate in enumerate(group):
+
+            odd = candidate.get("odd")
+            probability = candidate.get("p")
+
+            if (
+                not odd
+                or odd <= 1
+                or not probability
+                or probability <= 0
+            ):
+                continue
+
+            try:
+
+                weight = round(math.log(odd) * S)
+
+                cost = (
+                    -math.log(probability)
+                    - KIND_BONUS.get(candidate.get("kind"), 0.0)
+                    + LEG_PENALTY
+                    - (DATA_BONUS if candidate.get("has_data") else 0.0)
+                )
+
+            except Exception:
+                continue
+
+            if weight <= 0 or weight > wm:
+                continue
+
+            for x in range(0, wm - weight + 1):
+
+                base = dp[x]
+
+                if base == INF:
+                    continue
+
+                value = base + cost
+
+                if value < new[x + weight]:
+                    new[x + weight] = value
+                    choice[x + weight] = (oi, x)
+
+        dp = new
+        choices.append(choice)
+
+    best = None
+
+    for x in range(tw, wm + 1):
+
+        if dp[x] < INF and (best is None or dp[x] < dp[best]):
+            best = x
+
+    if best is None:
+        return None
+
+    picked = []
+
+    x = best
+
+    for gi in range(len(groups) - 1, -1, -1):
+
+        step = choices[gi][x]
+
+        if step is None:
+            continue
+
+        index, previous = step
+
+        picked.append(groups[gi][index])
+
+        x = previous
+
+    picked.reverse()
+
+    return picked[:MAX_LEGS]
+
+
+def _product(picks):
+    total = 1.0
+
+    for candidate in picks:
+        total *= candidate["odd"]
+
+    return total
+
+
+def _dp_exact(groups, target):
+
+    if not groups:
+        return None
+
+    aim = target
+    best = None
+
+    for _ in range(6):
+
+        picks = _dp(groups, aim)
+
+        if not picks:
+            break
+
+        actual = _product(picks)
+
+        if (
+            actual >= target
+            and (best is None or actual < _product(best))
+        ):
+            best = picks
+
+        if target <= actual <= target * (1 + OVERSHOOT + 0.02):
+            return picks
+
+        if actual <= 0:
+            break
+
+        aim = max(target, aim * target / actual * 1.004)
+
+    return best
+
+
+def _prune(groups, legs, scale):
+
+    drop = set()
+
+    for kind, share in KIND_CAP.items():
+
+        cap = max(1, math.ceil(share * legs * scale))
+
+        ranked = sorted(
+            (
+                candidate
+                for group in groups
+                for candidate in group
+                if candidate["kind"] == kind
+            ),
+            key=lambda candidate: candidate.get("p", 0),
+            reverse=True,
+        )
+
+        drop.update(id(candidate) for candidate in ranked[cap:])
+
+    pruned = []
+
+    for group in groups:
+
+        kept = [
+            candidate
+            for candidate in group
+            if id(candidate) not in drop
+        ]
+
+        if kept:
+            pruned.append(kept)
+
+    return pruned
+
+
+def _kind_counts(chosen):
+    counts = {}
+
+    for candidate in chosen:
+
+        kind = candidate["kind"]
+
+        counts[kind] = counts.get(kind, 0) + 1
+
+    return counts
+
+
+def choose_target(groups, target):
+
+    if not groups or not target:
+        return [], False
+
+    all_weights = sorted(
+        math.log(candidate["odd"])
+        for group in groups
+        for candidate in group
+        if candidate.get("odd", 0) > 1
+    )
+
+    if not all_weights:
+        return [], False
+
+    median_weight = all_weights[len(all_weights) // 2]
+
+    legs = max(
+        3,
+        min(
+            MAX_LEGS,
+            round(math.log(target) / max(median_weight, 0.05)),
+        ),
+    )
+
+    scale = 1.0
+
+    for _ in range(5):
+
+        for _ in range(4):
+
+            pruned = _prune(groups, legs, scale)
+
+            if not pruned:
+                scale *= 1.6
+                continue
+
+            chosen = _dp_exact(pruned, target)
+
+            if chosen:
+                break
+
+            scale *= 1.6
+
+        else:
+            chosen = None
+
+        if not chosen:
+            break
+
+        counts = _kind_counts(chosen)
+
+        valid_mix = True
+
+        for kind, share in KIND_CAP.items():
+
+            allowed = max(
+                1,
+                math.ceil(share * len(chosen) * scale),
+            )
+
+            if counts.get(kind, 0) > allowed:
+                valid_mix = False
+                break
+
+        if valid_mix:
+            return chosen, True
+
+        legs = len(chosen)
+
+    return [], False
+
+
+def choose_count(groups, count):
+
+    if not groups or count <= 0:
+        return [], False
+
+    count = min(int(count), MAX_LEGS)
+
+    ranked = sorted(
+        (
+            candidate
+            for group in groups
+            for candidate in group
+            if candidate.get("has_data")
+        ),
+        key=lambda candidate: (
+            candidate.get("p", 0)
+            + KIND_BONUS.get(candidate.get("kind"), 0)
+            + (DATA_BONUS if candidate.get("has_data") else 0)
+        ),
+        reverse=True,
+    )
+
+    chosen = []
+
+    for scale in (1.0, 1.6, 2.5, 4.0):
+
+        chosen = []
+        used_events = set()
+        counts = {}
+
+        for candidate in ranked:
+
+            event_id = candidate["event_id"]
+
+            if event_id in used_events:
+                continue
+
+            kind = candidate["kind"]
+
+            cap = max(
+                1,
+                math.ceil(KIND_CAP.get(kind, 0.30) * count * scale),
+            )
+
+            if counts.get(kind, 0) >= cap:
+                continue
+
+            chosen.append(candidate)
+            used_events.add(event_id)
+            counts[kind] = counts.get(kind, 0) + 1
+
+            if len(chosen) >= count:
+                return chosen, True
+
+    return chosen, len(chosen) >= count
+
+
+def choose_straight(groups, target, count):
+
+    best = []
+
+    for group in groups:
+
+        usable = [c for c in group if c.get("p", 0) > 0]
+
+        if usable:
+            best.append(max(usable, key=lambda c: c.get("p", 0)))
+
+    best.sort(key=lambda c: c.get("p", 0), reverse=True)
+
+    if not best:
+        return [], False
+
+    if count:
+        count = min(int(count), MAX_LEGS)
+        return best[:count], len(best) >= count
+
+    if target:
+
+        chosen = []
+        total = 1.0
+
+        for candidate in best[:MAX_LEGS]:
+
+            chosen.append(candidate)
+            total *= candidate["odd"]
+
+            if total >= target:
+                return chosen, True
+
+        return chosen, False
+
+    return best[:STRAIGHT_DEFAULT_LEGS], True
+
+
+def choose_daily(groups):
+
+    import itertools
+
+    best = []
+
+    for group in groups:
+
+        usable = [c for c in group if c.get("p", 0) > 0]
+
+        if usable:
+            best.append(max(usable, key=lambda c: c.get("p", 0)))
+
+    best.sort(key=lambda c: c.get("p", 0), reverse=True)
+
+    pool = best[:25]
+
+    for low, high in ((DAILY_LOW, DAILY_HIGH), (1.70, 2.80)):
+
+        top = None
+        top_chance = 0.0
+
+        for size in (1, 2, 3):
+
+            for combo in itertools.combinations(pool, size):
+
+                total = 1.0
+                chance = 1.0
+
+                for candidate in combo:
+                    total *= candidate["odd"]
+                    chance *= candidate["p"]
+
+                if not (low <= total <= high):
+                    continue
+
+                if chance > top_chance:
+                    top = combo
+                    top_chance = chance
+
+        if top:
+            return list(top), True
+
+    return [], False
+
+
+def _ai_json(prompt, system):
+    if not ANTHROPIC_API_KEY:
+        return None
+
+    for use_tools in (True, False):
+
+        body = {
+            "model": AI_MODEL,
+            "max_tokens": 3500,
+            "system": system,
+            "messages": [
+                {
+                    "role": "user",
+                    "content": prompt,
+                }
+            ],
+        }
+
+        if use_tools:
+
+            body["tools"] = [
+                {
+                    "type": "web_search_20250305",
+                    "name": "web_search",
+                    "max_uses": WEB_SEARCHES,
+                }
+            ]
+
+        request = Request(
+            "https://api.anthropic.com/v1/messages",
+            data=json.dumps(body).encode("utf-8"),
+            method="POST",
+            headers={
+                "content-type": "application/json",
+                "x-api-key": ANTHROPIC_API_KEY,
+                "anthropic-version": "2023-06-01",
+            },
+        )
+
+        try:
+
+            wait = AI_TIMEOUT if use_tools else 25
+
+            with urlopen(request, timeout=wait) as response:
+
+                data = json.loads(response.read().decode("utf-8"))
+
+        except Exception as exc:
+
+            print(f"AI review failed: {exc}")
+
+            continue
+
+        text = "".join(
+            block.get("text", "")
+            for block in data.get("content", [])
+            if block.get("type") == "text"
+        )
+
+        parsed = _parse_ai_json(text)
+
+        if parsed:
+            return parsed
+
+    return None
+
+
+REVIEW_SYSTEM = """You are the football analyst behind SportyTips.
+
+You receive picks taken from SportyBet. For each pick, search the web for
+the latest team news, recent form, injuries, suspensions, rotation and
+motivation, and use your own football knowledge of how strong each team is.
+
+Rules:
+- Only state things you found or know with confidence.
+- Never invent statistics, injuries, scores or results.
+- If you cannot find news for a match, say so briefly instead of guessing.
+- Do not use the SportyBet price as the reason for a pick. It is context only.
+- Judge whether the pick itself makes sense. Backing a much weaker team on
+  a handicap, or a team likely to rotate or miss key players, is a reason
+  to drop it.
+- Do not guarantee a result.
+- Write one short reason per pick, under 200 characters.
+- Mark a pick "drop" if news or team strength clearly hurts it.
+  Otherwise mark it "keep".
+
+Reply ONLY with JSON, nothing else:
+{"picks":[{"i":0,"reason":"...","flag":"keep"}]}
+"""
+
+
+def ai_review(chosen, local_now):
+    lines = []
+
+    for i, candidate in enumerate(chosen):
+
+        when = candidate["kickoff"].astimezone(
+            bot.LOCAL_TZ
+        ).strftime("%a %H:%M")
+
+        lines.append(
+            f"{i}. "
+            f"{candidate['home']} vs "
+            f"{candidate['away']} "
+            f"({candidate['league']}) "
+            f"kickoff {when} | "
+            f"pick: {candidate['label']} | "
+            f"SportyBet price {candidate['odd']:.2f}"
+        )
+
+    prompt = (
+        f"Today is "
+        f"{local_now.strftime('%A %d %B %Y')} "
+        f"(Nigeria time).\n\n"
+        + "\n".join(lines)
+    )
+
+    data = _ai_json(prompt, REVIEW_SYSTEM)
+
+    reasons = {}
+
+    if not data:
+        return reasons
+
+    items = data.get("picks", [])
+
+    if not isinstance(items, list):
+        return reasons
+
+    for item in items:
+
+        try:
+            index = int(item.get("i"))
+        except (TypeError, ValueError, AttributeError):
+            continue
+
+        if not (0 <= index < len(chosen)):
+            continue
+
+        reason = str(item.get("reason", "")).strip()[:240]
+
+        flag = (
+            "drop"
+            if (
+                str(item.get("flag", "")).lower() == "drop"
+                and reason
+            )
+            else "keep"
+        )
+
+        if reason:
+
+            candidate = chosen[index]
+
+            reasons[
+                (candidate["event_id"], candidate["key"])
+            ] = (reason, flag)
+
+    return reasons
+
+
+def _reason_for(candidate):
+
+    facts = candidate.get("facts")
+
+    if facts:
+        try:
+            import football_data as fd
+
+            return fd.reason_for(
+                candidate,
+                facts,
+                candidate["home"],
+                candidate["away"],
+            )
+        except Exception:
+            pass
+
+    p = round(candidate.get("p", 0) * 100)
+    side_p = candidate.get("market_side_p")
+    side = candidate.get("side")
+
+    if side_p and side in ("home", "away"):
+        team = candidate["home"] if side == "home" else candidate["away"]
+
+        return (
+            f"SportyBet's markets rate {team} about "
+            f"{round(side_p * 100)}% to win, and this pick "
+            f"about {p}% likely."
+        )
+
+    return f"SportyBet's markets rate this pick about {p}% likely."
+
+
+def _fmt(value):
+    try:
+        value = float(value)
+    except Exception:
+        return str(value)
+
+    if value.is_integer():
+        return str(int(value))
+
+    return f"{value:g}"
+
+
+def _time_text(candidate, today):
+    local = candidate["kickoff"].astimezone(bot.LOCAL_TZ)
+
+    text = local.strftime("%I:%M %p").lstrip("0")
+
+    if local.date() == today:
+        return text
+
+    return local.strftime("%a ") + text
+
+
+def _confidence(p):
+    if p >= 0.80:
+        return "🟢"
+
+    if p >= 0.70:
+        return "🟡"
+
+    return "🟠"
+
+
+def build_ticket(
+    provider,
+    req,
+    target,
+    count,
+    risk,
+    exclude=frozenset(),
+    notify=None,
+    straight=False,
+    daily=False,
+):
+
+    if target:
+
+        floor = max(
+            1.10,
+            min(1.45, target ** (1 / 26)),
+        )
+
+    else:
+        floor = 1.15
+
+    if risk == "risky":
+        floor = max(floor, 1.35)
+
+    if straight:
+        floor = 1.05
+
+    if daily:
+        floor = DAILY_MIN_ODD
+
+    extra_days = 0
+    note = ""
+
+    while extra_days <= 2:
+
+        end = req["end"] + timedelta(days=extra_days)
+
+        (
+            groups,
+            total_events,
+            detailed,
+            studied,
+        ) = gather(
+            provider,
+            req["start"],
+            end,
+            risk,
+            floor,
+            exclude,
+            (0.05 if (target and target <= 20) else 0.0),
+            notify,
+            straight=straight,
+            daily=daily,
+        )
+
+        if not groups:
+            extra_days += 1
+            continue
+
+        if daily:
+            chosen, reached = choose_daily(groups)
+
+        elif straight:
+            chosen, reached = choose_straight(groups, target, count)
+
+        elif target:
+            chosen, reached = choose_target(groups, target)
+
+        else:
+            chosen, reached = choose_count(groups, count)
+
+        too_few = (
+            straight
+            and not target
+            and len(chosen) < (count or STRAIGHT_MIN_LEGS)
+            and extra_days < 2
+        )
+
+        if chosen and not too_few:
+            break
+
+        extra_days += 1
+
+    else:
+
+        chosen = []
+        reached = False
+        total_events = 0
+        detailed = 0
+        studied = 0
+
+    if extra_days and chosen:
+
+        note = (
+            "I also used matches from "
+            f"the next {extra_days} day"
+            f"{'s' if extra_days > 1 else ''} "
+            "to reach your target."
+        )
+
+    return {
+        "chosen": chosen,
+        "reached": reached,
+        "note": note,
+        "events": total_events,
+        "detailed": detailed,
+        "floor": floor,
+        "studied": studied,
+    }
+
+
+def _launcher_send_photo(chat_id, png, caption=""):
+    try:
+
+        launcher = importlib.import_module(
+            os.getenv("LAUNCHER_MODULE", "launcher")
+        )
+
+        send = getattr(launcher, "send_photo", None)
+
+        if send:
+            send(chat_id, png, caption)
+
+    except Exception as exc:
+        print(f"Ticket picture failed: {exc}")
+
+
+def _flow_main(
+    chat_id,
+    text,
+    search_days=None,
+    target_override=None,
+    count_override=None,
+    daily=False,
+    **kwargs,
+):
+
+    provider = getattr(bot, "SPORTYBET_PROVIDER", None)
+
+    if provider is None:
+        bot.send_message(
+            chat_id,
+            "❌ SportyBet mode is off on this server.",
+        )
+        return
+
+    try:
+        req = bot.parse_request(text)
+
+    except Exception as exc:
+        print(f"parse_request failed: {exc}")
+        bot.send_message(
+            chat_id,
+            "❌ I couldn't understand that request. "
+            "Try: 10 odds today",
+        )
+        return
+
+    if search_days and req.get("label") == "next 24 hours":
+        try:
+            days = int(search_days)
+
+            if days > 1:
+                req["end"] = req["start"] + timedelta(days=days)
+                req["label"] = f"next {days} days"
+        except Exception:
+            pass
+
+    target = target_override or req.get("target_odds")
+    count = count_override or req.get("picks")
+    risk = req.get("risk") or "normal"
+
+    straight = bool(STRAIGHT_RE.search(text or ""))
+
+    if (
+        straight
+        and re.search(r"\blong\b", text or "", re.I)
+        and req.get("label") == "next 24 hours"
+    ):
+        req["end"] = req["start"] + timedelta(days=5)
+        req["label"] = "next 5 days"
+
+    if not target:
+        match = re.search(
+            r"(\d+(?:\.\d+)?)\s*(?:total\s*)?odds?\b",
+            text or "",
+            re.I,
+        )
+
+        if match:
+            try:
+                value = float(match.group(1))
+                if value >= 1.5:
+                    target = value
+                    count = None
+            except Exception:
+                pass
+
+    print(
+        f"SportyTips request: text={text!r} target={target} "
+        f"count={count} risk={risk} label={req.get('label')}"
+    )
+
+    if daily:
+        target = DAILY_TARGET
+        count = None
+        risk = "safe"
+
+    if straight and not target and not count:
+        count = STRAIGHT_DEFAULT_LEGS
+
+        if req.get("label") == "next 24 hours":
+            req["end"] = req["start"] + timedelta(days=3)
+            req["label"] = "next 3 days"
+
+    elif not target and not count:
+        count = 5
+
+
+    try:
+
+        built = build_ticket(
+            provider,
+            req,
+            target,
+            count,
+            risk,
+            notify=None,
+            straight=straight,
+            daily=daily,
+        )
+
+    except Exception as exc:
+
+        print(f"Smart ticket failed: {type(exc).__name__}: {exc}")
+
+        import traceback
+        traceback.print_exc()
+
+        bot.send_message(
+            chat_id,
+            "❌ Something went wrong while building the ticket. "
+            "Please try again in a minute.",
+        )
+        return
+
+    chosen = built["chosen"]
+
+    if not chosen and risk != "risky" and not straight and not daily:
+        try:
+            retry = build_ticket(
+                provider,
+                req,
+                target,
+                count,
+                "risky",
+                notify=None,
+            )
+
+            if retry["chosen"]:
+                built = retry
+                chosen = retry["chosen"]
+                built["note"] = (
+                    (built["note"] + " " if built["note"] else "")
+                    + "I widened the market limits to find enough picks."
+                )
+
+        except Exception as exc:
+            print(f"Wider retry failed: {exc}")
+
+    local_now = datetime.now(timezone.utc).astimezone(bot.LOCAL_TZ)
+
+    if not chosen and daily:
+
+        bot.send_message(
+            chat_id,
+            (
+                "❌ I couldn't find a Daily 2 odds combination with "
+                "1.30+ legs right now. Try again later."
+            ),
+        )
+
+        return
+
+    if not chosen and straight:
+
+        bot.send_message(
+            chat_id,
+            (
+                "❌ I couldn't find enough straight win picks right now. "
+                "Try again later or ask for a "
+                "straight win long ticket."
+            ),
+        )
+
+        return
+
+    if not chosen:
+
+        bot.send_message(
+            chat_id,
+            (
+                "❌ I couldn't build a ticket "
+                "from the available SportyBet "
+                "matches for that request. "
+                "Try a different time window or odds."
+            ),
+        )
+
+        return
+
+
+    reasons = {}
+    swapped = []
+    reviewed = False
+
+    if USE_AI_REVIEW and ANTHROPIC_API_KEY and not straight:
+
+        try:
+
+            for round_no in range(2):
+
+                fresh = [
+                    candidate
+                    for candidate in chosen
+                    if (candidate["event_id"], candidate["key"])
+                    not in reasons
+                ]
+
+                if fresh:
+                    reasons.update(ai_review(fresh, local_now))
+
+                if not reasons:
+                    break
+
+                reviewed = True
+
+                if round_no == 1:
+                    break
+
+                drops = [
+                    candidate
+                    for candidate in chosen
+                    if reasons.get(
+                        (candidate["event_id"], candidate["key"]),
+                        ("", "keep"),
+                    )[1] == "drop"
+                ][:MAX_DROPS]
+
+                if not drops:
+                    break
+
+                exclude = frozenset(
+                    (candidate["event_id"], candidate["key"])
+                    for candidate in drops
+                )
+
+                rebuilt = build_ticket(
+                    provider,
+                    req,
+                    target,
+                    count,
+                    risk,
+                    exclude=exclude,
+                    straight=straight,
+                    daily=daily,
+                )
+
+                if not rebuilt["chosen"]:
+                    break
+
+                swapped = [
+                    (
+                        candidate,
+                        reasons[
+                            (candidate["event_id"], candidate["key"])
+                        ][0],
+                    )
+                    for candidate in drops
+                ]
+
+                built = rebuilt
+                chosen = rebuilt["chosen"]
+
+        except Exception as exc:
+
+            print(f"AI review step failed: {exc}")
+
+    chosen.sort(key=lambda c: c["kickoff"])
+
+    total_odds = 1.0
+    chance = 1.0
+
+    for candidate in chosen:
+
+        total_odds *= candidate["odd"]
+        chance *= candidate["p"]
+
+        candidate["reason"] = reasons.get(
+            (candidate["event_id"], candidate["key"]),
+            (
+                _reason_for(candidate),
+                "keep",
+            ),
+        )[0]
+
+
+    code = None
+
+    try:
+
+        code = provider.create_booking_code(
+            [
+                (
+                    candidate["event"],
+                    {"resolved_key": candidate["key"]},
+                )
+                for candidate in chosen
+            ]
+        )
+
+    except Exception as exc:
+
+        print(f"Booking code failed: {exc}")
+
+
+    today = local_now.date()
+
+    if daily:
+        title = "DAILY 2 ODDS"
+    elif straight:
+        title = f"STRAIGHT WIN - {len(chosen)} PICKS"
+    elif target:
+        title = f"{_fmt(target)} ODDS"
+    else:
+        title = f"{len(chosen)} PICKS"
+
+    lines = [
+        (
+            "🎯 <b>SPORTYTIPS - "
+            f"{html.escape(title)}</b>"
+        ),
+        (
+            f"📅 {html.escape(req['label'].capitalize())}"
+            f" • times in {bot.LOCAL_TZ_NAME}"
+        ),
+    ]
+
+    for number, candidate in enumerate(chosen, start=1):
+
+        lines.append("")
+
+        lines.append(
+            f"<b>{number}.</b> "
+            f"🕒 {html.escape(_time_text(candidate, today))}"
+            f" • 🏆 {html.escape(candidate['league'])}"
+        )
+
+        lines.append(
+            f"⚽ {html.escape(candidate['home'])}"
+            f" vs "
+            f"{html.escape(candidate['away'])}"
+        )
+
+        lines.append(
+            f"✅ <b>{html.escape(candidate['label'])}</b>"
+            f" • 💰 {candidate['odd']:.2f}"
+            f" • {_confidence(candidate['p'])}"
+            f" {round(candidate['p'] * 100)}%"
+        )
+
+        lines.append(f"💬 {html.escape(candidate['reason'])}")
+
+    lines += [
+        "",
+        "━━━━━━━━━━━━",
+        f"💰 <b>Total odds: {total_odds:.2f}</b>",
+        (
+            "📊 Estimated combined chance: "
+            f"<b>{chance * 100:.1f}%</b>"
+        ),
+    ]
+
+    if target and not built["reached"]:
+
+        lines.append(
+            (
+                f"⚠️ I could not safely reach "
+                f"{_fmt(target)} odds with the "
+                "available football selections."
+            )
+        )
+
+    if built["note"]:
+
+        lines.append(f"ℹ️ {html.escape(built['note'])}")
+
+    for candidate, why in swapped:
+
+        lines.append(
+            (
+                "🔁 Swapped "
+                f"{html.escape(candidate['home'])} "
+                "vs "
+                f"{html.escape(candidate['away'])}: "
+                f"{html.escape(why)}"
+            )
+        )
+
+    mix = _kind_counts(chosen)
+
+    lines.append(
+        "🧩 Mix: "
+        + ", ".join(
+            f"{number} {KIND_NAME.get(kind, kind).lower()}"
+            for kind, number in sorted(
+                mix.items(),
+                key=lambda x: -x[1],
+            )
+        )
+    )
+
+    if code:
+
+        lines.append(
+            (
+                "📲 SportyBet code: "
+                f"<b>{html.escape(str(code))}</b>"
+            )
+        )
+
+    else:
+
+        lines.append(
+            "⚠️ SportyBet booking code could not be created."
+        )
+
+    if reviewed:
+
+        lines.append(
+            (
+                "💬 Each pick was checked with AI for team news "
+                "and form. Check confirmed line-ups before kickoff."
+            )
+        )
+
+    elif not USE_FOOTBALL_DATA:
+
+        lines.append(
+            "ℹ️ Picks are ranked from SportyBet's own markets "
+            "and odds, not form or head-to-head."
+        )
+
+    if len(chosen) >= 12 and target and target >= 50:
+
+        lines.append(
+            (
+                "⚠️ Big-odds tickets are naturally "
+                "high risk. Stake responsibly."
+            )
+        )
+
+    if daily:
+
+        lines.append(
+            (
+                "🔒 Daily 2 odds updates once every 24 hours. "
+                "No pick is ever 100% certain."
+            )
+        )
+
+    lines.append(
+        "⚠️ Predictions are estimates, not guarantees (18+)."
+    )
+
+    text_out = "\n".join(lines)
+
+    bot.send_message(chat_id, text_out)
+
+    if daily:
+        _daily_save(text_out)
+
+
+    try:
+
+        import ticket_image_lite
+
+        rows = [
+            {
+                "time": _time_text(candidate, today),
+                "league": candidate["league"],
+                "match": (
+                    f"{candidate['home']} "
+                    f"vs "
+                    f"{candidate['away']}"
+                ),
+                "pick": candidate["label"],
+                "odd": candidate["odd"],
+                "prob": candidate["p"],
+            }
+            for candidate in chosen
+        ]
+
+        png = ticket_image_lite.make_ticket_image(
+            rows,
+            (
+                "Daily 2 Odds"
+                if daily
+                else "Straight Win"
+                if straight
+                else (
+                    f"{_fmt(target)} Odds"
+                    if target
+                    else f"{len(chosen)} Picks"
+                )
+            ),
+            req["label"].capitalize(),
+            total_odds,
+            chance,
+            code,
+        )
+
+        _launcher_send_photo(chat_id, png, "")
+
+        if daily:
+            _daily_save_image(png)
+
+    except Exception as exc:
+
+        print(f"Ticket picture failed: {exc}")
+
+
+_DAILY_LOCK = threading.Lock()
+
+_DAILY_FILE = os.getenv(
+    "DAILY_FILE",
+    os.path.join(
+        os.path.dirname(os.path.abspath(__file__)),
+        "daily_2odds.json",
+    ),
+)
+
+_daily_cache = {}
+
+
+def _daily_write():
+    try:
+        with open(_DAILY_FILE, "w", encoding="utf-8") as fh:
+            json.dump(_daily_cache, fh)
+    except Exception as exc:
+        print(f"Daily cache save failed: {exc}")
+
+
+def _daily_get():
+
+    data = None
+
+    try:
+        with open(_DAILY_FILE, encoding="utf-8") as fh:
+            data = json.load(fh)
+    except Exception:
+        data = dict(_daily_cache) if _daily_cache else None
+
+    if not data:
+        return None
+
+    created = data.get("created")
+
+    if not created or not data.get("text"):
+        return None
+
+    if time.time() - created >= DAILY_SECONDS:
+        return None
+
+    _daily_cache.clear()
+    _daily_cache.update(data)
+
+    return dict(data)
+
+
+def _daily_save(text_out):
+    _daily_cache.clear()
+    _daily_cache.update({"created": time.time(), "text": text_out})
+    _daily_write()
+
+
+def _daily_save_image(png):
+    import base64
+
+    if _daily_cache.get("text"):
+        _daily_cache["image"] = base64.b64encode(png).decode("ascii")
+        _daily_write()
+
+
+def _daily_left(cached):
+    left = max(0, DAILY_SECONDS - (time.time() - cached["created"]))
+    return int(left // 3600), int((left % 3600) // 60)
+
+
+def _daily_used(cached, person):
+
+    users = cached.get("users") or {}
+
+    return users.get(str(person)) == cached.get("created")
+
+
+def _daily_mark(person, created):
+
+    data = _daily_get()
+
+    if not data or data.get("created") != created:
+        return
+
+    users = _daily_cache.setdefault("users", {})
+    users[str(person)] = created
+
+    _daily_write()
+
+
+def _daily_replay(chat_id, cached):
+    import base64
+
+    hours, minutes = _daily_left(cached)
+
+    bot.send_message(
+        chat_id,
+        (
+            cached["text"]
+            + "\n\n🔒 You can open Daily 2 odds once a day. "
+            f"The next one unlocks in {hours}h {minutes}m."
+        ),
+    )
+
+    if cached.get("image"):
+        try:
+            _launcher_send_photo(
+                chat_id,
+                base64.b64decode(cached["image"]),
+                "",
+            )
+        except Exception as exc:
+            print(f"Daily image replay failed: {exc}")
+
+
+def flow(
+    chat_id,
+    text,
+    search_days=None,
+    target_override=None,
+    count_override=None,
+    **kwargs,
+):
+
+    if DAILY_RE.search(text or ""):
+
+        with _DAILY_LOCK:
+
+            cached = _daily_get()
+
+            if cached:
+
+                if _daily_used(cached, chat_id):
+
+                    hours, minutes = _daily_left(cached)
+
+                    bot.send_message(
+                        chat_id,
+                        (
+                            "🔒 You already opened today's Daily 2 odds. "
+                            f"The next one unlocks in {hours}h {minutes}m."
+                        ),
+                    )
+
+                    return
+
+                _daily_replay(chat_id, cached)
+                _daily_mark(chat_id, cached["created"])
+
+                return
+
+            _flow_main(
+                chat_id,
+                text,
+                search_days,
+                target_override,
+                count_override,
+                daily=True,
+            )
+
+            fresh = _daily_get()
+
+            if fresh:
+                _daily_mark(chat_id, fresh["created"])
+
+            return
+
+    return _flow_main(
+        chat_id,
+        text,
+        search_days,
+        target_override,
+        count_override,
+        **kwargs,
+    )
+
+
+_orig_flow = bot.prediction_ticket_flow
+
+bot.prediction_ticket_flow = flow
+
+bot.MAX_DAYS_AHEAD = max(
+    getattr(bot, "MAX_DAYS_AHEAD", 2),
+    3,
+)

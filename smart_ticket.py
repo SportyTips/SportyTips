@@ -1,26 +1,26 @@
 """
-SportyTips Smart SportyBet ticket builder.
+SportyTips Smart SportyBet Ticket Builder
 
 ARCHITECTURE
 ------------
 
-Football fixtures
+SportyBet fixtures
         ↓
-football_data.py
+Football fixture matching
         ↓
-football evidence
+Football evidence
         ↓
-football probability
+Football probability
         ↓
-evidence quality / disagreement checks
+Evidence quality / disagreement checks
         ↓
-weak selections rejected
+Weak selections rejected
         ↓
 SportyBet market availability
         ↓
 SportyBet odds
         ↓
-ticket
+Ticket
         ↓
 REAL SportyBet booking code
 
@@ -34,8 +34,8 @@ IMPORTANT
 - No yellow-card selections.
 - No odds-derived football probability.
 - football_data.py is the prediction engine.
-- SportyBet is used for fixture discovery, market availability,
-  odds and booking codes.
+- SportyBet is used for fixture discovery,
+  market availability, odds and booking codes.
 """
 
 import html
@@ -62,17 +62,16 @@ import sportybet_provider as sp
 
 
 # ============================================================
-# FOOTBALL DATA IMPORT
+# FOOTBALL DATA ENGINE
 # ============================================================
 
 try:
     import football_data as fd
-
-except Exception as e:
+except Exception as exc:
     fd = None
     print(
         "FOOTBALL_DATA IMPORT ERROR:",
-        repr(e),
+        repr(exc),
     )
 
 
@@ -80,59 +79,59 @@ BRAND = "SPORTYTIPS"
 
 
 # ============================================================
-# SPEED / SAFETY SETTINGS
+# SPEED SETTINGS
 # ============================================================
 
-# Number of SportyBet events whose detailed markets can be
-# inspected in one request.
-MAX_DETAIL_EVENTS = 50
+# Maximum SportyBet events whose markets we inspect.
+MAX_DETAIL_EVENTS = 60
 
-# Slightly larger pool for straight-win / 1UP / 2UP searches.
-STRAIGHT_DETAIL_EVENTS = 60
+# Straight-win / 1UP / 2UP searches get a slightly wider pool.
+STRAIGHT_DETAIL_EVENTS = 70
 
-# SportyBet market requests.
+# Concurrent SportyBet market requests.
 DETAIL_WORKERS = 8
 
-# Maximum time allocated to the detailed-market batch.
-DETAIL_SECONDS = 8
+# Maximum time spent loading detailed markets.
+DETAIL_SECONDS = 10
 
-# Football evidence cache size.
-MAX_CACHED_MATCHES = 150
+# Maximum cached event-market records.
+MAX_CACHED_MATCHES = 200
 
 MAX_PAGES = 15
 
 MAX_LEGS = 30
 
-MAX_OPTIONS_PER_MATCH = 6
+MAX_OPTIONS_PER_MATCH = 8
 
-GROUP_LIMIT = 100
+GROUP_LIMIT = 150
 
-# Maximum amount above a target that the DP engine tries to use.
 OVERSHOOT = 0.08
 
 
 # ============================================================
-# HARD FOOTBALL REQUEST BUDGET
+# FOOTBALL STUDY BUDGET
 # ============================================================
-
-# IMPORTANT:
 #
-# The old version studied only 12 matches.
+# This is a MAXIMUM, NOT A QUOTA.
 #
-# That caused the engine to reject good matches simply because
-# they happened to appear later in the SportyBet fixture list.
+# If 20 valid football matches can be matched:
+#     study up to 20.
 #
-# We now study up to 20 matches.
+# If only 8 can be matched:
+#     study those 8.
 #
-# This is still deliberately capped so Render does not sit
-# waiting indefinitely.
+# If 30 are available:
+#     study up to the configured maximum.
+#
+# The engine must NEVER reject a request merely because it
+# could not study a particular number of matches.
 # ============================================================
 
 FOOTBALL_MAX_STUDIED = 20
 
-FOOTBALL_STUDY_SECONDS = 32
+FOOTBALL_STUDY_SECONDS = 35
 
-GATHER_SECONDS = 42
+GATHER_SECONDS = 48
 
 
 # ============================================================
@@ -148,25 +147,6 @@ MIN_FOOTBALL_PROB = {
 
 # ============================================================
 # MARKET-SPECIFIC FOOTBALL PROBABILITY
-# ============================================================
-#
-# IMPORTANT:
-#
-# A single 68% floor for every market is too restrictive.
-#
-# For example:
-#
-#   1UP
-#   Over 1.5
-#   Team goals
-#   BTTS
-#   Positive handicap
-#   Corners
-#
-# do not have the same natural probability distribution.
-#
-# These are football-model gates.
-# SportyBet odds do NOT determine them.
 # ============================================================
 
 MARKET_MIN_P = {
@@ -199,10 +179,10 @@ MIN_EVIDENCE_QUALITY = {
 # ODDS LIMITS
 # ============================================================
 #
-# These DO NOT create probability.
+# Odds do NOT create probability.
 #
-# They only prevent obviously extreme prices from being
-# selected.
+# These limits only stop extremely unusual prices from being
+# selected after the football model has already approved them.
 # ============================================================
 
 MAX_SELECTION_ODDS = {
@@ -211,10 +191,6 @@ MAX_SELECTION_ODDS = {
     "risky": 7.00,
 }
 
-
-# ============================================================
-# MINIMUM ODDS
-# ============================================================
 
 MIN_ODDS = {
     "up": 1.01,
@@ -231,10 +207,6 @@ MIN_ODDS = {
 }
 
 
-# ============================================================
-# CORNER ODDS LIMIT
-# ============================================================
-
 MAX_ODDS_KIND = {
     "corners": 3.50,
     "corners_1h": 3.50,
@@ -242,11 +214,7 @@ MAX_ODDS_KIND = {
 
 
 # ============================================================
-# SORTING BONUSES
-# ============================================================
-#
-# ONLY used as tie-breakers.
-# They are NOT probability.
+# TIE-BREAKER BONUSES
 # ============================================================
 
 KIND_BONUS = {
@@ -265,7 +233,7 @@ KIND_BONUS = {
 
 
 # ============================================================
-# DIVERSIFICATION CAPS
+# DIVERSIFICATION
 # ============================================================
 
 KIND_CAP = {
@@ -303,25 +271,11 @@ KIND_NAME = {
 
 
 # ============================================================
-# FOOTBALL ENGINE STATUS
+# ENGINE STATUS
 # ============================================================
 
 def football_engine_available():
     return fd is not None
-
-
-def _football_diag():
-
-    if fd is None:
-        return ""
-
-    try:
-        return str(
-            fd.diag_summary()
-        )
-
-    except Exception:
-        return ""
 
 
 # ============================================================
@@ -329,19 +283,11 @@ def _football_diag():
 # ============================================================
 
 def _f(value):
-
     try:
-        return sp._float(
-            value
-        )
-
+        return sp._float(value)
     except Exception:
-
         try:
-            return float(
-                value
-            )
-
+            return float(value)
         except Exception:
             return None
 
@@ -351,29 +297,19 @@ def _clamp(
     low=0.0,
     high=0.99,
 ):
-
     try:
-        value = float(
-            value
-        )
-
+        value = float(value)
     except Exception:
         return None
 
     return max(
         low,
-        min(
-            high,
-            value,
-        ),
+        min(high, value),
     )
 
 
 def _clean(value):
-
-    return str(
-        value or ""
-    ).strip()
+    return str(value or "").strip()
 
 
 # ============================================================
@@ -384,7 +320,6 @@ def _side_of(
     outcome,
     two_way=False,
 ):
-
     label = str(
         outcome.get("desc")
         or outcome.get("name")
@@ -395,19 +330,13 @@ def _side_of(
         outcome.get("id")
     )
 
-    if label.startswith(
-        "home"
-    ):
+    if label.startswith("home"):
         return "home"
 
-    if label.startswith(
-        "away"
-    ):
+    if label.startswith("away"):
         return "away"
 
-    if label.startswith(
-        "draw"
-    ):
+    if label.startswith("draw"):
         return None
 
     if oid == "1":
@@ -443,7 +372,6 @@ def _up_candidates(
     away,
     add,
 ):
-
     for market in markets or []:
 
         text = (
@@ -471,29 +399,21 @@ def _up_candidates(
             up_number = int(
                 found.group(1)
             )
-
         except Exception:
             continue
 
-        if up_number not in (
-            1,
-            2,
-        ):
+        if up_number not in (1, 2):
             continue
 
         spec = (
-            market.get(
-                "specifier"
-            )
+            market.get("specifier")
             or ""
         )
 
         for outcome in outcomes:
 
             if (
-                outcome.get(
-                    "isActive"
-                )
+                outcome.get("isActive")
                 is False
             ):
                 continue
@@ -509,9 +429,7 @@ def _up_candidates(
                 continue
 
             odd = _f(
-                outcome.get(
-                    "odds"
-                )
+                outcome.get("odds")
             )
 
             if not odd or odd <= 1:
@@ -533,15 +451,11 @@ def _up_candidates(
                 None,
                 (
                     str(
-                        market.get(
-                            "id"
-                        )
+                        market.get("id")
                     ),
                     spec,
                     str(
-                        outcome.get(
-                            "id"
-                        )
+                        outcome.get("id")
                     ),
                 ),
                 side=side,
@@ -559,7 +473,6 @@ def _either_half_candidates(
     away,
     add,
 ):
-
     if not hasattr(
         sp,
         "find_either_half",
@@ -572,13 +485,10 @@ def _either_half_candidates(
     ):
 
         try:
-            result = (
-                sp.find_either_half(
-                    markets,
-                    side,
-                )
+            result = sp.find_either_half(
+                markets,
+                side,
             )
-
         except Exception:
             result = None
 
@@ -592,27 +502,18 @@ def _either_half_candidates(
             result,
             dict,
         ):
-
             odd = _f(
-                result.get(
-                    "odds"
-                )
+                result.get("odds")
             )
-
-            key = result.get(
-                "key"
-            )
+            key = result.get("key")
 
         elif isinstance(
             result,
             tuple,
         ):
-
             if len(result) >= 2:
                 key = result[0]
-                odd = _f(
-                    result[1]
-                )
+                odd = _f(result[1])
 
         if not odd or odd <= 1:
             continue
@@ -647,7 +548,6 @@ def event_candidates(
     event,
     markets,
 ):
-
     home = event.get(
         "homeTeamName",
         "Home",
@@ -668,11 +568,7 @@ def event_candidates(
         key,
         **extra,
     ):
-
-        if (
-            not odd
-            or odd <= 1
-        ):
+        if not odd or odd <= 1:
             return
 
         item = {
@@ -684,17 +580,13 @@ def event_candidates(
             "key": key,
         }
 
-        item.update(
-            extra
-        )
+        item.update(extra)
 
-        candidates.append(
-            item
-        )
+        candidates.append(item)
 
-    # ========================================================
+    # --------------------------------------------------------
     # 1UP / 2UP
-    # ========================================================
+    # --------------------------------------------------------
 
     _up_candidates(
         markets,
@@ -703,9 +595,9 @@ def event_candidates(
         add,
     )
 
-    # ========================================================
+    # --------------------------------------------------------
     # EITHER HALF
-    # ========================================================
+    # --------------------------------------------------------
 
     _either_half_candidates(
         markets,
@@ -714,21 +606,23 @@ def event_candidates(
         add,
     )
 
-    # ========================================================
+    # --------------------------------------------------------
     # DOUBLE CHANCE 12
-    # ========================================================
+    # --------------------------------------------------------
 
-    odd = sp.find_odds(
-        markets,
-        (
-            sp.M_DC,
-            "",
-            sp.OUT_DC["12"],
-        ),
-    )
+    try:
+        odd = sp.find_odds(
+            markets,
+            (
+                sp.M_DC,
+                "",
+                sp.OUT_DC["12"],
+            ),
+        )
+    except Exception:
+        odd = None
 
     if odd:
-
         add(
             "dc",
             f"{home} or {away}",
@@ -741,26 +635,20 @@ def event_candidates(
             ),
         )
 
-    # ========================================================
+    # --------------------------------------------------------
     # TOTAL GOALS — OVER ONLY
-    # ========================================================
+    # --------------------------------------------------------
 
     for market in markets or []:
 
         if (
-            str(
-                market.get("id")
-            )
-            != str(
-                sp.M_TOTAL
-            )
+            str(market.get("id"))
+            != str(sp.M_TOTAL)
         ):
             continue
 
         spec = (
-            market.get(
-                "specifier"
-            )
+            market.get("specifier")
             or ""
         )
 
@@ -792,29 +680,18 @@ def event_candidates(
         ):
 
             if (
-                outcome.get(
-                    "isActive"
-                )
+                outcome.get("isActive")
                 is False
             ):
                 continue
 
-            oid = str(
-                outcome.get(
-                    "id"
-                )
-            )
-
-            if oid == str(
-                sp.OUT_TOTAL[
-                    "over"
-                ]
+            if str(
+                outcome.get("id")
+            ) == str(
+                sp.OUT_TOTAL["over"]
             ):
-
                 over = _f(
-                    outcome.get(
-                        "odds"
-                    )
+                    outcome.get("odds")
                 )
 
         kind = (
@@ -830,34 +707,31 @@ def event_candidates(
             None,
             (
                 str(
-                    market.get(
-                        "id"
-                    )
+                    market.get("id")
                 ),
                 spec,
-                sp.OUT_TOTAL[
-                    "over"
-                ],
+                sp.OUT_TOTAL["over"],
             ),
             line=line,
         )
 
-    # ========================================================
+    # --------------------------------------------------------
     # BTTS YES
-    # ========================================================
+    # --------------------------------------------------------
 
     yes_key = (
         sp.M_BTTS,
         "",
-        sp.OUT_BTTS[
-            "yes"
-        ],
+        sp.OUT_BTTS["yes"],
     )
 
-    yes = sp.find_odds(
-        markets,
-        yes_key,
-    )
+    try:
+        yes = sp.find_odds(
+            markets,
+            yes_key,
+        )
+    except Exception:
+        yes = None
 
     add(
         "btts",
@@ -867,9 +741,9 @@ def event_candidates(
         yes_key,
     )
 
-    # ========================================================
+    # --------------------------------------------------------
     # TEAM GOALS
-    # ========================================================
+    # --------------------------------------------------------
 
     for side, market_id, team in (
         (
@@ -887,19 +761,13 @@ def event_candidates(
         for market in markets or []:
 
             if (
-                str(
-                    market.get("id")
-                )
-                != str(
-                    market_id
-                )
+                str(market.get("id"))
+                != str(market_id)
             ):
                 continue
 
             spec = (
-                market.get(
-                    "specifier"
-                )
+                market.get("specifier")
                 or ""
             )
 
@@ -929,29 +797,20 @@ def event_candidates(
             ):
 
                 if (
-                    outcome.get(
-                        "isActive"
-                    )
+                    outcome.get("isActive")
                     is False
                 ):
                     continue
 
-                oid = str(
-                    outcome.get(
-                        "id"
-                    )
-                )
-
-                if oid == str(
+                if str(
+                    outcome.get("id")
+                ) == str(
                     sp.OUT_TEAM_GOALS[
                         "over"
                     ]
                 ):
-
                     over = _f(
-                        outcome.get(
-                            "odds"
-                        )
+                        outcome.get("odds")
                     )
 
             add(
@@ -973,44 +832,33 @@ def event_candidates(
                 line=line,
             )
 
-    # ========================================================
+    # --------------------------------------------------------
     # CORNERS
-    # ========================================================
+    # --------------------------------------------------------
 
     for market_id, half, lines in (
         (
             sp.M_CORNERS,
             False,
-            (
-                6.5,
-                7.5,
-            ),
+            (6.5, 7.5),
         ),
         (
             sp.M_CORNERS_1H,
             True,
-            (
-                3.5,
-            ),
+            (3.5,),
         ),
     ):
 
         for market in markets or []:
 
             if (
-                str(
-                    market.get("id")
-                )
-                != str(
-                    market_id
-                )
+                str(market.get("id"))
+                != str(market_id)
             ):
                 continue
 
             spec = (
-                market.get(
-                    "specifier"
-                )
+                market.get("specifier")
                 or ""
             )
 
@@ -1037,29 +885,18 @@ def event_candidates(
             ):
 
                 if (
-                    outcome.get(
-                        "isActive"
-                    )
+                    outcome.get("isActive")
                     is False
                 ):
                     continue
 
-                oid = str(
-                    outcome.get(
-                        "id"
-                    )
-                )
-
-                if oid == str(
-                    sp.OUT_TOTAL[
-                        "over"
-                    ]
+                if str(
+                    outcome.get("id")
+                ) == str(
+                    sp.OUT_TOTAL["over"]
                 ):
-
                     over = _f(
-                        outcome.get(
-                            "odds"
-                        )
+                        outcome.get("odds")
                     )
 
             kind = (
@@ -1085,16 +922,14 @@ def event_candidates(
                 (
                     market_id,
                     spec,
-                    sp.OUT_TOTAL[
-                        "over"
-                    ],
+                    sp.OUT_TOTAL["over"],
                 ),
                 line=line,
             )
 
-    # ========================================================
+    # --------------------------------------------------------
     # POSITIVE HANDICAPS ONLY
-    # ========================================================
+    # --------------------------------------------------------
 
     for market in markets or []:
 
@@ -1103,19 +938,13 @@ def event_candidates(
         )
 
         if market_id not in (
-            str(
-                sp.M_HANDICAP
-            ),
-            str(
-                sp.M_ASIAN_HANDICAP
-            ),
+            str(sp.M_HANDICAP),
+            str(sp.M_ASIAN_HANDICAP),
         ):
             continue
 
         spec = (
-            market.get(
-                "specifier"
-            )
+            market.get("specifier")
             or ""
         )
 
@@ -1127,9 +956,7 @@ def event_candidates(
         kind = (
             "asian_handicap"
             if market_id
-            == str(
-                sp.M_ASIAN_HANDICAP
-            )
+            == str(sp.M_ASIAN_HANDICAP)
             else "handicap"
         )
 
@@ -1139,9 +966,7 @@ def event_candidates(
         ):
 
             if (
-                outcome.get(
-                    "isActive"
-                )
+                outcome.get("isActive")
                 is False
             ):
                 continue
@@ -1157,21 +982,15 @@ def event_candidates(
                 continue
 
             odd = _f(
-                outcome.get(
-                    "odds"
-                )
+                outcome.get("odds")
             )
 
             if not odd:
                 continue
 
             label = str(
-                outcome.get(
-                    "desc"
-                )
-                or outcome.get(
-                    "name"
-                )
+                outcome.get("desc")
+                or outcome.get("name")
                 or ""
             )
 
@@ -1194,9 +1013,7 @@ def event_candidates(
                     market_id,
                     spec,
                     str(
-                        outcome.get(
-                            "id"
-                        )
+                        outcome.get("id")
                     ),
                 ),
                 side=side,
@@ -1234,11 +1051,7 @@ def _slim_markets(markets):
         )
 
         if market_id in wanted_ids:
-
-            keep.append(
-                market
-            )
-
+            keep.append(market)
             continue
 
         text = (
@@ -1246,38 +1059,25 @@ def _slim_markets(markets):
             f"{market.get('name') or ''}"
         )
 
-        if UP_LOOSE_RE.search(
-            text
-        ):
-
-            keep.append(
-                market
-            )
-
+        if UP_LOOSE_RE.search(text):
+            keep.append(market)
             continue
 
-        if (
-            "either half"
-            in text.lower()
-        ):
+        lower = text.lower()
 
-            lower = text.lower()
-
+        if "either half" in lower:
             if (
                 "both" not in lower
                 and "1st" not in lower
                 and "2nd" not in lower
             ):
-
-                keep.append(
-                    market
-                )
+                keep.append(market)
 
     return keep
 
 
 # ============================================================
-# DETAILED MARKET CACHE
+# SPORTYBET MARKET CACHE
 # ============================================================
 
 _DETAIL_LOCK = threading.Lock()
@@ -1296,12 +1096,8 @@ def _event_markets_cached(
     )
 
     if cache is None:
-
         cache = {}
-
-        self._sportytips_market_cache = (
-            cache
-        )
+        self._sportytips_market_cache = cache
 
     now = time.time()
 
@@ -1323,7 +1119,6 @@ def _event_markets_cached(
             now - timestamp
             < cache_seconds
         ):
-
             return markets
 
     markets = _slim_markets(
@@ -1337,10 +1132,7 @@ def _event_markets_cached(
         markets,
     )
 
-    if (
-        len(cache)
-        > MAX_CACHED_MATCHES
-    ):
+    if len(cache) > MAX_CACHED_MATCHES:
 
         oldest = sorted(
             cache,
@@ -1356,7 +1148,6 @@ def _event_markets_cached(
         for key in oldest[
             :remove_count
         ]:
-
             cache.pop(
                 key,
                 None,
@@ -1365,15 +1156,13 @@ def _event_markets_cached(
     return markets
 
 
-# Preserve the provider interface while allowing the new
-# force_refresh option.
 sp.SportyBetProvider._event_markets_cached = (
     _event_markets_cached
 )
 
 
 # ============================================================
-# FOOTBALL EVIDENCE
+# FOOTBALL FIXTURE
 # ============================================================
 
 def _get_fixture(event):
@@ -1382,20 +1171,16 @@ def _get_fixture(event):
         return None
 
     try:
-
         return fd.find_fixture(
             event
         )
-
-    except Exception as exc:
-
-        print(
-            "Football fixture matching failed:",
-            exc,
-        )
-
+    except Exception:
         return None
 
+
+# ============================================================
+# FOOTBALL FACTS
+# ============================================================
 
 def _get_facts(fixture):
 
@@ -1403,20 +1188,16 @@ def _get_facts(fixture):
         return None
 
     try:
-
         return fd.get_facts(
             fixture
         )
-
-    except Exception as exc:
-
-        print(
-            "Football facts failed:",
-            exc,
-        )
-
+    except Exception:
         return None
 
+
+# ============================================================
+# FOOTBALL PROBABILITY
+# ============================================================
 
 def _football_probability(
     candidate,
@@ -1442,13 +1223,7 @@ def _football_probability(
             0.97,
         )
 
-    except Exception as exc:
-
-        print(
-            "Football probability failed:",
-            exc,
-        )
-
+    except Exception:
         return None
 
 
@@ -1471,21 +1246,13 @@ def _facts_quality(facts):
         "away_form"
     )
 
-    if (
-        home_form
-        and away_form
-    ):
-
+    if home_form and away_form:
         scores.append(1.0)
 
-    elif (
-        home_form
-        or away_form
-    ):
-
+    elif home_form or away_form:
         scores.append(0.55)
 
-    required_goal_fields = (
+    goal_fields = (
         "home_gf",
         "home_ga",
         "away_gf",
@@ -1494,34 +1261,24 @@ def _facts_quality(facts):
 
     present_goals = sum(
         1
-        for key in required_goal_fields
+        for key in goal_fields
         if facts.get(key) is not None
     )
 
     if present_goals == 4:
-
         scores.append(1.0)
 
     elif present_goals >= 2:
-
         scores.append(0.65)
 
     home_venue = (
-        facts.get(
-            "home_venue"
-        )
-        or facts.get(
-            "home_home"
-        )
+        facts.get("home_venue")
+        or facts.get("home_home")
     )
 
     away_venue = (
-        facts.get(
-            "away_venue"
-        )
-        or facts.get(
-            "away_away"
-        )
+        facts.get("away_venue")
+        or facts.get("away_away")
     )
 
     venue_present = sum(
@@ -1534,24 +1291,17 @@ def _facts_quality(facts):
     )
 
     if venue_present == 2:
-
         scores.append(1.0)
 
     elif venue_present:
-
         scores.append(0.60)
 
     h2h_count = (
-        facts.get(
-            "h2h_count"
-        )
-        or facts.get(
-            "h2h_sample"
-        )
+        facts.get("h2h_count")
+        or facts.get("h2h_sample")
     )
 
     if h2h_count:
-
         scores.append(0.90)
 
     api_model = facts.get(
@@ -1559,7 +1309,6 @@ def _facts_quality(facts):
     )
 
     if api_model:
-
         scores.append(1.0)
 
     elif any(
@@ -1570,7 +1319,6 @@ def _facts_quality(facts):
             "api_away",
         )
     ):
-
         scores.append(0.90)
 
     if not scores:
@@ -1603,15 +1351,9 @@ def _model_disagreement_penalty(
     if not api_model:
 
         api_model = {
-            "home": facts.get(
-                "api_home"
-            ),
-            "draw": facts.get(
-                "api_draw"
-            ),
-            "away": facts.get(
-                "api_away"
-            ),
+            "home": facts.get("api_home"),
+            "draw": facts.get("api_draw"),
+            "away": facts.get("api_away"),
         }
 
     if not api_model:
@@ -1637,13 +1379,11 @@ def _model_disagreement_penalty(
         ):
 
             if side == "home":
-
                 api_p = api_model.get(
                     "home"
                 )
 
             elif side == "away":
-
                 api_p = api_model.get(
                     "away"
                 )
@@ -1700,15 +1440,12 @@ def _model_disagreement_penalty(
             )
 
             if side == "home":
-
                 key = (
                     f"home_over_{line:g}"
                     if line is not None
                     else "home_over"
                 )
-
             else:
-
                 key = (
                     f"away_over_{line:g}"
                     if line is not None
@@ -1720,7 +1457,6 @@ def _model_disagreement_penalty(
             )
 
     except Exception:
-
         api_p = None
 
     if api_p is None:
@@ -1729,16 +1465,11 @@ def _model_disagreement_penalty(
     try:
 
         disagreement = abs(
-            float(
-                football_p
-            )
-            - float(
-                api_p
-            )
+            float(football_p)
+            - float(api_p)
         )
 
     except Exception:
-
         return 0.0
 
     if disagreement <= 0.10:
@@ -1754,7 +1485,7 @@ def _model_disagreement_penalty(
 
 
 # ============================================================
-# APPLY EVIDENCE SCORE
+# APPLY FOOTBALL EVIDENCE SCORE
 # ============================================================
 
 def _apply_evidence_score(
@@ -1783,7 +1514,6 @@ def _apply_evidence_score(
         )
     )
 
-    # Missing evidence creates only a modest penalty.
     missing_penalty = max(
         0.0,
         (
@@ -1825,7 +1555,7 @@ def _apply_evidence_score(
 
 
 # ============================================================
-# REASON
+# FOOTBALL REASON
 # ============================================================
 
 def _football_reason(
@@ -1843,15 +1573,12 @@ def _football_reason(
             )
 
             if reason:
-                return str(
-                    reason
-                )
+                return str(reason)
 
         except Exception:
             pass
 
     if not facts:
-
         return (
             "Football evidence was "
             "not available."
@@ -1868,50 +1595,32 @@ def _football_reason(
     )
 
     if home_form:
-
         parts.append(
             f"home form {home_form}"
         )
 
     if away_form:
-
         parts.append(
             f"away form {away_form}"
         )
 
-    hgf = facts.get(
-        "home_gf"
-    )
-
-    hga = facts.get(
-        "home_ga"
-    )
-
-    agf = facts.get(
-        "away_gf"
-    )
-
-    aga = facts.get(
-        "away_ga"
+    goal_values = (
+        facts.get("home_gf"),
+        facts.get("home_ga"),
+        facts.get("away_gf"),
+        facts.get("away_ga"),
     )
 
     if all(
         value is not None
-        for value in (
-            hgf,
-            hga,
-            agf,
-            aga,
-        )
+        for value in goal_values
     ):
-
         parts.append(
             "recent goal profile supports "
             "the selection"
         )
 
     if not parts:
-
         return (
             "Football evidence supports "
             "the selection."
@@ -1944,23 +1653,19 @@ def _reason_for(
         suffix = ""
 
         if probability is not None:
-
             suffix += (
                 f" Model confidence "
                 f"{round(probability * 100)}%."
             )
 
         if quality is not None:
-
             suffix += (
                 f" Evidence quality "
                 f"{round(quality * 100)}%."
             )
 
         return (
-            str(
-                evidence_reason
-            )
+            str(evidence_reason)
             + suffix
         )
 
@@ -1971,27 +1676,41 @@ def _reason_for(
 
 
 # ============================================================
-# EVENT POOL SELECTION
+# EVENT POOL
 # ============================================================
+
+def _event_time(event):
+
+    value = (
+        event.get(
+            "estimateStartTime"
+        )
+        or event.get(
+            "startTime"
+        )
+        or event.get(
+            "start_time"
+        )
+        or 0
+    )
+
+    try:
+
+        value = float(value)
+
+        if value > 10_000_000_000:
+            value /= 1000
+
+        return value
+
+    except Exception:
+        return 0
+
 
 def _select_event_pool(
     events,
     limit,
 ):
-
-    """
-    Build a broad chronological pool.
-
-    IMPORTANT:
-    We do NOT simply study the first 12 matches anymore.
-
-    SportyBet can return a long chronological list. If the
-    strongest football-supported matches happen later in that
-    list, the old system never reached them.
-
-    This function keeps the full controlled SportyBet pool.
-    The football-study stage later samples it across the window.
-    """
 
     valid = [
         event
@@ -2000,20 +1719,14 @@ def _select_event_pool(
     ]
 
     valid.sort(
-        key=lambda event:
-            event.get(
-                "estimateStartTime",
-                0,
-            )
+        key=_event_time
     )
 
-    return valid[
-        :limit
-    ]
+    return valid[:limit]
 
 
 # ============================================================
-# BROAD FOOTBALL STUDY SELECTION
+# FOOTBALL STUDY POOL
 # ============================================================
 
 def _study_event_pool(
@@ -2021,38 +1734,28 @@ def _study_event_pool(
     max_studied,
 ):
 
-    """
-    Choose matches from across the available fixture pool.
-
-    This prevents the old first-12 bias.
-
-    No SportyBet odds are used here.
-
-    Selection is based only on fixture position/time so that
-    football evidence can be evaluated across the window.
-    """
-
     if not wanted:
         return []
 
     if len(wanted) <= max_studied:
-        return wanted
+        return list(wanted)
 
-    # Always keep some of the earliest fixtures because they
-    # are often the matches closest to kickoff.
+    selected = []
+
+    # Keep a portion of the earliest fixtures.
     early_count = min(
         8,
         max_studied,
         len(wanted),
     )
 
-    selected = wanted[
-        :early_count
-    ]
+    selected.extend(
+        wanted[:early_count]
+    )
 
     remaining_slots = (
         max_studied
-        - len(selected)
+        - early_count
     )
 
     if remaining_slots <= 0:
@@ -2065,16 +1768,12 @@ def _study_event_pool(
     if not remaining:
         return selected
 
-    # Evenly distribute the remaining football studies across
-    # the rest of the available SportyBet window.
     step = (
         len(remaining)
-        / float(
-            remaining_slots
-        )
+        / float(remaining_slots)
     )
 
-    used_indexes = set()
+    used = set()
 
     for index in range(
         remaining_slots
@@ -2093,39 +1792,30 @@ def _study_event_pool(
             )
 
         while (
-            position in used_indexes
+            position in used
             and position
             < len(remaining) - 1
         ):
             position += 1
 
-        if position in used_indexes:
+        if position in used:
             continue
 
-        used_indexes.add(
-            position
-        )
+        used.add(position)
 
         selected.append(
-            remaining[
-                position
-            ]
+            remaining[position]
         )
 
-    # Maintain kickoff order in the actual study list.
     selected.sort(
-        key=lambda event:
-            event.get(
-                "estimateStartTime",
-                0,
-            )
+        key=_event_time
     )
 
     return selected
 
 
 # ============================================================
-# MARKET-SPECIFIC PROBABILITY FLOOR
+# MARKET PROBABILITY FLOOR
 # ============================================================
 
 def _market_probability_floor(
@@ -2143,7 +1833,7 @@ def _market_probability_floor(
         base_floor,
     )
 
-    risk_adjustment = {
+    adjustment = {
         "safe": 0.03,
         "normal": 0.00,
         "risky": -0.03,
@@ -2152,11 +1842,8 @@ def _market_probability_floor(
         0.00,
     )
 
-    market_floor += (
-        risk_adjustment
-    )
+    market_floor += adjustment
 
-    # Never allow a market-specific floor to exceed 0.90.
     return min(
         0.90,
         market_floor,
@@ -2164,7 +1851,7 @@ def _market_probability_floor(
 
 
 # ============================================================
-# GATHER
+# GATHER FOOTBALL EVIDENCE
 # ============================================================
 
 def gather(
@@ -2183,11 +1870,6 @@ def gather(
     started = time.time()
 
     if fd is None:
-
-        print(
-            "Football_data.py unavailable."
-        )
-
         return (
             [],
             0,
@@ -2195,18 +1877,14 @@ def gather(
             0,
         )
 
-    # --------------------------------------------------------
-    # HARD GATHER DEADLINE
-    # --------------------------------------------------------
-
     deadline = (
         started
         + GATHER_SECONDS
     )
 
-    # --------------------------------------------------------
-    # SPORTYBET FIXTURES
-    # --------------------------------------------------------
+    # ========================================================
+    # LOAD SPORTYBET FIXTURES
+    # ========================================================
 
     try:
 
@@ -2215,13 +1893,7 @@ def gather(
             end,
         )
 
-    except Exception as exc:
-
-        print(
-            "SportyBet fixture loading failed:",
-            exc,
-        )
-
+    except Exception:
         return (
             [],
             0,
@@ -2230,11 +1902,6 @@ def gather(
         )
 
     if not events:
-
-        print(
-            "SportyBet returned 0 events."
-        )
-
         return (
             [],
             0,
@@ -2242,9 +1909,9 @@ def gather(
             0,
         )
 
-    # --------------------------------------------------------
-    # CONTROLLED SPORTYBET POOL
-    # --------------------------------------------------------
+    # ========================================================
+    # BUILD BROAD EVENT POOL
+    # ========================================================
 
     limit = (
         STRAIGHT_DETAIL_EVENTS
@@ -2257,9 +1924,9 @@ def gather(
         limit,
     )
 
-    # --------------------------------------------------------
-    # DETAILED SPORTYBET MARKETS
-    # --------------------------------------------------------
+    # ========================================================
+    # LOAD DETAILED SPORTYBET MARKETS
+    # ========================================================
 
     details = {}
 
@@ -2311,19 +1978,11 @@ def gather(
                         event_id
                     ] = future.result()
 
-                except Exception as exc:
-
-                    print(
-                        "Market request failed:",
-                        exc,
-                    )
+                except Exception:
+                    pass
 
         except FutureTimeout:
-
-            print(
-                "Detailed market loading "
-                "reached time budget."
-            )
+            pass
 
         finally:
 
@@ -2332,9 +1991,9 @@ def gather(
                 cancel_futures=True,
             )
 
-    # --------------------------------------------------------
-    # BASE PROBABILITY FLOOR
-    # --------------------------------------------------------
+    # ========================================================
+    # PROBABILITY SETTINGS
+    # ========================================================
 
     min_p = (
         MIN_FOOTBALL_PROB.get(
@@ -2378,18 +2037,14 @@ def gather(
 
     groups = []
 
-    # --------------------------------------------------------
-    # CHOOSE FOOTBALL MATCHES TO STUDY
-    # --------------------------------------------------------
+    # ========================================================
+    # STUDY ACROSS THE WINDOW
+    # ========================================================
 
     study_pool = _study_event_pool(
         wanted,
         FOOTBALL_MAX_STUDIED,
     )
-
-    # ========================================================
-    # FOOTBALL EVIDENCE PASS
-    # ========================================================
 
     football_studied = 0
 
@@ -2398,34 +2053,33 @@ def gather(
     for event in study_pool:
 
         # ----------------------------------------------------
-        # HARD GLOBAL TIME CHECK
+        # GLOBAL DEADLINE
         # ----------------------------------------------------
 
         if time.time() >= deadline:
-
-            print(
-                "Gather hard deadline reached."
-            )
-
             break
+
+        # ----------------------------------------------------
+        # MAXIMUM STUDY LIMIT
+        #
+        # This is NOT a required quota.
+        # ----------------------------------------------------
 
         if (
             football_studied
             >= FOOTBALL_MAX_STUDIED
         ):
-
             break
+
+        # ----------------------------------------------------
+        # FOOTBALL TIME BUDGET
+        # ----------------------------------------------------
 
         if (
             time.time()
             - football_started
             >= FOOTBALL_STUDY_SECONDS
         ):
-
-            print(
-                "Football study time budget reached."
-            )
-
             break
 
         event_id = event.get(
@@ -2435,24 +2089,19 @@ def gather(
         if not event_id:
             continue
 
-        # ----------------------------------------------------
-        # DETERMINE KICKOFF
-        # ----------------------------------------------------
+        # ====================================================
+        # KICKOFF
+        # ====================================================
 
-        timestamp = (
-            event.get(
-                "estimateStartTime"
-            )
-            or 0
+        timestamp = _event_time(
+            event
         )
 
         try:
 
-            kickoff = (
-                datetime.fromtimestamp(
-                    timestamp / 1000,
-                    tz=timezone.utc,
-                )
+            kickoff = datetime.fromtimestamp(
+                timestamp,
+                tz=timezone.utc,
             )
 
         except Exception:
@@ -2471,9 +2120,9 @@ def gather(
             / 60
         )
 
-        # ----------------------------------------------------
-        # MARKET DETAILS
-        # ----------------------------------------------------
+        # ====================================================
+        # SPORTYBET MARKETS
+        # ====================================================
 
         markets = (
             details.get(
@@ -2485,63 +2134,53 @@ def gather(
             or []
         )
 
-        # ----------------------------------------------------
-        # CORNER MARKET REFRESH
-        # ----------------------------------------------------
-        #
-        # SportyBet may expose corner markets only close to
-        # kickoff.
-        #
-        # If the match is within 60 minutes, refresh its
-        # detailed markets rather than trusting an older cache.
-        # ----------------------------------------------------
+        # ====================================================
+        # NEAR-KICKOFF REFRESH
+        # ====================================================
 
         if (
-            minutes_to_kickoff <= 60
-            and minutes_to_kickoff >= -5
+            -5
+            <= minutes_to_kickoff
+            <= 60
         ):
 
             try:
 
-                fresh_markets = (
+                fresh = (
                     provider._event_markets_cached(
                         event_id,
                         force_refresh=True,
                     )
                 )
 
-                if fresh_markets:
-                    markets = fresh_markets
+                if fresh:
+                    markets = fresh
 
             except TypeError:
 
-                # Backward compatibility if another provider
-                # implementation does not accept force_refresh.
                 try:
 
-                    markets = (
+                    fresh = (
                         provider._event_markets_cached(
-                            event_id,
+                            event_id
                         )
-                        or markets
                     )
+
+                    if fresh:
+                        markets = fresh
 
                 except Exception:
                     pass
 
-            except Exception as exc:
-
-                print(
-                    "Near-kickoff market refresh failed:",
-                    exc,
-                )
+            except Exception:
+                pass
 
         if not markets:
             continue
 
-        # ----------------------------------------------------
-        # MATCH SPORTYBET TO API-FOOTBALL
-        # ----------------------------------------------------
+        # ====================================================
+        # FOOTBALL FIXTURE MATCHING
+        # ====================================================
 
         fixture = _get_fixture(
             event
@@ -2550,9 +2189,9 @@ def gather(
         if not fixture:
             continue
 
-        # ----------------------------------------------------
+        # ====================================================
         # FOOTBALL FACTS
-        # ----------------------------------------------------
+        # ====================================================
 
         facts = _get_facts(
             fixture
@@ -2561,7 +2200,12 @@ def gather(
         if not facts:
             continue
 
+        # Count only successfully matched football data.
         football_studied += 1
+
+        # ====================================================
+        # CREATE SPORTYBET CANDIDATES
+        # ====================================================
 
         candidates = event_candidates(
             event,
@@ -2599,21 +2243,21 @@ def gather(
             )
         )
 
-        # ----------------------------------------------------
-        # EVALUATE EVERY MARKET
-        # ----------------------------------------------------
+        # ====================================================
+        # EVALUATE MARKETS
+        # ====================================================
 
         for candidate in candidates:
 
             if time.time() >= deadline:
                 break
 
-            kind = candidate[
+            kind = candidate.get(
                 "kind"
-            ]
+            )
 
             # ------------------------------------------------
-            # STRAIGHT WIN
+            # STRAIGHT WIN MODE
             # ------------------------------------------------
 
             if straight_only:
@@ -2638,8 +2282,6 @@ def gather(
                 "corners_1h",
             ):
 
-                # Corner markets are not reliable enough
-                # to depend on far before kickoff.
                 if minutes_to_kickoff > 60:
                     continue
 
@@ -2656,18 +2298,14 @@ def gather(
             if not odd or odd <= 1:
                 continue
 
-            min_odd = MIN_ODDS.get(
+            if odd < MIN_ODDS.get(
                 kind,
                 1.01,
-            )
-
-            if odd < min_odd:
+            ):
                 continue
 
-            corner_cap = (
-                MAX_ODDS_KIND.get(
-                    kind
-                )
+            corner_cap = MAX_ODDS_KIND.get(
+                kind
             )
 
             if (
@@ -2680,15 +2318,17 @@ def gather(
                 continue
 
             # ------------------------------------------------
-            # EXCLUSIONS
+            # EXCLUSION
             # ------------------------------------------------
 
-            if (
+            exclusion_key = (
                 event_id,
                 candidate.get(
                     "key"
                 ),
-            ) in exclude:
+            )
+
+            if exclusion_key in exclude:
                 continue
 
             # ------------------------------------------------
@@ -2712,14 +2352,14 @@ def gather(
             )
 
             # ------------------------------------------------
-            # QUALITY GATE
+            # QUALITY
             # ------------------------------------------------
 
             if quality < quality_floor:
                 continue
 
             # ------------------------------------------------
-            # MARKET-SPECIFIC PROBABILITY GATE
+            # MARKET-SPECIFIC FOOTBALL FLOOR
             # ------------------------------------------------
 
             market_floor = (
@@ -2734,7 +2374,7 @@ def gather(
                 continue
 
             # ------------------------------------------------
-            # NEVER USE BOOKMAKER PROBABILITY
+            # ODDS NEVER BECOME PROBABILITY
             # ------------------------------------------------
 
             candidate[
@@ -2745,20 +2385,18 @@ def gather(
             # DUPLICATE LABEL
             # ------------------------------------------------
 
-            if candidate[
+            label = candidate.get(
                 "label"
-            ] in labels:
-                continue
-
-            labels.add(
-                candidate[
-                    "label"
-                ]
             )
 
-            # ------------------------------------------------
-            # MATCH METADATA
-            # ------------------------------------------------
+            if label in labels:
+                continue
+
+            labels.add(label)
+
+            # =================================================
+            # MATCH INFORMATION
+            # =================================================
 
             candidate.update(
                 {
@@ -2795,6 +2433,10 @@ def gather(
             kept.append(
                 candidate
             )
+
+        # ====================================================
+        # SAVE MATCH GROUP
+        # ====================================================
 
         if kept:
 
@@ -2841,24 +2483,6 @@ def gather(
         :max_groups
     ]
 
-    elapsed = (
-        time.time()
-        - started
-    )
-
-    print(
-        "evidence-first gather:",
-        len(events),
-        "SportyBet matches,",
-        len(details),
-        "market details,",
-        football_studied,
-        "football matches studied,",
-        len(groups),
-        "usable groups,",
-        f"{elapsed:.1f}s",
-    )
-
     return (
         groups,
         len(events),
@@ -2876,10 +2500,7 @@ def _product(picks):
     total = 1.0
 
     for pick in picks:
-
-        total *= pick[
-            "odd"
-        ]
+        total *= pick["odd"]
 
     return total
 
@@ -2996,20 +2617,18 @@ def _dp(
                 if dp[x] == INF:
                     continue
 
+                destination = (
+                    x + weight
+                )
+
                 value = (
                     dp[x]
                     + cost
                 )
 
-                destination = (
-                    x + weight
-                )
-
                 if (
                     value
-                    < new[
-                        destination
-                    ]
+                    < new[destination]
                 ):
 
                     new[
@@ -3036,21 +2655,14 @@ def _dp(
         max_weight + 1,
     ):
 
-        if dp[
-            weight
-        ] == INF:
+        if dp[weight] == INF:
             continue
 
         if (
             best is None
-            or dp[
-                weight
-            ]
-            < dp[
-                best
-            ]
+            or dp[weight]
+            < dp[best]
         ):
-
             best = weight
 
     if best is None:
@@ -3080,9 +2692,7 @@ def _dp(
         picked.append(
             groups[
                 group_index
-            ][
-                candidate_index
-            ]
+            ][candidate_index]
         )
 
         x = previous_x
@@ -3102,9 +2712,7 @@ def _dp(
         if event_id in used:
             continue
 
-        used.add(
-            event_id
-        )
+        used.add(event_id)
 
         final.append(
             pick
@@ -3112,6 +2720,10 @@ def _dp(
 
     return final
 
+
+# ============================================================
+# EXACT TARGET DP
+# ============================================================
 
 def _dp_exact(
     groups,
@@ -3141,12 +2753,9 @@ def _dp_exact(
             and (
                 best is None
                 or actual
-                < _product(
-                    best
-                )
+                < _product(best)
             )
         ):
-
             best = picks
 
         if (
@@ -3154,7 +2763,6 @@ def _dp_exact(
             <= actual
             <= target * 1.10
         ):
-
             return picks
 
         if actual <= 1:
@@ -3181,9 +2789,7 @@ def _kind_counts(picks):
 
     for pick in picks:
 
-        kind = pick[
-            "kind"
-        ]
+        kind = pick["kind"]
 
         counts[kind] = (
             counts.get(
@@ -3212,28 +2818,27 @@ def choose_target(
             False,
         )
 
+    # First try mathematical target construction.
     picks = _dp_exact(
         groups,
         target,
     )
 
     if picks:
-
         return (
             picks,
             True,
         )
 
-    # --------------------------------------------------------
-    # IMPORTANT FIX:
+    # ========================================================
+    # FALLBACK
+    # ========================================================
     #
-    # The old fallback selected only the BEST candidate from
-    # each group.
+    # IMPORTANT:
+    # Do not only use the best candidate from each match.
     #
-    # That could throw away useful alternatives.
-    #
-    # We now examine every football-supported candidate.
-    # --------------------------------------------------------
+    # Every football-supported candidate remains available.
+    # ========================================================
 
     candidates = [
         candidate
@@ -3264,6 +2869,14 @@ def choose_target(
 
     counts = {}
 
+    reference_count = max(
+        5,
+        min(
+            MAX_LEGS,
+            12,
+        ),
+    )
+
     for candidate in candidates:
 
         event_id = candidate.get(
@@ -3278,17 +2891,6 @@ def choose_target(
         )
 
         if caps:
-
-            # Use the target size as a rough diversification
-            # reference rather than letting one market consume
-            # the entire ticket.
-            reference_count = max(
-                5,
-                min(
-                    MAX_LEGS,
-                    12,
-                ),
-            )
 
             cap = max(
                 1,
@@ -3349,6 +2951,12 @@ def choose_count(
     count,
     caps=True,
 ):
+
+    if not groups or count <= 0:
+        return (
+            [],
+            False,
+        )
 
     candidates = sorted(
         (
@@ -3495,10 +3103,15 @@ def _confidence(
 
 def _fmt(value):
 
-    if value == int(value):
-        return str(
-            int(value)
-        )
+    try:
+
+        if value == int(value):
+            return str(
+                int(value)
+            )
+
+    except Exception:
+        pass
 
     return f"{value:g}"
 
@@ -3534,19 +3147,6 @@ def build_ticket(
     else:
 
         floor = 1.05
-
-    # --------------------------------------------------------
-    # ONE SEARCH ONLY
-    #
-    # IMPORTANT:
-    #
-    # The old version applied an extra 0.015 probability
-    # penalty for targets <=20.
-    #
-    # That was removed.
-    #
-    # Market-specific football gates now control selection.
-    # --------------------------------------------------------
 
     (
         groups,
@@ -3644,6 +3244,15 @@ def _reset_straight():
 
 
 # ============================================================
+# SAFE ORIGINAL FLOW
+# ============================================================
+
+_orig_flow = (
+    bot.prediction_ticket_flow
+)
+
+
+# ============================================================
 # MAIN FLOW
 # ============================================================
 
@@ -3673,10 +3282,8 @@ def flow(
         bot.send_message(
             chat_id,
             (
-                "❌ The football evidence engine "
-                "is unavailable right now. "
-                "I won't generate a prediction "
-                "from SportyBet odds alone."
+                "❌ Football analysis is "
+                "temporarily unavailable."
             ),
         )
 
@@ -3750,16 +3357,13 @@ def flow(
     if search_days is not None:
 
         try:
-
             search_days = int(
                 search_days
             )
-
         except (
             TypeError,
             ValueError,
         ):
-
             search_days = None
 
         if search_days not in (
@@ -3770,7 +3374,6 @@ def flow(
             7,
             14,
         ):
-
             search_days = None
 
         if search_days is not None:
@@ -3790,9 +3393,7 @@ def flow(
                         second=0,
                         microsecond=0,
                     )
-                    + timedelta(
-                        days=1
-                    )
+                    + timedelta(days=1)
                 )
 
                 req[
@@ -3841,7 +3442,7 @@ def flow(
         count = 5
 
     # ========================================================
-    # STRAIGHT WIN
+    # STRAIGHT WIN / 1UP / 2UP
     # ========================================================
 
     straight_only = bool(
@@ -3870,7 +3471,7 @@ def flow(
             )
         )
 
-        if has_1up and has_2up:
+        if has_1up or has_2up:
             straight_only = True
 
     straight_today = (
@@ -3961,10 +3562,7 @@ def flow(
             chat_id,
             (
                 "❌ The prediction engine "
-                "could not complete the analysis.\n"
-                + html.escape(
-                    str(exc)[:200]
-                )
+                "could not complete the analysis."
             ),
         )
 
@@ -3985,6 +3583,7 @@ def flow(
         "chosen"
     ]
 
+    # Internal server log only.
     print(
         f"Evidence-first ticket built "
         f"in {elapsed:.1f}s: "
@@ -3999,22 +3598,26 @@ def flow(
     # ========================================================
     # NO PICKS
     # ========================================================
+    #
+    # IMPORTANT:
+    #
+    # Do NOT expose:
+    #   - SportyBet matches checked
+    #   - football matches studied
+    #   - usable groups
+    #   - backend diagnostics
+    #
+    # The user only needs the useful result.
+    # ========================================================
 
     if not chosen:
 
         bot.send_message(
             chat_id,
             (
-                "❌ No football-supported "
-                "selection passed the evidence "
-                "gates in that window.\n\n"
-                f"🔎 SportyBet matches checked: "
-                f"{built.get('events', 0)}\n"
-                f"🧠 Football matches studied: "
-                f"{built.get('studied', 0)}\n\n"
-                "I rejected weak matches instead "
-                "of using SportyBet odds to "
-                "manufacture confidence."
+                "❌ I couldn't find a football "
+                "selection strong enough to recommend "
+                "for that request."
             ),
         )
 
@@ -4032,17 +3635,10 @@ def flow(
             candidate
             for candidate in chosen
             if (
-                candidate.get(
-                    "kind"
-                )
+                candidate.get("kind")
                 == "up"
-                and candidate.get(
-                    "up_n"
-                )
-                in (
-                    1,
-                    2,
-                )
+                and candidate.get("up_n")
+                in (1, 2)
             )
         ]
 
@@ -4068,9 +3664,7 @@ def flow(
         straight_only
         and straight_today
         and target
-        and not built[
-            "reached"
-        ]
+        and not built["reached"]
     ):
 
         actual = _product(
@@ -4080,11 +3674,12 @@ def flow(
         bot.send_message(
             chat_id,
             (
-                f"❌ Today only reaches about "
-                f"{actual:.1f} odds.\n"
+                f"❌ Today's football-supported "
+                f"1UP / 2UP selections only reach "
+                f"about {actual:.1f} odds.\n"
                 f"Target: {_fmt(target)}.\n\n"
-                "I won't add weak 1UP / 2UP "
-                "picks just to force the target."
+                "I won't add weak selections "
+                "just to force the target."
             ),
         )
 
@@ -4098,9 +3693,7 @@ def flow(
 
     chosen.sort(
         key=lambda candidate:
-            candidate[
-                "kickoff"
-            ]
+            candidate["kickoff"]
     )
 
     # ========================================================
@@ -4146,14 +3739,10 @@ def flow(
             provider.create_booking_code(
                 [
                     (
-                        candidate[
-                            "event"
-                        ],
+                        candidate["event"],
                         {
                             "resolved_key":
-                                candidate[
-                                    "key"
-                                ]
+                                candidate["key"]
                         },
                     )
                     for candidate in chosen
@@ -4169,8 +3758,7 @@ def flow(
         )
 
         errors.append(
-            "Booking code failed: "
-            + str(exc)
+            "Booking code could not be created."
         )
 
     # ========================================================
@@ -4188,13 +3776,10 @@ def flow(
     today = local_now.date()
 
     if target:
-
         title = (
             f"{_fmt(target)} ODDS"
         )
-
     else:
-
         title = (
             f"{len(chosen)} PICKS"
         )
@@ -4239,41 +3824,29 @@ def flow(
         )
 
         league_text = html.escape(
-            candidate[
-                "league"
-            ]
+            candidate["league"]
         )
 
         home_text = html.escape(
-            candidate[
-                "home"
-            ]
+            candidate["home"]
         )
 
         away_text = html.escape(
-            candidate[
-                "away"
-            ]
+            candidate["away"]
         )
 
         label_text = html.escape(
-            candidate[
-                "label"
-            ]
+            candidate["label"]
         )
 
-        probability = (
-            candidate.get(
-                "p",
-                0,
-            )
+        probability = candidate.get(
+            "p",
+            0,
         )
 
-        quality = (
-            candidate.get(
-                "evidence_quality",
-                0,
-            )
+        quality = candidate.get(
+            "evidence_quality",
+            0,
         )
 
         confidence = _confidence(
@@ -4313,11 +3886,13 @@ def flow(
         lines.append(
             "💬 "
             + html.escape(
-                candidate[
-                    "reason"
-                ]
+                candidate["reason"]
             )
         )
+
+    # ========================================================
+    # TOTALS
+    # ========================================================
 
     lines.extend(
         [
@@ -4337,27 +3912,25 @@ def flow(
         ]
     )
 
-    if target and not built[
-        "reached"
-    ]:
+    if target and not built["reached"]:
 
         lines.append(
             f"⚠️ I could not safely reach "
             f"{_fmt(target)} odds."
         )
 
-    if built[
-        "note"
-    ]:
+    if built["note"]:
 
         lines.append(
             "ℹ️ "
             + html.escape(
-                built[
-                    "note"
-                ]
+                built["note"]
             )
         )
+
+    # ========================================================
+    # MARKET MIX
+    # ========================================================
 
     mix = _kind_counts(
         chosen
@@ -4380,6 +3953,10 @@ def flow(
         )
     )
 
+    # ========================================================
+    # BOOKING CODE
+    # ========================================================
+
     if code:
 
         lines.append(
@@ -4391,27 +3968,17 @@ def flow(
             f"</b>"
         )
 
-    lines.append(
-        f"🔎 Checked "
-        f"{built['events']} SportyBet "
-        f"matches."
-    )
-
-    lines.append(
-        f"🧠 Football matches actually "
-        f"studied: "
-        f"{built.get('studied', 0)}"
-    )
-
-    if built.get(
-        "usable_groups",
-        0,
-    ):
+    else:
 
         lines.append(
-            f"📚 Usable football match groups: "
-            f"{built['usable_groups']}"
+            "⚠️ The selections were generated, "
+            "but SportyBet did not return a "
+            "booking code."
         )
+
+    # ========================================================
+    # LARGE ODDS WARNING
+    # ========================================================
 
     if (
         len(chosen) >= 12
@@ -4424,25 +3991,28 @@ def flow(
             "to land. Stake small."
         )
 
+    # ========================================================
+    # GENERAL DISCLAIMER
+    # ========================================================
+
     lines.append(
         "⚠️ Predictions are estimates, "
         "not guarantees. 18+."
     )
 
-    for error in errors:
+    # Do not expose internal backend errors.
+    if errors:
 
         lines.append(
             "⚠️ "
             + html.escape(
-                error[:160]
+                errors[0]
             )
         )
 
     bot.send_message(
         chat_id,
-        "\n".join(
-            lines
-        ),
+        "\n".join(lines),
     )
 
     _reset_straight()
@@ -4451,10 +4021,6 @@ def flow(
 # ============================================================
 # REPLACE MAIN TICKET FLOW
 # ============================================================
-
-_orig_flow = (
-    bot.prediction_ticket_flow
-)
 
 bot.prediction_ticket_flow = flow
 
@@ -4489,12 +4055,6 @@ def _start_warmer():
     )
 
     if provider is None:
-
-        print(
-            "SportyBet provider unavailable; "
-            "warmer not started."
-        )
-
         return
 
     def refresh():
@@ -4502,23 +4062,17 @@ def _start_warmer():
         if not _WARM_LOCK.acquire(
             blocking=False
         ):
-
             return
 
         try:
-
-            print(
-                "SportyBet background "
-                "refresh starting..."
-            )
 
             provider._events_time = 0
 
             provider._load_events()
 
             print(
-                "SportyBet background "
-                "refresh complete."
+                "SportyTips SportyBet "
+                "background refresh complete."
             )
 
         except Exception as exc:
@@ -4526,7 +4080,7 @@ def _start_warmer():
             print(
                 "SportyBet background "
                 "refresh failed:",
-                exc,
+                repr(exc),
             )
 
         finally:
@@ -4535,8 +4089,7 @@ def _start_warmer():
 
     def loop():
 
-        # Don't compete with the first request immediately
-        # after Render starts.
+        # Give Render time to finish startup.
         time.sleep(30)
 
         threading.Thread(
@@ -4546,11 +4099,7 @@ def _start_warmer():
 
         while True:
 
-            # Refresh every 10 minutes rather than every
-            # 5 minutes so background traffic is lighter.
-            time.sleep(
-                600
-            )
+            time.sleep(600)
 
             threading.Thread(
                 target=refresh,

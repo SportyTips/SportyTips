@@ -69,9 +69,7 @@ try:
     import football_data as fd
 
 except Exception as e:
-
     fd = None
-
     print(
         "FOOTBALL_DATA IMPORT ERROR:",
         repr(e),
@@ -84,30 +82,35 @@ BRAND = "SPORTYTIPS"
 # ============================================================
 # SPEED / SAFETY SETTINGS
 # ============================================================
-
-# SportyBet matches that can be inspected for detailed markets.
 #
-# This is deliberately much larger than the old value of 10.
-MAX_DETAIL_EVENTS = 80
+# IMPORTANT:
+#
+# The old version could do:
+#
+#   gather → 90 sec
+#   gather → 90 sec
+#   gather → 90 sec
+#   gather → 90 sec
+#
+# That is what caused the 5-minute+ waiting problem.
+#
+# This version performs ONE controlled scan per request.
+# ============================================================
 
-# Straight Win needs a wider search because it only accepts
-# 1UP / 2UP.
-STRAIGHT_DETAIL_EVENTS = 100
+MAX_DETAIL_EVENTS = 50
 
-# More workers = faster SportyBet market loading.
-DETAIL_WORKERS = 10
+STRAIGHT_DETAIL_EVENTS = 60
 
-# Maximum time allowed for detailed SportyBet market loading.
-DETAIL_SECONDS = 15
+DETAIL_WORKERS = 8
 
-# Local market cache.
+DETAIL_SECONDS = 10
+
 MAX_CACHED_MATCHES = 150
 
 MAX_PAGES = 15
 
 MAX_LEGS = 30
 
-# Maximum football-supported alternatives retained per match.
 MAX_OPTIONS_PER_MATCH = 6
 
 GROUP_LIMIT = 100
@@ -116,15 +119,19 @@ OVERSHOOT = 0.08
 
 
 # ============================================================
-# FOOTBALL ENGINE SETTINGS
+# HARD REQUEST BUDGET
+# ============================================================
+#
+# This is the important protection.
+#
+# We don't allow the football evidence pass to run forever.
 # ============================================================
 
-# football_data.py should also have a similar enrichment limit.
-#
-# This is the smart_ticket-side protection.
-FOOTBALL_MAX_STUDIED = 30
+FOOTBALL_MAX_STUDIED = 12
 
-FOOTBALL_STUDY_SECONDS = 90
+FOOTBALL_STUDY_SECONDS = 30
+
+GATHER_SECONDS = 40
 
 
 # ============================================================
@@ -153,16 +160,11 @@ MIN_EVIDENCE_QUALITY = {
 # ODDS LIMITS
 # ============================================================
 #
-# IMPORTANT:
+# These DO NOT create probability.
 #
-# These are NOT used to calculate football probability.
-#
-# They only stop obviously extreme prices from being selected.
-#
-# We deliberately make these much wider than the old 2.00/2.40
-# limits because otherwise good football-supported markets could
-# be rejected before the engine gets a chance to use them.
-#
+# They only prevent obviously extreme prices from being
+# selected.
+# ============================================================
 
 MAX_SELECTION_ODDS = {
     "safe": 4.00,
@@ -193,10 +195,6 @@ MIN_ODDS = {
 # ============================================================
 # CORNER ODDS LIMIT
 # ============================================================
-#
-# Corner markets can be useful, but only when football_data.py
-# actually has reliable corner information.
-#
 
 MAX_ODDS_KIND = {
     "corners": 3.50,
@@ -208,9 +206,9 @@ MAX_ODDS_KIND = {
 # SMALL SORTING BONUSES
 # ============================================================
 #
-# These are NOT probability.
-# They are only tie-breakers.
-#
+# These are ONLY tie-breakers.
+# They are not probability.
+# ============================================================
 
 KIND_BONUS = {
     "up": 0.010,
@@ -270,7 +268,6 @@ KIND_NAME = {
 # ============================================================
 
 def football_engine_available():
-
     return fd is not None
 
 
@@ -280,13 +277,11 @@ def _football_diag():
         return ""
 
     try:
-
         return str(
             fd.diag_summary()
         )
 
     except Exception:
-
         return ""
 
 
@@ -297,7 +292,6 @@ def _football_diag():
 def _f(value):
 
     try:
-
         return sp._float(
             value
         )
@@ -305,13 +299,11 @@ def _f(value):
     except Exception:
 
         try:
-
             return float(
                 value
             )
 
         except Exception:
-
             return None
 
 
@@ -322,13 +314,11 @@ def _clamp(
 ):
 
     try:
-
         value = float(
             value
         )
 
     except Exception:
-
         return None
 
     return max(
@@ -369,31 +359,25 @@ def _side_of(
     if label.startswith(
         "home"
     ):
-
         return "home"
 
     if label.startswith(
         "away"
     ):
-
         return "away"
 
     if label.startswith(
         "draw"
     ):
-
         return None
 
     if oid == "1":
-
         return "home"
 
     if oid == "3":
-
         return "away"
 
     if two_way and oid == "2":
-
         return "away"
 
     return None
@@ -445,20 +429,17 @@ def _up_candidates(
             continue
 
         try:
-
             up_number = int(
                 found.group(1)
             )
 
         except Exception:
-
             continue
 
         if up_number not in (
             1,
             2,
         ):
-
             continue
 
         spec = (
@@ -476,7 +457,6 @@ def _up_candidates(
                 )
                 is False
             ):
-
                 continue
 
             side = _side_of(
@@ -487,7 +467,6 @@ def _up_candidates(
                 "home",
                 "away",
             ):
-
                 continue
 
             odd = _f(
@@ -497,7 +476,6 @@ def _up_candidates(
             )
 
             if not odd or odd <= 1:
-
                 continue
 
             team = (
@@ -547,7 +525,6 @@ def _either_half_candidates(
         sp,
         "find_either_half",
     ):
-
         return
 
     for side in (
@@ -556,7 +533,6 @@ def _either_half_candidates(
     ):
 
         try:
-
             result = (
                 sp.find_either_half(
                     markets,
@@ -565,7 +541,6 @@ def _either_half_candidates(
             )
 
         except Exception:
-
             result = None
 
         if not result:
@@ -595,7 +570,6 @@ def _either_half_candidates(
         ):
 
             if len(result) >= 2:
-
                 key = result[0]
                 odd = _f(
                     result[1]
@@ -611,7 +585,6 @@ def _either_half_candidates(
         )
 
         if not key:
-
             continue
 
         add(
@@ -661,7 +634,6 @@ def event_candidates(
             not odd
             or odd <= 1
         ):
-
             return
 
         item = {
@@ -731,8 +703,7 @@ def event_candidates(
         )
 
     # ========================================================
-    # TOTAL GOALS
-    # OVER ONLY
+    # TOTAL GOALS — OVER ONLY
     # ========================================================
 
     for market in markets or []:
@@ -745,7 +716,6 @@ def event_candidates(
                 sp.M_TOTAL
             )
         ):
-
             continue
 
         spec = (
@@ -758,7 +728,6 @@ def event_candidates(
         if not spec.startswith(
             "total="
         ):
-
             continue
 
         line = _f(
@@ -774,11 +743,9 @@ def event_candidates(
             2.5,
             3.5,
         ):
-
             continue
 
         over = None
-        under = None
 
         for outcome in market.get(
             "outcomes",
@@ -791,7 +758,6 @@ def event_candidates(
                 )
                 is False
             ):
-
                 continue
 
             oid = str(
@@ -807,18 +773,6 @@ def event_candidates(
             ):
 
                 over = _f(
-                    outcome.get(
-                        "odds"
-                    )
-                )
-
-            elif oid == str(
-                sp.OUT_TOTAL[
-                    "under"
-                ]
-            ):
-
-                under = _f(
                     outcome.get(
                         "odds"
                     )
@@ -901,7 +855,6 @@ def event_candidates(
                     market_id
                 )
             ):
-
                 continue
 
             spec = (
@@ -914,7 +867,6 @@ def event_candidates(
             if not spec.startswith(
                 "total="
             ):
-
                 continue
 
             line = _f(
@@ -928,7 +880,6 @@ def event_candidates(
                 0.5,
                 1.5,
             ):
-
                 continue
 
             over = None
@@ -944,7 +895,6 @@ def event_candidates(
                     )
                     is False
                 ):
-
                     continue
 
                 oid = str(
@@ -988,16 +938,6 @@ def event_candidates(
     # CORNERS
     # ========================================================
 
-    #
-    # IMPORTANT:
-    #
-    # SportyBet may only expose these markets shortly before
-    # kickoff. We collect them when they exist.
-    #
-    # football_data.py decides whether they are actually
-    # supported by football evidence.
-    #
-
     for market_id, half, lines in (
         (
             sp.M_CORNERS,
@@ -1026,7 +966,6 @@ def event_candidates(
                     market_id
                 )
             ):
-
                 continue
 
             spec = (
@@ -1039,7 +978,6 @@ def event_candidates(
             if not spec.startswith(
                 "total="
             ):
-
                 continue
 
             line = _f(
@@ -1065,7 +1003,6 @@ def event_candidates(
                     )
                     is False
                 ):
-
                     continue
 
                 oid = str(
@@ -1134,7 +1071,6 @@ def event_candidates(
                 sp.M_ASIAN_HANDICAP
             ),
         ):
-
             continue
 
         spec = (
@@ -1147,7 +1083,6 @@ def event_candidates(
         if not spec.startswith(
             "hcp="
         ):
-
             continue
 
         kind = (
@@ -1170,7 +1105,6 @@ def event_candidates(
                 )
                 is False
             ):
-
                 continue
 
             side = _side_of(
@@ -1181,7 +1115,6 @@ def event_candidates(
                 "home",
                 "away",
             ):
-
                 continue
 
             odd = _f(
@@ -1203,7 +1136,6 @@ def event_candidates(
                 or ""
             )
 
-            # Positive handicaps ONLY.
             if "+" not in label:
                 continue
 
@@ -1238,44 +1170,21 @@ def event_candidates(
 # MARKET SLIMMING
 # ============================================================
 
-_DETAIL_LOCK = threading.Lock()
-
-
 def _slim_markets(markets):
 
     keep = []
 
     wanted_ids = {
-        str(
-            sp.M_1X2
-        ),
-        str(
-            sp.M_DC
-        ),
-        str(
-            sp.M_TOTAL
-        ),
-        str(
-            sp.M_BTTS
-        ),
-        str(
-            sp.M_HOME_TEAM_GOALS
-        ),
-        str(
-            sp.M_AWAY_TEAM_GOALS
-        ),
-        str(
-            sp.M_CORNERS
-        ),
-        str(
-            sp.M_CORNERS_1H
-        ),
-        str(
-            sp.M_HANDICAP
-        ),
-        str(
-            sp.M_ASIAN_HANDICAP
-        ),
+        str(sp.M_1X2),
+        str(sp.M_DC),
+        str(sp.M_TOTAL),
+        str(sp.M_BTTS),
+        str(sp.M_HOME_TEAM_GOALS),
+        str(sp.M_AWAY_TEAM_GOALS),
+        str(sp.M_CORNERS),
+        str(sp.M_CORNERS_1H),
+        str(sp.M_HANDICAP),
+        str(sp.M_ASIAN_HANDICAP),
     }
 
     for market in markets or []:
@@ -1312,13 +1221,12 @@ def _slim_markets(markets):
             in text.lower()
         ):
 
+            lower = text.lower()
+
             if (
-                "both"
-                not in text.lower()
-                and "1st"
-                not in text.lower()
-                and "2nd"
-                not in text.lower()
+                "both" not in lower
+                and "1st" not in lower
+                and "2nd" not in lower
             ):
 
                 keep.append(
@@ -1331,6 +1239,9 @@ def _slim_markets(markets):
 # ============================================================
 # DETAILED MARKET CACHE
 # ============================================================
+
+_DETAIL_LOCK = threading.Lock()
+
 
 def _event_markets_cached(
     self,
@@ -1359,22 +1270,13 @@ def _event_markets_cached(
 
     if cached:
 
-        timestamp, markets = (
-            cached
-        )
+        timestamp, markets = cached
 
         cache_seconds = getattr(
             sp,
             "UP_MARKETS_CACHE_SECONDS",
             180,
         )
-
-        # ----------------------------------------------------
-        # Corners are a late-refresh market.
-        #
-        # Within 60 minutes of kickoff, do not keep stale
-        # detailed markets for too long.
-        # ----------------------------------------------------
 
         if (
             now - timestamp
@@ -1455,7 +1357,6 @@ def _get_fixture(event):
 def _get_facts(fixture):
 
     if fd is None or not fixture:
-
         return None
 
     try:
@@ -1480,7 +1381,6 @@ def _football_probability(
 ):
 
     if fd is None or facts is None:
-
         return None
 
     try:
@@ -1491,7 +1391,6 @@ def _football_probability(
         )
 
         if probability is None:
-
             return None
 
         return _clamp(
@@ -1517,14 +1416,9 @@ def _football_probability(
 def _facts_quality(facts):
 
     if not facts:
-
         return 0.0
 
     scores = []
-
-    # --------------------------------------------------------
-    # FORM
-    # --------------------------------------------------------
 
     home_form = facts.get(
         "home_form"
@@ -1539,22 +1433,14 @@ def _facts_quality(facts):
         and away_form
     ):
 
-        scores.append(
-            1.0
-        )
+        scores.append(1.0)
 
     elif (
         home_form
         or away_form
     ):
 
-        scores.append(
-            0.55
-        )
-
-    # --------------------------------------------------------
-    # GOALS
-    # --------------------------------------------------------
+        scores.append(0.55)
 
     required_goal_fields = (
         "home_gf",
@@ -1565,35 +1451,17 @@ def _facts_quality(facts):
 
     present_goals = sum(
         1
-        for key
-        in required_goal_fields
-        if facts.get(
-            key
-        ) is not None
+        for key in required_goal_fields
+        if facts.get(key) is not None
     )
 
     if present_goals == 4:
 
-        scores.append(
-            1.0
-        )
+        scores.append(1.0)
 
     elif present_goals >= 2:
 
-        scores.append(
-            0.65
-        )
-
-    # --------------------------------------------------------
-    # VENUE
-    #
-    # football_data.py supports the actual names:
-    #
-    # home_venue
-    # away_venue
-    #
-    # We also support old aliases.
-    # --------------------------------------------------------
+        scores.append(0.65)
 
     home_venue = (
         facts.get(
@@ -1624,19 +1492,11 @@ def _facts_quality(facts):
 
     if venue_present == 2:
 
-        scores.append(
-            1.0
-        )
+        scores.append(1.0)
 
     elif venue_present:
 
-        scores.append(
-            0.60
-        )
-
-    # --------------------------------------------------------
-    # H2H
-    # --------------------------------------------------------
+        scores.append(0.60)
 
     h2h_count = (
         facts.get(
@@ -1649,13 +1509,7 @@ def _facts_quality(facts):
 
     if h2h_count:
 
-        scores.append(
-            0.90
-        )
-
-    # --------------------------------------------------------
-    # API MODEL
-    # --------------------------------------------------------
+        scores.append(0.90)
 
     api_model = facts.get(
         "api_model"
@@ -1663,34 +1517,24 @@ def _facts_quality(facts):
 
     if api_model:
 
-        scores.append(
-            1.0
+        scores.append(1.0)
+
+    elif any(
+        facts.get(key) is not None
+        for key in (
+            "api_home",
+            "api_draw",
+            "api_away",
         )
+    ):
 
-    else:
-
-        if any(
-            facts.get(
-                key
-            ) is not None
-            for key in (
-                "api_home",
-                "api_draw",
-                "api_away",
-            )
-        ):
-
-            scores.append(
-                0.90
-            )
+        scores.append(0.90)
 
     if not scores:
-
         return 0.0
 
     return _clamp(
-        sum(scores)
-        / len(scores),
+        sum(scores) / len(scores),
         0.0,
         1.0,
     )
@@ -1707,7 +1551,6 @@ def _model_disagreement_penalty(
 ):
 
     if not facts:
-
         return 0.0
 
     api_model = facts.get(
@@ -1716,8 +1559,6 @@ def _model_disagreement_penalty(
 
     if not api_model:
 
-        # Build compatibility model if football_data.py
-        # exposes individual API probabilities.
         api_model = {
             "home": facts.get(
                 "api_home"
@@ -1731,7 +1572,6 @@ def _model_disagreement_penalty(
         }
 
     if not api_model:
-
         return 0.0
 
     kind = candidate.get(
@@ -1812,10 +1652,6 @@ def _model_disagreement_penalty(
 
         elif kind == "team_goals":
 
-            side = candidate.get(
-                "side"
-            )
-
             line = candidate.get(
                 "line"
             )
@@ -1845,7 +1681,6 @@ def _model_disagreement_penalty(
         api_p = None
 
     if api_p is None:
-
         return 0.0
 
     try:
@@ -1864,15 +1699,12 @@ def _model_disagreement_penalty(
         return 0.0
 
     if disagreement <= 0.10:
-
         return 0.0
 
     if disagreement <= 0.18:
-
         return 0.02
 
     if disagreement <= 0.25:
-
         return 0.04
 
     return 0.07
@@ -1894,7 +1726,6 @@ def _apply_evidence_score(
     )
 
     if raw_p is None:
-
         return None
 
     quality = _facts_quality(
@@ -1909,7 +1740,6 @@ def _apply_evidence_score(
         )
     )
 
-    # Only a modest penalty for incomplete evidence.
     missing_penalty = max(
         0.0,
         (
@@ -1969,13 +1799,11 @@ def _football_reason(
             )
 
             if reason:
-
                 return str(
                     reason
                 )
 
         except Exception:
-
             pass
 
     if not facts:
@@ -2099,6 +1927,43 @@ def _reason_for(
 
 
 # ============================================================
+# SELECT EVENT POOL
+# ============================================================
+
+def _select_event_pool(
+    events,
+    limit,
+):
+
+    """
+    Select a broad but controlled SportyBet pool.
+
+    We don't just blindly take the first few events if
+    SportyBet returns a large mixed list.
+
+    Events are sorted by kickoff time first.
+    """
+
+    valid = [
+        event
+        for event in events
+        if event.get("eventId")
+    ]
+
+    valid.sort(
+        key=lambda event:
+            event.get(
+                "estimateStartTime",
+                0,
+            )
+    )
+
+    return valid[
+        :limit
+    ]
+
+
+# ============================================================
 # GATHER
 # ============================================================
 
@@ -2131,13 +1996,38 @@ def gather(
         )
 
     # --------------------------------------------------------
+    # HARD GATHER DEADLINE
+    # --------------------------------------------------------
+
+    deadline = (
+        started
+        + GATHER_SECONDS
+    )
+
+    # --------------------------------------------------------
     # SPORTYBET FIXTURES
     # --------------------------------------------------------
 
-    events = provider.get_upcoming(
-        start,
-        end,
-    )
+    try:
+
+        events = provider.get_upcoming(
+            start,
+            end,
+        )
+
+    except Exception as exc:
+
+        print(
+            "SportyBet fixture loading failed:",
+            exc,
+        )
+
+        return (
+            [],
+            0,
+            0,
+            0,
+        )
 
     if not events:
 
@@ -2153,10 +2043,8 @@ def gather(
         )
 
     # --------------------------------------------------------
-    # LARGE SCAN POOL
+    # LARGE BUT CONTROLLED SCAN POOL
     # --------------------------------------------------------
-
-    wanted = []
 
     limit = (
         STRAIGHT_DETAIL_EVENTS
@@ -2164,29 +2052,27 @@ def gather(
         else MAX_DETAIL_EVENTS
     )
 
-    for event in events:
-
-        if not event.get(
-            "eventId"
-        ):
-
-            continue
-
-        wanted.append(
-            event
-        )
-
-        if len(wanted) >= limit:
-
-            break
+    wanted = _select_event_pool(
+        events,
+        limit,
+    )
 
     # --------------------------------------------------------
     # SPORTYBET MARKET DETAILS
     # --------------------------------------------------------
+    #
+    # We still inspect many matches, but only one controlled
+    # batch. No repeated market loading.
+    # --------------------------------------------------------
 
     details = {}
 
-    if wanted:
+    remaining = (
+        deadline
+        - time.time()
+    )
+
+    if wanted and remaining > 2:
 
         pool = ThreadPoolExecutor(
             max_workers=DETAIL_WORKERS
@@ -2202,9 +2088,17 @@ def gather(
 
         try:
 
+            timeout = min(
+                DETAIL_SECONDS,
+                max(
+                    1,
+                    remaining,
+                ),
+            )
+
             for future in as_completed(
                 futures,
-                timeout=DETAIL_SECONDS,
+                timeout=timeout,
             ):
 
                 event = futures[
@@ -2232,11 +2126,12 @@ def gather(
 
             print(
                 "Detailed market loading "
-                "timed out."
+                "reached time budget."
             )
 
         finally:
 
+            # Do not hold up the HTTP request.
             pool.shutdown(
                 wait=False,
                 cancel_futures=True,
@@ -2298,6 +2193,18 @@ def gather(
 
     for event in wanted:
 
+        # ----------------------------------------------------
+        # HARD GLOBAL TIME CHECK
+        # ----------------------------------------------------
+
+        if time.time() >= deadline:
+
+            print(
+                "Gather hard deadline reached."
+            )
+
+            break
+
         if (
             football_studied
             >= FOOTBALL_MAX_STUDIED
@@ -2310,6 +2217,10 @@ def gather(
             - football_started
             >= FOOTBALL_STUDY_SECONDS
         ):
+
+            print(
+                "Football study time budget reached."
+            )
 
             break
 
@@ -2328,7 +2239,6 @@ def gather(
         )
 
         if not markets:
-
             continue
 
         # ----------------------------------------------------
@@ -2340,15 +2250,17 @@ def gather(
         )
 
         if not fixture:
-
             continue
+
+        # ----------------------------------------------------
+        # FOOTBALL FACTS
+        # ----------------------------------------------------
 
         facts = _get_facts(
             fixture
         )
 
         if not facts:
-
             continue
 
         football_studied += 1
@@ -2358,15 +2270,24 @@ def gather(
             markets,
         )
 
+        if not candidates:
+            continue
+
         kept = []
 
         labels = set()
 
-        sporty_fixture = (
-            sp.sporty_fixture(
-                event
+        try:
+
+            sporty_fixture = (
+                sp.sporty_fixture(
+                    event
+                )
             )
-        )
+
+        except Exception:
+
+            sporty_fixture = {}
 
         league_name = (
             sporty_fixture
@@ -2406,10 +2327,6 @@ def gather(
                 timezone.utc
             )
 
-        # ----------------------------------------------------
-        # HOW CLOSE IS KICKOFF?
-        # ----------------------------------------------------
-
         minutes_to_kickoff = (
             (
                 kickoff
@@ -2421,23 +2338,26 @@ def gather(
         )
 
         # ----------------------------------------------------
-        # EVALUATE EVERY SPORTYBET MARKET
+        # EVALUATE EVERY MARKET
         # ----------------------------------------------------
 
         for candidate in candidates:
+
+            if time.time() >= deadline:
+
+                break
 
             kind = candidate[
                 "kind"
             ]
 
             # ------------------------------------------------
-            # Straight Win = ONLY 1UP / 2UP.
+            # STRAIGHT WIN
             # ------------------------------------------------
 
             if straight_only:
 
                 if kind != "up":
-
                     continue
 
                 if candidate.get(
@@ -2446,15 +2366,10 @@ def gather(
                     1,
                     2,
                 ):
-
                     continue
 
             # ------------------------------------------------
-            # Corners are only considered seriously when
-            # they are near kickoff.
-            #
-            # This prevents early absence of corner markets
-            # from killing otherwise good matches.
+            # CORNERS
             # ------------------------------------------------
 
             if kind in (
@@ -2467,9 +2382,7 @@ def gather(
                     continue
 
             # ------------------------------------------------
-            # Minimum odds.
-            #
-            # This is NOT probability.
+            # ODDS
             # ------------------------------------------------
 
             odd = _f(
@@ -2479,7 +2392,6 @@ def gather(
             )
 
             if not odd or odd <= 1:
-
                 continue
 
             min_odd = MIN_ODDS.get(
@@ -2488,12 +2400,7 @@ def gather(
             )
 
             if odd < min_odd:
-
                 continue
-
-            # ------------------------------------------------
-            # Corner odds cap.
-            # ------------------------------------------------
 
             corner_cap = (
                 MAX_ODDS_KIND.get(
@@ -2508,16 +2415,11 @@ def gather(
 
                 continue
 
-            # ------------------------------------------------
-            # General odds sanity limit.
-            # ------------------------------------------------
-
             if odd > max_odd:
-
                 continue
 
             # ------------------------------------------------
-            # Exclusions.
+            # EXCLUSIONS
             # ------------------------------------------------
 
             if (
@@ -2542,7 +2444,6 @@ def gather(
             )
 
             if probability is None:
-
                 continue
 
             quality = candidate.get(
@@ -2555,7 +2456,6 @@ def gather(
             # ------------------------------------------------
 
             if quality < quality_floor:
-
                 continue
 
             # ------------------------------------------------
@@ -2563,11 +2463,10 @@ def gather(
             # ------------------------------------------------
 
             if probability < min_p:
-
                 continue
 
             # ------------------------------------------------
-            # DO NOT USE BOOKMAKER PROBABILITY
+            # NEVER USE BOOKMAKER PROBABILITY
             # ------------------------------------------------
 
             candidate[
@@ -2629,10 +2528,6 @@ def gather(
             kept.append(
                 candidate
             )
-
-        # ----------------------------------------------------
-        # KEEP STRONGEST MARKETS FOR THIS MATCH
-        # ----------------------------------------------------
 
         if kept:
 
@@ -2709,9 +2604,7 @@ def gather(
 # ODDS PRODUCT
 # ============================================================
 
-def _product(
-    picks
-):
+def _product(picks):
 
     total = 1.0
 
@@ -2736,13 +2629,10 @@ def _dp(
     SCALE = 80
 
     if target <= 1:
-
         return None
 
     target_weight = math.ceil(
-        math.log(
-            target
-        )
+        math.log(target)
         * SCALE
     )
 
@@ -2760,9 +2650,7 @@ def _dp(
         ),
     )
 
-    INF = float(
-        "inf"
-    )
+    INF = float("inf")
 
     dp = [
         INF
@@ -2808,9 +2696,7 @@ def _dp(
                 continue
 
             weight = round(
-                math.log(
-                    odd
-                )
+                math.log(odd)
                 * SCALE
             )
 
@@ -2821,7 +2707,6 @@ def _dp(
 
                 continue
 
-            # Football probability is the cost.
             cost = (
                 -math.log(
                     probability
@@ -2844,7 +2729,6 @@ def _dp(
             ):
 
                 if dp[x] == INF:
-
                     continue
 
                 value = (
@@ -2890,7 +2774,6 @@ def _dp(
         if dp[
             weight
         ] == INF:
-
             continue
 
         if (
@@ -2906,7 +2789,6 @@ def _dp(
             best = weight
 
     if best is None:
-
         return None
 
     picked = []
@@ -2924,7 +2806,6 @@ def _dp(
         ][x]
 
         if step is None:
-
             continue
 
         candidate_index, previous_x = (
@@ -2943,7 +2824,6 @@ def _dp(
 
     picked.reverse()
 
-    # One match = one selection.
     used = set()
 
     final = []
@@ -2955,7 +2835,6 @@ def _dp(
         )
 
         if event_id in used:
-
             continue
 
         used.add(
@@ -2986,7 +2865,6 @@ def _dp_exact(
         )
 
         if not picks:
-
             break
 
         actual = _product(
@@ -3015,7 +2893,6 @@ def _dp_exact(
             return picks
 
         if actual <= 1:
-
             break
 
         aim = max(
@@ -3033,9 +2910,7 @@ def _dp_exact(
 # KIND COUNTS
 # ============================================================
 
-def _kind_counts(
-    picks
-):
+def _kind_counts(picks):
 
     counts = {}
 
@@ -3067,7 +2942,6 @@ def choose_target(
 ):
 
     if not groups:
-
         return (
             [],
             False,
@@ -3086,9 +2960,10 @@ def choose_target(
         )
 
     # --------------------------------------------------------
-    # Target cannot be reached.
+    # Target cannot be safely reached.
     #
-    # Do not manufacture weak selections.
+    # Return strongest available football selections instead
+    # of manufacturing weak selections.
     # --------------------------------------------------------
 
     ranked = []
@@ -3136,7 +3011,6 @@ def choose_target(
         ]
 
         if event_id in used:
-
             continue
 
         result.append(
@@ -3148,7 +3022,6 @@ def choose_target(
         )
 
         if len(result) >= MAX_LEGS:
-
             break
 
     actual = _product(
@@ -3206,7 +3079,6 @@ def choose_count(
         ]
 
         if event_id in used_events:
-
             continue
 
         kind = candidate[
@@ -3234,7 +3106,6 @@ def choose_count(
                 )
                 >= cap
             ):
-
                 continue
 
         chosen.append(
@@ -3283,18 +3154,13 @@ def _time_text(
 
     text = local.strftime(
         "%I:%M %p"
-    ).lstrip(
-        "0"
-    )
+    ).lstrip("0")
 
     if local.date() == today:
-
         return text
 
     return (
-        local.strftime(
-            "%a "
-        )
+        local.strftime("%a ")
         + text
     )
 
@@ -3304,36 +3170,26 @@ def _confidence(
 ):
 
     if probability >= 0.85:
-
         return "🟢 Elite"
 
     if probability >= 0.80:
-
         return "🟢 Very strong"
 
     if probability >= 0.75:
-
         return "🟡 Strong"
 
     if probability >= 0.70:
-
         return "🟡 Acceptable"
 
     if probability >= 0.65:
-
         return "🟠 Weak"
 
     return "🔴 Reject"
 
 
-def _fmt(
-    value
-):
+def _fmt(value):
 
-    if value == int(
-        value
-    ):
-
+    if value == int(value):
         return str(
             int(value)
         )
@@ -3343,6 +3199,24 @@ def _fmt(
 
 # ============================================================
 # BUILD TICKET
+# ============================================================
+#
+# MAJOR FIX:
+#
+# The old version had:
+#
+#     while True:
+#         gather()
+#         if not enough:
+#             add another day
+#
+# That could call gather four times.
+#
+# This version performs ONE gather using the complete requested
+# window.
+#
+# If the target cannot be reached, it returns the strongest
+# football-supported selections found in that window.
 # ============================================================
 
 def build_ticket(
@@ -3363,8 +3237,7 @@ def build_ticket(
             1.05,
             min(
                 1.35,
-                target
-                ** (
+                target ** (
                     1 / 30
                 ),
             ),
@@ -3374,119 +3247,76 @@ def build_ticket(
 
         floor = 1.05
 
-    extra_days = 0
+    # --------------------------------------------------------
+    # ONE SEARCH ONLY
+    # --------------------------------------------------------
 
-    hard_limit = (
-        max_days
-        if max_days is not None
-        else 3
+    (
+        groups,
+        total_events,
+        detailed,
+        studied,
+    ) = gather(
+        provider,
+        req["start"],
+        req["end"],
+        risk,
+        floor,
+        exclude,
+        0.015
+        if target
+        and target <= 20
+        else 0.0,
+        notify,
+        straight_only=straight_only,
+        max_groups=GROUP_LIMIT,
     )
 
-    chosen = []
+    if target:
 
-    reached = False
+        chosen, reached = choose_target(
+            groups,
+            target,
+            caps=not straight_only,
+        )
+
+    else:
+
+        chosen, reached = choose_count(
+            groups,
+            count or 5,
+            caps=not straight_only,
+        )
 
     note = ""
 
-    last_stats = {
-        "events": 0,
-        "detailed": 0,
-        "studied": 0,
-    }
+    if (
+        target
+        and not reached
+        and chosen
+    ):
 
-    while True:
-
-        end = (
-            req["end"]
-            + timedelta(
-                days=extra_days
-            )
+        actual = _product(
+            chosen
         )
-
-        (
-            groups,
-            total_events,
-            detailed,
-            studied,
-        ) = gather(
-            provider,
-            req["start"],
-            end,
-            risk,
-            floor,
-            exclude,
-            0.015
-            if target
-            and target <= 20
-            else 0.0,
-            notify,
-            straight_only=straight_only,
-            max_groups=(
-                GROUP_LIMIT
-            ),
-        )
-
-        last_stats = {
-            "events": total_events,
-            "detailed": detailed,
-            "studied": studied,
-        }
-
-        if target:
-
-            chosen, reached = (
-                choose_target(
-                    groups,
-                    target,
-                    caps=not straight_only,
-                )
-            )
-
-        else:
-
-            chosen, reached = (
-                choose_count(
-                    groups,
-                    count or 5,
-                    caps=not straight_only,
-                )
-            )
-
-        if reached:
-
-            break
-
-        if extra_days >= hard_limit:
-
-            break
-
-        extra_days += 1
-
-    if extra_days and chosen:
 
         note = (
-            "I extended the search "
-            f"by {extra_days} day"
-            f"{'s' if extra_days != 1 else ''}."
+            f"Best football-supported "
+            f"selection set reached about "
+            f"{actual:.2f} odds; weak picks "
+            f"were not added to force "
+            f"{_fmt(target)}."
         )
 
     return {
         "chosen": chosen,
         "reached": reached,
         "note": note,
-        "events": last_stats[
-            "events"
-        ],
-        "detailed": last_stats[
-            "detailed"
-        ],
-        "studied": last_stats[
-            "studied"
-        ],
+        "events": total_events,
+        "detailed": detailed,
+        "studied": studied,
         "floor": floor,
-        "days_used": (
-            extra_days + 1
-        ),
+        "days_used": 1,
     }
 
 
@@ -3503,7 +3333,6 @@ def _reset_straight():
         upgrades.STRAIGHT_WIN_ONLY = False
 
     except Exception:
-
         pass
 
 
@@ -3585,7 +3414,6 @@ def flow(
             TypeError,
             ValueError,
         ):
-
             pass
 
     if count_override is not None:
@@ -3606,7 +3434,6 @@ def flow(
             TypeError,
             ValueError,
         ):
-
             pass
 
     # ========================================================
@@ -3704,7 +3531,6 @@ def flow(
     )
 
     if not target and not count:
-
         count = 5
 
     # ========================================================
@@ -3738,7 +3564,6 @@ def flow(
         )
 
         if has_1up and has_2up:
-
             straight_only = True
 
     straight_today = (
@@ -3801,7 +3626,6 @@ def flow(
             upgrades.STRAIGHT_WIN_ONLY = True
 
         except Exception:
-
             pass
 
     # ========================================================
@@ -3817,14 +3641,7 @@ def flow(
             count,
             risk,
             straight_only=straight_only,
-            max_days=(
-                0
-                if (
-                    straight_today
-                    or search_days is not None
-                )
-                else None
-            ),
+            max_days=0,
         )
 
     except Exception as exc:
@@ -3992,7 +3809,6 @@ def flow(
         )
 
         if probability is None:
-
             probability = 0.0
 
         chance *= probability
@@ -4268,8 +4084,7 @@ def flow(
     lines.append(
         f"🔎 Checked "
         f"{built['events']} SportyBet "
-        f"matches across "
-        f"{built['days_used']} day(s)."
+        f"matches."
     )
 
     lines.append(
@@ -4399,6 +4214,11 @@ def _start_warmer():
             _WARM_LOCK.release()
 
     def loop():
+
+        # Delay the first refresh slightly so it doesn't
+        # compete with the first user request immediately
+        # after Render starts.
+        time.sleep(30)
 
         threading.Thread(
             target=refresh,

@@ -82,29 +82,21 @@ BRAND = "SPORTYTIPS"
 # ============================================================
 # SPEED / SAFETY SETTINGS
 # ============================================================
-#
-# IMPORTANT:
-#
-# The old version could do:
-#
-#   gather → 90 sec
-#   gather → 90 sec
-#   gather → 90 sec
-#   gather → 90 sec
-#
-# That is what caused the 5-minute+ waiting problem.
-#
-# This version performs ONE controlled scan per request.
-# ============================================================
 
+# Number of SportyBet events whose detailed markets can be
+# inspected in one request.
 MAX_DETAIL_EVENTS = 50
 
+# Slightly larger pool for straight-win / 1UP / 2UP searches.
 STRAIGHT_DETAIL_EVENTS = 60
 
+# SportyBet market requests.
 DETAIL_WORKERS = 8
 
-DETAIL_SECONDS = 10
+# Maximum time allocated to the detailed-market batch.
+DETAIL_SECONDS = 8
 
+# Football evidence cache size.
 MAX_CACHED_MATCHES = 150
 
 MAX_PAGES = 15
@@ -115,27 +107,36 @@ MAX_OPTIONS_PER_MATCH = 6
 
 GROUP_LIMIT = 100
 
+# Maximum amount above a target that the DP engine tries to use.
 OVERSHOOT = 0.08
 
 
 # ============================================================
-# HARD REQUEST BUDGET
+# HARD FOOTBALL REQUEST BUDGET
 # ============================================================
+
+# IMPORTANT:
 #
-# This is the important protection.
+# The old version studied only 12 matches.
 #
-# We don't allow the football evidence pass to run forever.
+# That caused the engine to reject good matches simply because
+# they happened to appear later in the SportyBet fixture list.
+#
+# We now study up to 20 matches.
+#
+# This is still deliberately capped so Render does not sit
+# waiting indefinitely.
 # ============================================================
 
-FOOTBALL_MAX_STUDIED = 12
+FOOTBALL_MAX_STUDIED = 20
 
-FOOTBALL_STUDY_SECONDS = 30
+FOOTBALL_STUDY_SECONDS = 32
 
-GATHER_SECONDS = 40
+GATHER_SECONDS = 42
 
 
 # ============================================================
-# MINIMUM FOOTBALL PROBABILITY
+# BASE FOOTBALL PROBABILITY
 # ============================================================
 
 MIN_FOOTBALL_PROB = {
@@ -146,13 +147,51 @@ MIN_FOOTBALL_PROB = {
 
 
 # ============================================================
+# MARKET-SPECIFIC FOOTBALL PROBABILITY
+# ============================================================
+#
+# IMPORTANT:
+#
+# A single 68% floor for every market is too restrictive.
+#
+# For example:
+#
+#   1UP
+#   Over 1.5
+#   Team goals
+#   BTTS
+#   Positive handicap
+#   Corners
+#
+# do not have the same natural probability distribution.
+#
+# These are football-model gates.
+# SportyBet odds do NOT determine them.
+# ============================================================
+
+MARKET_MIN_P = {
+    "up": 0.68,
+    "either_half": 0.66,
+    "team_goals": 0.63,
+    "over15": 0.63,
+    "over": 0.65,
+    "btts": 0.63,
+    "handicap": 0.62,
+    "asian_handicap": 0.62,
+    "dc": 0.60,
+    "corners": 0.62,
+    "corners_1h": 0.62,
+}
+
+
+# ============================================================
 # EVIDENCE QUALITY
 # ============================================================
 
 MIN_EVIDENCE_QUALITY = {
-    "safe": 0.72,
-    "normal": 0.66,
-    "risky": 0.60,
+    "safe": 0.70,
+    "normal": 0.60,
+    "risky": 0.55,
 }
 
 
@@ -203,11 +242,11 @@ MAX_ODDS_KIND = {
 
 
 # ============================================================
-# SMALL SORTING BONUSES
+# SORTING BONUSES
 # ============================================================
 #
-# These are ONLY tie-breakers.
-# They are not probability.
+# ONLY used as tie-breakers.
+# They are NOT probability.
 # ============================================================
 
 KIND_BONUS = {
@@ -1136,6 +1175,7 @@ def event_candidates(
                 or ""
             )
 
+            # Positive handicap only.
             if "+" not in label:
                 continue
 
@@ -1246,6 +1286,7 @@ _DETAIL_LOCK = threading.Lock()
 def _event_markets_cached(
     self,
     event_id,
+    force_refresh=False,
 ):
 
     cache = getattr(
@@ -1268,7 +1309,7 @@ def _event_markets_cached(
         event_id
     )
 
-    if cached:
+    if cached and not force_refresh:
 
         timestamp, markets = cached
 
@@ -1324,6 +1365,8 @@ def _event_markets_cached(
     return markets
 
 
+# Preserve the provider interface while allowing the new
+# force_refresh option.
 sp.SportyBetProvider._event_markets_cached = (
     _event_markets_cached
 )
@@ -1740,6 +1783,7 @@ def _apply_evidence_score(
         )
     )
 
+    # Missing evidence creates only a modest penalty.
     missing_penalty = max(
         0.0,
         (
@@ -1927,7 +1971,7 @@ def _reason_for(
 
 
 # ============================================================
-# SELECT EVENT POOL
+# EVENT POOL SELECTION
 # ============================================================
 
 def _select_event_pool(
@@ -1936,12 +1980,17 @@ def _select_event_pool(
 ):
 
     """
-    Select a broad but controlled SportyBet pool.
+    Build a broad chronological pool.
 
-    We don't just blindly take the first few events if
-    SportyBet returns a large mixed list.
+    IMPORTANT:
+    We do NOT simply study the first 12 matches anymore.
 
-    Events are sorted by kickoff time first.
+    SportyBet can return a long chronological list. If the
+    strongest football-supported matches happen later in that
+    list, the old system never reached them.
+
+    This function keeps the full controlled SportyBet pool.
+    The football-study stage later samples it across the window.
     """
 
     valid = [
@@ -1961,6 +2010,157 @@ def _select_event_pool(
     return valid[
         :limit
     ]
+
+
+# ============================================================
+# BROAD FOOTBALL STUDY SELECTION
+# ============================================================
+
+def _study_event_pool(
+    wanted,
+    max_studied,
+):
+
+    """
+    Choose matches from across the available fixture pool.
+
+    This prevents the old first-12 bias.
+
+    No SportyBet odds are used here.
+
+    Selection is based only on fixture position/time so that
+    football evidence can be evaluated across the window.
+    """
+
+    if not wanted:
+        return []
+
+    if len(wanted) <= max_studied:
+        return wanted
+
+    # Always keep some of the earliest fixtures because they
+    # are often the matches closest to kickoff.
+    early_count = min(
+        8,
+        max_studied,
+        len(wanted),
+    )
+
+    selected = wanted[
+        :early_count
+    ]
+
+    remaining_slots = (
+        max_studied
+        - len(selected)
+    )
+
+    if remaining_slots <= 0:
+        return selected
+
+    remaining = wanted[
+        early_count:
+    ]
+
+    if not remaining:
+        return selected
+
+    # Evenly distribute the remaining football studies across
+    # the rest of the available SportyBet window.
+    step = (
+        len(remaining)
+        / float(
+            remaining_slots
+        )
+    )
+
+    used_indexes = set()
+
+    for index in range(
+        remaining_slots
+    ):
+
+        position = int(
+            index * step
+        )
+
+        if position >= len(
+            remaining
+        ):
+            position = (
+                len(remaining)
+                - 1
+            )
+
+        while (
+            position in used_indexes
+            and position
+            < len(remaining) - 1
+        ):
+            position += 1
+
+        if position in used_indexes:
+            continue
+
+        used_indexes.add(
+            position
+        )
+
+        selected.append(
+            remaining[
+                position
+            ]
+        )
+
+    # Maintain kickoff order in the actual study list.
+    selected.sort(
+        key=lambda event:
+            event.get(
+                "estimateStartTime",
+                0,
+            )
+    )
+
+    return selected
+
+
+# ============================================================
+# MARKET-SPECIFIC PROBABILITY FLOOR
+# ============================================================
+
+def _market_probability_floor(
+    candidate,
+    risk,
+    base_floor,
+):
+
+    kind = candidate.get(
+        "kind"
+    )
+
+    market_floor = MARKET_MIN_P.get(
+        kind,
+        base_floor,
+    )
+
+    risk_adjustment = {
+        "safe": 0.03,
+        "normal": 0.00,
+        "risky": -0.03,
+    }.get(
+        risk,
+        0.00,
+    )
+
+    market_floor += (
+        risk_adjustment
+    )
+
+    # Never allow a market-specific floor to exceed 0.90.
+    return min(
+        0.90,
+        market_floor,
+    )
 
 
 # ============================================================
@@ -2043,7 +2243,7 @@ def gather(
         )
 
     # --------------------------------------------------------
-    # LARGE BUT CONTROLLED SCAN POOL
+    # CONTROLLED SPORTYBET POOL
     # --------------------------------------------------------
 
     limit = (
@@ -2058,11 +2258,7 @@ def gather(
     )
 
     # --------------------------------------------------------
-    # SPORTYBET MARKET DETAILS
-    # --------------------------------------------------------
-    #
-    # We still inspect many matches, but only one controlled
-    # batch. No repeated market loading.
+    # DETAILED SPORTYBET MARKETS
     # --------------------------------------------------------
 
     details = {}
@@ -2131,14 +2327,13 @@ def gather(
 
         finally:
 
-            # Do not hold up the HTTP request.
             pool.shutdown(
                 wait=False,
                 cancel_futures=True,
             )
 
     # --------------------------------------------------------
-    # PROBABILITY FLOOR
+    # BASE PROBABILITY FLOOR
     # --------------------------------------------------------
 
     min_p = (
@@ -2183,6 +2378,15 @@ def gather(
 
     groups = []
 
+    # --------------------------------------------------------
+    # CHOOSE FOOTBALL MATCHES TO STUDY
+    # --------------------------------------------------------
+
+    study_pool = _study_event_pool(
+        wanted,
+        FOOTBALL_MAX_STUDIED,
+    )
+
     # ========================================================
     # FOOTBALL EVIDENCE PASS
     # ========================================================
@@ -2191,7 +2395,7 @@ def gather(
 
     football_started = time.time()
 
-    for event in wanted:
+    for event in study_pool:
 
         # ----------------------------------------------------
         # HARD GLOBAL TIME CHECK
@@ -2228,6 +2432,49 @@ def gather(
             "eventId"
         )
 
+        if not event_id:
+            continue
+
+        # ----------------------------------------------------
+        # DETERMINE KICKOFF
+        # ----------------------------------------------------
+
+        timestamp = (
+            event.get(
+                "estimateStartTime"
+            )
+            or 0
+        )
+
+        try:
+
+            kickoff = (
+                datetime.fromtimestamp(
+                    timestamp / 1000,
+                    tz=timezone.utc,
+                )
+            )
+
+        except Exception:
+
+            kickoff = datetime.now(
+                timezone.utc
+            )
+
+        minutes_to_kickoff = (
+            (
+                kickoff
+                - datetime.now(
+                    timezone.utc
+                )
+            ).total_seconds()
+            / 60
+        )
+
+        # ----------------------------------------------------
+        # MARKET DETAILS
+        # ----------------------------------------------------
+
         markets = (
             details.get(
                 event_id
@@ -2237,6 +2484,57 @@ def gather(
             )
             or []
         )
+
+        # ----------------------------------------------------
+        # CORNER MARKET REFRESH
+        # ----------------------------------------------------
+        #
+        # SportyBet may expose corner markets only close to
+        # kickoff.
+        #
+        # If the match is within 60 minutes, refresh its
+        # detailed markets rather than trusting an older cache.
+        # ----------------------------------------------------
+
+        if (
+            minutes_to_kickoff <= 60
+            and minutes_to_kickoff >= -5
+        ):
+
+            try:
+
+                fresh_markets = (
+                    provider._event_markets_cached(
+                        event_id,
+                        force_refresh=True,
+                    )
+                )
+
+                if fresh_markets:
+                    markets = fresh_markets
+
+            except TypeError:
+
+                # Backward compatibility if another provider
+                # implementation does not accept force_refresh.
+                try:
+
+                    markets = (
+                        provider._event_markets_cached(
+                            event_id,
+                        )
+                        or markets
+                    )
+
+                except Exception:
+                    pass
+
+            except Exception as exc:
+
+                print(
+                    "Near-kickoff market refresh failed:",
+                    exc,
+                )
 
         if not markets:
             continue
@@ -2302,49 +2600,12 @@ def gather(
         )
 
         # ----------------------------------------------------
-        # KICKOFF
-        # ----------------------------------------------------
-
-        timestamp = (
-            event.get(
-                "estimateStartTime"
-            )
-            or 0
-        )
-
-        try:
-
-            kickoff = (
-                datetime.fromtimestamp(
-                    timestamp / 1000,
-                    tz=timezone.utc,
-                )
-            )
-
-        except Exception:
-
-            kickoff = datetime.now(
-                timezone.utc
-            )
-
-        minutes_to_kickoff = (
-            (
-                kickoff
-                - datetime.now(
-                    timezone.utc
-                )
-            ).total_seconds()
-            / 60
-        )
-
-        # ----------------------------------------------------
         # EVALUATE EVERY MARKET
         # ----------------------------------------------------
 
         for candidate in candidates:
 
             if time.time() >= deadline:
-
                 break
 
             kind = candidate[
@@ -2377,8 +2638,9 @@ def gather(
                 "corners_1h",
             ):
 
+                # Corner markets are not reliable enough
+                # to depend on far before kickoff.
                 if minutes_to_kickoff > 60:
-
                     continue
 
             # ------------------------------------------------
@@ -2412,7 +2674,6 @@ def gather(
                 corner_cap
                 and odd > corner_cap
             ):
-
                 continue
 
             if odd > max_odd:
@@ -2428,7 +2689,6 @@ def gather(
                     "key"
                 ),
             ) in exclude:
-
                 continue
 
             # ------------------------------------------------
@@ -2459,10 +2719,18 @@ def gather(
                 continue
 
             # ------------------------------------------------
-            # FOOTBALL PROBABILITY GATE
+            # MARKET-SPECIFIC PROBABILITY GATE
             # ------------------------------------------------
 
-            if probability < min_p:
+            market_floor = (
+                _market_probability_floor(
+                    candidate,
+                    risk,
+                    min_p,
+                )
+            )
+
+            if probability < market_floor:
                 continue
 
             # ------------------------------------------------
@@ -2480,7 +2748,6 @@ def gather(
             if candidate[
                 "label"
             ] in labels:
-
                 continue
 
             labels.add(
@@ -2692,7 +2959,6 @@ def _dp(
                 or not probability
                 or probability <= 0
             ):
-
                 continue
 
             weight = round(
@@ -2704,7 +2970,6 @@ def _dp(
                 weight <= 0
                 or weight > max_weight
             ):
-
                 continue
 
             cost = (
@@ -2960,65 +3225,106 @@ def choose_target(
         )
 
     # --------------------------------------------------------
-    # Target cannot be safely reached.
+    # IMPORTANT FIX:
     #
-    # Return strongest available football selections instead
-    # of manufacturing weak selections.
+    # The old fallback selected only the BEST candidate from
+    # each group.
+    #
+    # That could throw away useful alternatives.
+    #
+    # We now examine every football-supported candidate.
     # --------------------------------------------------------
 
-    ranked = []
+    candidates = [
+        candidate
+        for group in groups
+        for candidate in group
+    ]
 
-    for group in groups:
-
-        best = max(
-            group,
-            key=lambda candidate:
-                (
-                    candidate.get(
-                        "p",
-                        0,
-                    )
-                    + KIND_BONUS.get(
-                        candidate.get(
-                            "kind"
-                        ),
-                        0,
-                    )
-                ),
-        )
-
-        ranked.append(
-            best
-        )
-
-    ranked.sort(
+    candidates.sort(
         key=lambda candidate:
-            candidate.get(
-                "p",
-                0,
+            (
+                candidate.get(
+                    "p",
+                    0,
+                )
+                + KIND_BONUS.get(
+                    candidate.get(
+                        "kind"
+                    ),
+                    0,
+                )
             ),
         reverse=True,
     )
 
     result = []
 
-    used = set()
+    used_events = set()
 
-    for candidate in ranked:
+    counts = {}
 
-        event_id = candidate[
+    for candidate in candidates:
+
+        event_id = candidate.get(
             "event_id"
-        ]
+        )
 
-        if event_id in used:
+        if event_id in used_events:
             continue
+
+        kind = candidate.get(
+            "kind"
+        )
+
+        if caps:
+
+            # Use the target size as a rough diversification
+            # reference rather than letting one market consume
+            # the entire ticket.
+            reference_count = max(
+                5,
+                min(
+                    MAX_LEGS,
+                    12,
+                ),
+            )
+
+            cap = max(
+                1,
+                math.ceil(
+                    KIND_CAP.get(
+                        kind,
+                        0.30,
+                    )
+                    * reference_count
+                    * 1.5
+                ),
+            )
+
+            if (
+                counts.get(
+                    kind,
+                    0,
+                )
+                >= cap
+            ):
+                continue
 
         result.append(
             candidate
         )
 
-        used.add(
+        used_events.add(
             event_id
+        )
+
+        counts[kind] = (
+            counts.get(
+                kind,
+                0,
+            )
+            + 1
         )
 
         if len(result) >= MAX_LEGS:
@@ -3200,24 +3506,6 @@ def _fmt(value):
 # ============================================================
 # BUILD TICKET
 # ============================================================
-#
-# MAJOR FIX:
-#
-# The old version had:
-#
-#     while True:
-#         gather()
-#         if not enough:
-#             add another day
-#
-# That could call gather four times.
-#
-# This version performs ONE gather using the complete requested
-# window.
-#
-# If the target cannot be reached, it returns the strongest
-# football-supported selections found in that window.
-# ============================================================
 
 def build_ticket(
     provider,
@@ -3249,6 +3537,15 @@ def build_ticket(
 
     # --------------------------------------------------------
     # ONE SEARCH ONLY
+    #
+    # IMPORTANT:
+    #
+    # The old version applied an extra 0.015 probability
+    # penalty for targets <=20.
+    #
+    # That was removed.
+    #
+    # Market-specific football gates now control selection.
     # --------------------------------------------------------
 
     (
@@ -3263,10 +3560,7 @@ def build_ticket(
         risk,
         floor,
         exclude,
-        0.015
-        if target
-        and target <= 20
-        else 0.0,
+        0.0,
         notify,
         straight_only=straight_only,
         max_groups=GROUP_LIMIT,
@@ -3308,6 +3602,18 @@ def build_ticket(
             f"{_fmt(target)}."
         )
 
+    elif (
+        not target
+        and count
+        and len(chosen) < count
+    ):
+
+        note = (
+            f"Only {len(chosen)} football-supported "
+            f"selections passed the evidence gates "
+            f"out of the requested {count}."
+        )
+
     return {
         "chosen": chosen,
         "reached": reached,
@@ -3317,6 +3623,7 @@ def build_ticket(
         "studied": studied,
         "floor": floor,
         "days_used": 1,
+        "usable_groups": len(groups),
     }
 
 
@@ -3684,7 +3991,9 @@ def flow(
         f"{len(chosen)} picks, "
         f"target={target}, "
         f"straight={straight_only}, "
-        f"search_days={search_days}"
+        f"search_days={search_days}, "
+        f"studied={built.get('studied', 0)}, "
+        f"groups={built.get('usable_groups', 0)}"
     )
 
     # ========================================================
@@ -3696,9 +4005,13 @@ def flow(
         bot.send_message(
             chat_id,
             (
-                "❌ I couldn't find enough "
-                "football-supported selections "
-                "in that window.\n\n"
+                "❌ No football-supported "
+                "selection passed the evidence "
+                "gates in that window.\n\n"
+                f"🔎 SportyBet matches checked: "
+                f"{built.get('events', 0)}\n"
+                f"🧠 Football matches studied: "
+                f"{built.get('studied', 0)}\n\n"
                 "I rejected weak matches instead "
                 "of using SportyBet odds to "
                 "manufacture confidence."
@@ -4024,12 +4337,9 @@ def flow(
         ]
     )
 
-    if (
-        target
-        and not built[
-            "reached"
-        ]
-    ):
+    if target and not built[
+        "reached"
+    ]:
 
         lines.append(
             f"⚠️ I could not safely reach "
@@ -4092,6 +4402,16 @@ def flow(
         f"studied: "
         f"{built.get('studied', 0)}"
     )
+
+    if built.get(
+        "usable_groups",
+        0,
+    ):
+
+        lines.append(
+            f"📚 Usable football match groups: "
+            f"{built['usable_groups']}"
+        )
 
     if (
         len(chosen) >= 12
@@ -4215,8 +4535,7 @@ def _start_warmer():
 
     def loop():
 
-        # Delay the first refresh slightly so it doesn't
-        # compete with the first user request immediately
+        # Don't compete with the first request immediately
         # after Render starts.
         time.sleep(30)
 
@@ -4227,8 +4546,10 @@ def _start_warmer():
 
         while True:
 
+            # Refresh every 10 minutes rather than every
+            # 5 minutes so background traffic is lighter.
             time.sleep(
-                300
+                600
             )
 
             threading.Thread(

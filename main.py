@@ -90,25 +90,17 @@ API_FOOTBALL_KEY = (
     os.getenv("API_FOOTBALL_KEY") or ""
 ).strip().strip("\"'")
 
-API_FOOTBALL_BASE = (
-    "https://v3.football.api-sports.io"
-)
+API_FOOTBALL_BASE = "https://v3.football.api-sports.io"
 
 # API-Football free plan is limited.
 # We keep our own lightweight counters as an extra safety layer.
 
 API_FOOTBALL_DAILY_LIMIT = int(
-    os.getenv(
-        "API_FOOTBALL_DAILY_LIMIT",
-        "100",
-    )
+    os.getenv("API_FOOTBALL_DAILY_LIMIT", "100")
 )
 
 API_FOOTBALL_MINUTE_LIMIT = int(
-    os.getenv(
-        "API_FOOTBALL_MINUTE_LIMIT",
-        "10",
-    )
+    os.getenv("API_FOOTBALL_MINUTE_LIMIT", "10")
 )
 
 # The value is updated after every successful API request.
@@ -125,10 +117,7 @@ _api_usage_minute = None
 _fixture_api_cache = {}
 
 FIXTURE_CACHE_SECONDS = int(
-    os.getenv(
-        "FOOTBALL_FIXTURE_CACHE_SECONDS",
-        "900",
-    )
+    os.getenv("FOOTBALL_FIXTURE_CACHE_SECONDS", "900")
 )
 
 
@@ -144,9 +133,7 @@ def _reset_api_counters_if_needed():
     now = datetime.now(timezone.utc)
 
     current_date = now.date().isoformat()
-    current_minute = now.strftime(
-        "%Y-%m-%d %H:%M"
-    )
+    current_minute = now.strftime("%Y-%m-%d %H:%M")
 
     if _api_usage_date != current_date:
         _api_usage_date = current_date
@@ -168,9 +155,7 @@ def football_api_status():
     _reset_api_counters_if_needed()
 
     return {
-        "configured": bool(
-            API_FOOTBALL_KEY
-        ),
+        "configured": bool(API_FOOTBALL_KEY),
         "daily_limit": API_FOOTBALL_DAILY_LIMIT,
         "daily_used": _api_daily_count,
         "daily_remaining": _api_remaining,
@@ -179,18 +164,12 @@ def football_api_status():
     }
 
 
-def football_request(
-    endpoint,
-    params=None,
-):
+def football_request(endpoint, params=None):
     """
     Make a request to API-Football.
 
     Example:
-        football_request(
-            "predictions",
-            {"fixture": 123456}
-        )
+        football_request("predictions", {"fixture": 123456})
 
     Returns the decoded JSON response,
     or None if the request cannot be made.
@@ -213,55 +192,28 @@ def football_request(
     # Local safety limits
     # --------------------------------------------------------
 
-    if (
-        _api_daily_count
-        >= API_FOOTBALL_DAILY_LIMIT
-    ):
-        print(
-            "API-Football daily request "
-            "limit reached."
-        )
+    if _api_daily_count >= API_FOOTBALL_DAILY_LIMIT:
+        print("API-Football daily request limit reached.")
         _api_remaining = 0
         return None
 
-    if (
-        _api_minute_count
-        >= API_FOOTBALL_MINUTE_LIMIT
-    ):
-        print(
-            "API-Football minute request "
-            "limit reached."
-        )
+    if _api_minute_count >= API_FOOTBALL_MINUTE_LIMIT:
+        print("API-Football minute request limit reached.")
         return None
 
     # --------------------------------------------------------
     # Parameters
     # --------------------------------------------------------
 
-    params = (
-        params
-        if isinstance(params, dict)
-        else {}
-    )
+    params = params if isinstance(params, dict) else {}
 
-    clean_endpoint = (
-        str(endpoint or "")
-        .strip()
-        .lstrip("/")
-    )
+    clean_endpoint = str(endpoint or "").strip().lstrip("/")
 
     if not clean_endpoint:
-        print(
-            "API-Football request rejected: "
-            "empty endpoint."
-        )
+        print("API-Football request rejected: empty endpoint.")
         return None
 
-    url = (
-        API_FOOTBALL_BASE
-        + "/"
-        + clean_endpoint
-    )
+    url = API_FOOTBALL_BASE + "/" + clean_endpoint
 
     if params:
         query = urlencode(
@@ -279,25 +231,16 @@ def football_request(
         url,
         method="GET",
         headers={
-            "x-apisports-key":
-                API_FOOTBALL_KEY,
-            "User-Agent":
-                "SportyTips/1.0",
-            "Accept":
-                "application/json",
+            "x-apisports-key": API_FOOTBALL_KEY,
+            "User-Agent": "SportyTips/1.0",
+            "Accept": "application/json",
         },
     )
 
     try:
-        with urlopen(
-            request,
-            timeout=20,
-        ) as response:
+        with urlopen(request, timeout=20) as response:
 
-            raw = response.read().decode(
-                "utf-8",
-                errors="replace",
-            )
+            raw = response.read().decode("utf-8", errors="replace")
 
             data = json.loads(raw)
 
@@ -312,32 +255,22 @@ def football_request(
             # Prefer actual quota remaining value when available.
             # ------------------------------------------------
 
-            remaining_header = (
-                response.headers.get(
-                    "x-ratelimit-requests-remaining"
-                )
+            remaining_header = response.headers.get(
+                "x-ratelimit-requests-remaining"
             )
 
             if remaining_header is not None:
                 try:
+                    _api_remaining = max(0, int(remaining_header))
+                except (TypeError, ValueError):
                     _api_remaining = max(
                         0,
-                        int(remaining_header),
-                    )
-                except (
-                    TypeError,
-                    ValueError,
-                ):
-                    _api_remaining = max(
-                        0,
-                        API_FOOTBALL_DAILY_LIMIT
-                        - _api_daily_count,
+                        API_FOOTBALL_DAILY_LIMIT - _api_daily_count,
                     )
             else:
                 _api_remaining = max(
                     0,
-                    API_FOOTBALL_DAILY_LIMIT
-                    - _api_daily_count,
+                    API_FOOTBALL_DAILY_LIMIT - _api_daily_count,
                 )
 
             # ------------------------------------------------
@@ -347,52 +280,36 @@ def football_request(
             errors = data.get("errors")
 
             if errors:
-                print(
-                    "API-Football returned "
-                    f"errors: {errors}"
-                )
+                print(f"API-Football returned errors: {errors}")
                 return None
 
             return data
 
     except HTTPError as exc:
 
-        body = exc.read().decode(
-            "utf-8",
-            errors="replace",
-        )
+        body = exc.read().decode("utf-8", errors="replace")
 
         _api_daily_count += 1
         _api_minute_count += 1
 
         _api_remaining = max(
             0,
-            API_FOOTBALL_DAILY_LIMIT
-            - _api_daily_count,
+            API_FOOTBALL_DAILY_LIMIT - _api_daily_count,
         )
 
-        print(
-            "API-Football HTTP error "
-            f"{exc.code}: {body[:500]}"
-        )
+        print(f"API-Football HTTP error {exc.code}: {body[:500]}")
 
         return None
 
     except URLError as exc:
 
-        print(
-            "API-Football connection error: "
-            f"{exc}"
-        )
+        print(f"API-Football connection error: {exc}")
 
         return None
 
     except json.JSONDecodeError as exc:
 
-        print(
-            "API-Football returned invalid JSON: "
-            f"{exc}"
-        )
+        print(f"API-Football returned invalid JSON: {exc}")
 
         return None
 
@@ -406,9 +323,7 @@ def football_request(
         return None
 
 
-def get_allowed_fixtures_cached(
-    date_string,
-):
+def get_allowed_fixtures_cached(date_string):
     """
     Get API-Football fixtures for one calendar date.
 
@@ -427,10 +342,7 @@ def get_allowed_fixtures_cached(
         return []
 
     try:
-        date_string = (
-            str(date_string)
-            .strip()
-        )
+        date_string = str(date_string).strip()
     except Exception:
         return []
 
@@ -439,49 +351,28 @@ def get_allowed_fixtures_cached(
 
     now = time.time()
 
-    cached = _fixture_api_cache.get(
-        date_string
-    )
+    cached = _fixture_api_cache.get(date_string)
 
     if cached:
-        cached_time = cached.get(
-            "time",
-            0,
-        )
+        cached_time = cached.get("time", 0)
 
-        if (
-            now - cached_time
-            < FIXTURE_CACHE_SECONDS
-        ):
-            return cached.get(
-                "fixtures",
-                [],
-            )
+        if now - cached_time < FIXTURE_CACHE_SECONDS:
+            return cached.get("fixtures", [])
 
     data = football_request(
         "fixtures",
-        {
-            "date": date_string,
-        },
+        {"date": date_string},
     )
 
     if not data:
         return []
 
-    fixtures = data.get(
-        "response",
-        [],
-    )
+    fixtures = data.get("response", [])
 
-    if not isinstance(
-        fixtures,
-        list,
-    ):
+    if not isinstance(fixtures, list):
         fixtures = []
 
-    _fixture_api_cache[
-        date_string
-    ] = {
+    _fixture_api_cache[date_string] = {
         "time": now,
         "fixtures": fixtures,
     }
@@ -508,17 +399,10 @@ def _flag(name):
         .lower()
     )
 
-    return value in (
-        "1",
-        "true",
-        "yes",
-        "on",
-    )
+    return value in ("1", "true", "yes", "on")
 
 
-USE_SPORTYBET = _flag(
-    "USE_SPORTYBET"
-)
+USE_SPORTYBET = _flag("USE_SPORTYBET")
 
 SPORTYBET_PROVIDER = None
 SPORTYBET_ERROR = None
@@ -526,19 +410,13 @@ SPORTYBET_ERROR = None
 if USE_SPORTYBET:
 
     try:
-        from sportybet_provider import (
-            SportyBetProvider
-        )
+        from sportybet_provider import SportyBetProvider
 
-        SPORTYBET_PROVIDER = (
-            SportyBetProvider()
-        )
+        SPORTYBET_PROVIDER = SportyBetProvider()
 
     except Exception as exc:
 
-        SPORTYBET_ERROR = (
-            f"{type(exc).__name__}: {exc}"
-        )
+        SPORTYBET_ERROR = f"{type(exc).__name__}: {exc}"
 
         print(
             "SportyBet provider failed to load:",
@@ -560,16 +438,10 @@ def sportybet_off_reason():
     """Plain-text reason why SPORTYBET_PROVIDER is None."""
 
     if not USE_SPORTYBET:
-        return (
-            "USE_SPORTYBET is not set to 1 "
-            "on this server."
-        )
+        return "USE_SPORTYBET is not set to 1 on this server."
 
     if SPORTYBET_ERROR:
-        return (
-            "Provider failed to load: "
-            f"{SPORTYBET_ERROR}"
-        )
+        return f"Provider failed to load: {SPORTYBET_ERROR}"
 
     return "Provider is not available."
 
@@ -582,114 +454,69 @@ class BotError(Exception):
 # TELEGRAM
 # ============================================================
 
-def telegram_request(
-    method,
-    params=None,
-):
+def telegram_request(method, params=None):
 
     if not BOT_TOKEN:
-        raise BotError(
-            "TELEGRAM_BOT_TOKEN is missing."
-        )
+        raise BotError("TELEGRAM_BOT_TOKEN is missing.")
 
-    url = (
-        f"https://api.telegram.org/"
-        f"bot{BOT_TOKEN}/{method}"
-    )
+    url = f"https://api.telegram.org/bot{BOT_TOKEN}/{method}"
 
-    data = (
-        urlencode(params).encode("utf-8")
-        if params
-        else None
-    )
+    data = urlencode(params).encode("utf-8") if params else None
 
     request = Request(
         url,
         data=data,
         method="POST",
         headers={
-            "Content-Type":
-                "application/x-www-form-urlencoded"
+            "Content-Type": "application/x-www-form-urlencoded"
         },
     )
 
     try:
 
-        with urlopen(
-            request,
-            timeout=TELEGRAM_TIMEOUT,
-        ) as response:
+        with urlopen(request, timeout=TELEGRAM_TIMEOUT) as response:
 
-            result = json.loads(
-                response.read().decode(
-                    "utf-8"
-                )
-            )
+            result = json.loads(response.read().decode("utf-8"))
 
     except HTTPError as exc:
 
-        body = exc.read().decode(
-            "utf-8",
-            errors="replace",
-        )
+        body = exc.read().decode("utf-8", errors="replace")
 
-        raise BotError(
-            f"Telegram HTTP error "
-            f"{exc.code}: {body}"
-        )
+        raise BotError(f"Telegram HTTP error {exc.code}: {body}")
 
     except URLError as exc:
 
-        raise BotError(
-            f"Telegram connection error: {exc}"
-        )
+        raise BotError(f"Telegram connection error: {exc}")
 
     if not result.get("ok"):
-        raise BotError(
-            f"Telegram API error: {result}"
-        )
+        raise BotError(f"Telegram API error: {result}")
 
     return result
 
 
-def split_text(
-    text,
-    limit=MAX_MESSAGE_LENGTH,
-):
+def split_text(text, limit=MAX_MESSAGE_LENGTH):
 
     chunks = []
     current = ""
 
     for line in text.split("\n"):
 
-        if (
-            len(current)
-            + len(line)
-            + 1
-            > limit
-        ):
+        if len(current) + len(line) + 1 > limit:
 
             if current.strip():
-                chunks.append(
-                    current.rstrip()
-                )
+                chunks.append(current.rstrip())
 
             current = ""
 
         current += line + "\n"
 
     if current.strip():
-        chunks.append(
-            current.rstrip()
-        )
+        chunks.append(current.rstrip())
 
     return chunks
 
 
-def send_message(
-    chat_id,
-    text,
-):
+def send_message(chat_id, text):
 
     for chunk in split_text(text):
 
@@ -699,8 +526,7 @@ def send_message(
                 "chat_id": chat_id,
                 "text": chunk,
                 "parse_mode": "HTML",
-                "disable_web_page_preview":
-                    "true",
+                "disable_web_page_preview": "true",
             },
         )
 
@@ -734,6 +560,12 @@ STRAIGHT_LONG_RE = re.compile(
     re.I,
 )
 
+# NEW: matches "Daily2odds", "daily 2 odds", "daily-2-odds".
+DAILY_RE = re.compile(
+    r"\bdaily\s*-?\s*2\s*-?\s*odds?\b",
+    re.I,
+)
+
 
 def parse_request(text):
     """
@@ -751,40 +583,22 @@ def parse_request(text):
         straight winning 20 odds tomorrow
     """
 
-    message = (
-        text or ""
-    ).strip().lower()
+    message = (text or "").strip().lower()
 
-    now = datetime.now(
-        timezone.utc
+    now = datetime.now(timezone.utc)
+
+    local_now = now.astimezone(LOCAL_TZ)
+
+    local_midnight = local_now.replace(
+        hour=0,
+        minute=0,
+        second=0,
+        microsecond=0,
     )
 
-    local_now = now.astimezone(
-        LOCAL_TZ
-    )
+    start = now + timedelta(hours=MIN_HOURS_BEFORE_KICKOFF)
 
-    local_midnight = (
-        local_now.replace(
-            hour=0,
-            minute=0,
-            second=0,
-            microsecond=0,
-        )
-    )
-
-    start = (
-        now
-        + timedelta(
-            hours=MIN_HOURS_BEFORE_KICKOFF
-        )
-    )
-
-    end = (
-        now
-        + timedelta(
-            days=1
-        )
-    )
+    end = now + timedelta(days=1)
 
     label = "next 24 hours"
 
@@ -797,181 +611,88 @@ def parse_request(text):
 
         days = max(
             1,
-            min(
-                int(days_match.group(1)),
-                MAX_DAYS_AHEAD,
-            ),
+            min(int(days_match.group(1)), MAX_DAYS_AHEAD),
         )
 
-        end = (
-            now
-            + timedelta(
-                days=days
-            )
-        )
+        end = now + timedelta(days=days)
 
-        label = (
-            f"next {days} day"
-            + (
-                "s"
-                if days != 1
-                else ""
-            )
-        )
+        label = f"next {days} day" + ("s" if days != 1 else "")
 
-    elif re.search(
-        r"\bweekend\b",
-        message,
-    ):
+    elif re.search(r"\bweekend\b", message):
 
-        weekday = (
-            local_now.weekday()
-        )
+        weekday = local_now.weekday()
 
         if weekday == 6:
 
-            window_start = (
-                local_midnight
-            )
+            window_start = local_midnight
 
             window_days = 1
 
         else:
 
-            window_start = (
-                local_midnight
-                + timedelta(
-                    days=(
-                        5 - weekday
-                    ) % 7
-                )
+            window_start = local_midnight + timedelta(
+                days=(5 - weekday) % 7
             )
 
             window_days = 2
 
-        start = max(
-            start,
-            window_start,
-        )
+        start = max(start, window_start)
 
-        end = (
-            window_start
-            + timedelta(
-                days=window_days
-            )
-        )
+        end = window_start + timedelta(days=window_days)
 
         label = "this weekend"
 
-    elif re.search(
-        r"\btomorrow\b",
-        message,
-    ):
+    elif re.search(r"\btomorrow\b", message):
 
-        window_start = (
-            local_midnight
-            + timedelta(
-                days=1
-            )
-        )
+        window_start = local_midnight + timedelta(days=1)
 
-        start = max(
-            start,
-            window_start,
-        )
+        start = max(start, window_start)
 
-        end = (
-            window_start
-            + timedelta(
-                days=1
-            )
-        )
+        end = window_start + timedelta(days=1)
 
         label = "tomorrow"
 
-    elif re.search(
-        r"\btonight\b",
-        message,
-    ):
+    elif re.search(r"\btonight\b", message):
 
-        window_start = (
-            local_midnight
-            + timedelta(
-                hours=17
-            )
-        )
+        window_start = local_midnight + timedelta(hours=17)
 
-        start = max(
-            start,
-            window_start,
-        )
+        start = max(start, window_start)
 
-        end = (
-            local_midnight
-            + timedelta(
-                days=1,
-                hours=3,
-            )
-        )
+        end = local_midnight + timedelta(days=1, hours=3)
 
         label = "tonight"
 
-    elif re.search(
-        r"\btoday\b",
-        message,
-    ):
+    elif re.search(r"\btoday\b", message):
 
-        end = (
-            local_midnight
-            + timedelta(
-                days=1
-            )
-        )
+        end = local_midnight + timedelta(days=1)
 
         label = "today"
 
-    elif re.search(
-        r"\bweek\b",
-        message,
-    ):
+    elif re.search(r"\bweek\b", message):
 
-        end = (
-            now
-            + timedelta(
-                days=7
-            )
-        )
+        end = now + timedelta(days=7)
 
         label = "next 7 days"
 
     target_odds = None
 
     odds_match = re.search(
-        r"\b(\d+(?:\.\d+)?)\s*"
-        r"(?:total\s+)?odds?\b",
+        r"\b(\d+(?:\.\d+)?)\s*(?:total\s+)?odds?\b",
         message,
     )
 
     if not odds_match:
 
         odds_match = re.search(
-            r"\bodds?\s*"
-            r"(?:of|:|=)?\s*"
-            r"(\d+(?:\.\d+)?)",
+            r"\bodds?\s*(?:of|:|=)?\s*(\d+(?:\.\d+)?)",
             message,
         )
 
     if odds_match:
 
-        value = float(
-            odds_match.group(1)
-        )
+        value = float(odds_match.group(1))
 
-        if (
-            1.01
-            <= value
-            <= 100000
-        ):
+        if 1.01 <= value <= 100000:
             target_odds = value
 
     picks = None
@@ -987,30 +708,18 @@ def parse_request(text):
 
     if picks_match:
 
-        value = int(
-            picks_match.group(1)
-        )
+        value = int(picks_match.group(1))
 
-        if (
-            1
-            <= value
-            <= 60
-        ):
+        if 1 <= value <= 60:
             picks = value
 
     risk = "normal"
 
-    if re.search(
-        SAFE_WORDS,
-        message,
-    ):
+    if re.search(SAFE_WORDS, message):
 
         risk = "safe"
 
-    elif re.search(
-        RISKY_WORDS,
-        message,
-    ):
+    elif re.search(RISKY_WORDS, message):
 
         risk = "risky"
 
@@ -1026,40 +735,26 @@ def parse_request(text):
 
 def format_odds(value):
 
-    return (
-        str(int(value))
-        if value == int(value)
-        else str(value)
-    )
+    return str(int(value)) if value == int(value) else str(value)
 
 
 def describe_request(req):
 
     odds = (
-        format_odds(
-            req["target_odds"]
-        )
+        format_odds(req["target_odds"])
         if req["target_odds"]
         else "not set"
     )
 
-    picks = (
-        str(req["picks"])
-        if req["picks"]
-        else "auto"
-    )
+    picks = str(req["picks"]) if req["picks"] else "auto"
 
     risk = {
         "safe": "🛡️ Safe",
         "risky": "🔥 Risky",
-    }.get(
-        req.get("risk"),
-        "Normal",
-    )
+    }.get(req.get("risk"), "Normal")
 
     return (
-        f"📅 Window: "
-        f"{escape(req['label'])}\n"
+        f"📅 Window: {escape(req['label'])}\n"
         f"🎯 Target odds: {odds}\n"
         f"🔢 Picks: {picks}\n"
         f"⚖️ Risk: {risk}"
@@ -1121,28 +816,17 @@ def prediction_ticket_flow(
 # LEGACY STUBS
 # ============================================================
 
-def build_options(
-    *args,
-    **kwargs,
-):
+def build_options(*args, **kwargs):
 
     return []
 
 
-def filter_available(
-    fixture,
-    options,
-    errors,
-    min_odds=None,
-):
+def filter_available(fixture, options, errors, min_odds=None):
 
     return options
 
 
-def ai_system_prompt(
-    *args,
-    **kwargs,
-):
+def ai_system_prompt(*args, **kwargs):
 
     return ""
 
@@ -1151,9 +835,7 @@ def ai_system_prompt(
 # /markets COMMAND
 # ============================================================
 
-def markets_message(
-    event_id,
-):
+def markets_message(event_id):
 
     if SPORTYBET_PROVIDER is None:
 
@@ -1164,19 +846,11 @@ def markets_message(
 
     try:
 
-        markets = (
-            SPORTYBET_PROVIDER
-            .get_event_markets(
-                event_id
-            )
-        )
+        markets = SPORTYBET_PROVIDER.get_event_markets(event_id)
 
     except Exception as exc:
 
-        return (
-            "❌ Could not read that event: "
-            f"{escape(str(exc))}"
-        )
+        return f"❌ Could not read that event: {escape(str(exc))}"
 
     if not markets:
 
@@ -1186,10 +860,7 @@ def markets_message(
         )
 
     lines = [
-        (
-            f"📋 <b>Markets for</b> "
-            f"<code>{escape(event_id)}</code>"
-        ),
+        f"📋 <b>Markets for</b> <code>{escape(event_id)}</code>",
         "",
     ]
 
@@ -1199,24 +870,11 @@ def markets_message(
 
         mid = market.get("id")
 
-        spec = (
-            market.get(
-                "specifier"
-            )
-            or ""
-        )
+        spec = market.get("specifier") or ""
 
-        desc = (
-            market.get("desc")
-            or market.get("name")
-            or ""
-        )
+        desc = market.get("desc") or market.get("name") or ""
 
-        key = (
-            mid,
-            spec,
-            desc,
-        )
+        key = (mid, spec, desc)
 
         if key in seen:
             continue
@@ -1229,9 +887,7 @@ def markets_message(
             f"| {escape(desc)}"
         )
 
-    return "\n".join(
-        lines[:80]
-    )
+    return "\n".join(lines[:80])
 
 
 # ============================================================
@@ -1241,25 +897,17 @@ def markets_message(
 _pending = {}
 
 
-def _is_cancel(
-    text,
-):
+def _is_cancel(text):
 
-    return (
-        text.strip().lower()
-        in (
-            "cancel",
-            "stop",
-            "never mind",
-            "forget it",
-        )
+    return text.strip().lower() in (
+        "cancel",
+        "stop",
+        "never mind",
+        "forget it",
     )
 
 
-def _run_ticket(
-    chat_id,
-    req_text,
-):
+def _run_ticket(chat_id, req_text):
     """
     Send the user's complete natural-language request
     to smart_ticket.py.
@@ -1274,9 +922,7 @@ def _run_ticket(
 
     try:
 
-        req = parse_request(
-            req_text
-        )
+        req = parse_request(req_text)
 
         search_days = None
 
@@ -1296,9 +942,7 @@ def _run_ticket(
 
             search_days = 3
 
-        elif req["label"].startswith(
-            "next "
-        ):
+        elif req["label"].startswith("next "):
 
             match = re.search(
                 r"next\s+(\d+)\s+days?",
@@ -1307,18 +951,9 @@ def _run_ticket(
 
             if match:
 
-                days = int(
-                    match.group(1)
-                )
+                days = int(match.group(1))
 
-                supported = (
-                    1,
-                    2,
-                    3,
-                    5,
-                    7,
-                    14,
-                )
+                supported = (1, 2, 3, 5, 7, 14)
 
                 if days in supported:
 
@@ -1344,12 +979,8 @@ def _run_ticket(
             chat_id,
             req_text,
             search_days=search_days,
-            target_override=req[
-                "target_odds"
-            ],
-            count_override=req[
-                "picks"
-            ],
+            target_override=req["target_odds"],
+            count_override=req["picks"],
         )
 
     except Exception as exc:
@@ -1366,29 +997,18 @@ def _run_ticket(
         )
 
 
-def _handle_pending(
-    chat_id,
-    text,
-):
+def _handle_pending(chat_id, text):
 
-    state = _pending.get(
-        chat_id
-    )
+    state = _pending.get(chat_id)
 
     if state is None:
         return False
 
     if _is_cancel(text):
 
-        _pending.pop(
-            chat_id,
-            None,
-        )
+        _pending.pop(chat_id, None)
 
-        send_message(
-            chat_id,
-            "OK, cancelled.",
-        )
+        send_message(chat_id, "OK, cancelled.")
 
         return True
 
@@ -1396,54 +1016,32 @@ def _handle_pending(
 
         m = re.search(
             r"\d+(?:\.\d+)?",
-            text.replace(
-                ",",
-                "",
-            ),
+            text.replace(",", ""),
         )
 
         if not m:
 
             send_message(
                 chat_id,
-                (
-                    "What total odds? "
-                    "Give me a number "
-                    "(e.g. 20, 300)."
-                ),
+                "What total odds? Give me a number (e.g. 20, 300).",
             )
 
             return True
 
-        odds = float(
-            m.group()
-        )
+        odds = float(m.group())
 
-        if not (
-            1.5
-            <= odds
-            <= 100000
-        ):
+        if not (1.5 <= odds <= 100000):
 
             send_message(
                 chat_id,
-                (
-                    "Give me odds "
-                    "between 1.5 and 100000."
-                ),
+                "Give me odds between 1.5 and 100000.",
             )
 
             return True
 
-        window = state.get(
-            "window",
-            "today",
-        )
+        window = state.get("window", "today")
 
-        _pending.pop(
-            chat_id,
-            None,
-        )
+        _pending.pop(chat_id, None)
 
         tag = (
             "straight win long ticket"
@@ -1453,10 +1051,7 @@ def _handle_pending(
 
         _run_ticket(
             chat_id,
-            (
-                f"{tag} "
-                f"{format_odds(odds)} odds"
-            ),
+            f"{tag} {format_odds(odds)} odds",
         )
 
         return True
@@ -1468,34 +1063,19 @@ def _handle_pending(
 # MESSAGE HANDLER
 # ============================================================
 
-def handle_text(
-    chat_id,
-    text,
-):
+def handle_text(chat_id, text):
 
-    message = (
-        text or ""
-    ).strip()
+    message = (text or "").strip()
 
     lowered = message.lower()
 
     if lowered.startswith("/"):
 
-        parts = lowered.split(
-            None,
-            1,
-        )
+        parts = lowered.split(None, 1)
 
-        command = (
-            parts[0]
-            .split("@")[0]
-        )
+        command = parts[0].split("@")[0]
 
-        args = (
-            parts[1]
-            if len(parts) > 1
-            else ""
-        )
+        args = parts[1] if len(parts) > 1 else ""
 
     else:
 
@@ -1504,33 +1084,21 @@ def handle_text(
 
     if command == "/start":
 
-        send_message(
-            chat_id,
-            START_TEXT,
-        )
+        send_message(chat_id, START_TEXT)
 
         return
 
     if command == "/help":
 
-        send_message(
-            chat_id,
-            HELP_TEXT,
-        )
+        send_message(chat_id, HELP_TEXT)
 
         return
 
     if command == "/reset":
 
-        _pending.pop(
-            chat_id,
-            None,
-        )
+        _pending.pop(chat_id, None)
 
-        send_message(
-            chat_id,
-            "🧹 Cleared.",
-        )
+        send_message(chat_id, "🧹 Cleared.")
 
         return
 
@@ -1538,10 +1106,7 @@ def handle_text(
 
         if SPORTYBET_PROVIDER is not None:
 
-            send_message(
-                chat_id,
-                "✅ SportyBet mode is ON.",
-            )
+            send_message(chat_id, "✅ SportyBet mode is ON.")
 
         else:
 
@@ -1561,20 +1126,12 @@ def handle_text(
 
             send_message(
                 chat_id,
-                (
-                    "Usage: "
-                    "/markets sr:match:12345678"
-                ),
+                "Usage: /markets sr:match:12345678",
             )
 
             return
 
-        send_message(
-            chat_id,
-            markets_message(
-                args.strip()
-            ),
-        )
+        send_message(chat_id, markets_message(args.strip()))
 
         return
 
@@ -1582,70 +1139,46 @@ def handle_text(
 
         _run_ticket(
             chat_id,
-            (
-                args
-                if args
-                else "5 picks today"
-            ),
+            args if args else "5 picks today",
         )
 
         return
 
-    if not command and _handle_pending(
-        chat_id,
-        message,
-    ):
+    if not command and _handle_pending(chat_id, message):
 
         return
 
-    if (
-        not command
-        and STRAIGHT_WIN_RE.search(
-            message
-        )
-    ):
+    if not command and STRAIGHT_WIN_RE.search(message):
 
-        _run_ticket(
-            chat_id,
-            message,
-        )
+        _run_ticket(chat_id, message)
 
         return
 
-    reply = smalltalk_reply(
-        lowered
-    )
+    # NEW: Daily 2 odds (matches "Daily2odds", "daily 2 odds", ...).
+    if not command and DAILY_RE.search(message):
+
+        _run_ticket(chat_id, message)
+
+        return
+
+    reply = smalltalk_reply(lowered)
 
     if reply:
 
         send_message(
             chat_id,
-            escape(
-                reply,
-                quote=False,
-            ),
+            escape(reply, quote=False),
         )
 
         return
 
-    if (
-        not command
-        and looks_like_request(
-            lowered
-        )
-    ):
+    if not command and looks_like_request(lowered):
 
-        _run_ticket(
-            chat_id,
-            message,
-        )
+        _run_ticket(chat_id, message)
 
         return
 
-    send_message(
-        chat_id,
-        UNKNOWN_TEXT,
-    )
+    send_message(chat_id, UNKNOWN_TEXT)
 
 
 # ============================================================
@@ -1676,15 +1209,11 @@ PREDICTION_WORDS = [
 ]
 
 
-def looks_like_request(
-    text,
-):
+def looks_like_request(text):
 
     return any(
         re.search(
-            r"\b"
-            + re.escape(word)
-            + r"s?\b",
+            r"\b" + re.escape(word) + r"s?\b",
             text,
         )
         for word in PREDICTION_WORDS
@@ -1736,16 +1265,11 @@ SMALLTALK = [
 ]
 
 
-def smalltalk_reply(
-    text,
-):
+def smalltalk_reply(text):
 
     for pattern, reply in SMALLTALK:
 
-        if re.search(
-            pattern,
-            text,
-        ):
+        if re.search(pattern, text):
 
             return reply
 
@@ -1765,7 +1289,8 @@ START_TEXT = (
     "• today's 10 odds\n"
     "• give me 20 odds\n"
     "• 20 odds tomorrow\n"
-    "• straight win 30 odds\n\n"
+    "• straight win 30 odds\n"
+    "• Daily2odds\n\n"
     "Commands:\n"
     "/status — check SportyBet mode\n"
     "/markets sr:match:12345678 — inspect a match\n"
@@ -1781,6 +1306,8 @@ HELP_TEXT = (
     "• give me 20 odds\n"
     "• safe 30 odds tomorrow\n"
     "• 5 picks today\n\n"
+    "Daily 2 odds:\n"
+    "• Daily2odds\n\n"
     "Straight-win mode (1UP / 2UP only):\n"
     "• straight win today\n"
     "• straight win 20 odds\n"
@@ -1805,7 +1332,8 @@ UNKNOWN_TEXT = (
     "• safe 5 odds\n"
     "• today's 10 odds\n"
     "• give me 20 odds\n"
-    "• straight win 30 odds"
+    "• straight win 30 odds\n"
+    "• Daily2odds"
 )
 
 
@@ -1813,42 +1341,27 @@ UNKNOWN_TEXT = (
 # TELEGRAM MAIN LOOP
 # ============================================================
 
-def get_updates(
-    offset=None,
-):
+def get_updates(offset=None):
 
-    params = {
-        "timeout": 25
-    }
+    params = {"timeout": 25}
 
     if offset is not None:
         params["offset"] = offset
 
-    result = telegram_request(
-        "getUpdates",
-        params,
-    )
+    result = telegram_request("getUpdates", params)
 
-    return result.get(
-        "result",
-        [],
-    )
+    return result.get("result", [])
 
 
 def main():
 
     if not BOT_TOKEN:
 
-        print(
-            "ERROR: "
-            "TELEGRAM_BOT_TOKEN is missing."
-        )
+        print("ERROR: TELEGRAM_BOT_TOKEN is missing.")
 
         return
 
-    football_status = (
-        football_api_status()
-    )
+    football_status = football_api_status()
 
     print(
         f"{BRAND} is running. "
@@ -1864,11 +1377,7 @@ def main():
             else "NOT configured"
         )
         + " | daily remaining: "
-        + str(
-            football_status[
-                "daily_remaining"
-            ]
-        )
+        + str(football_status["daily_remaining"])
     )
 
     offset = None
@@ -1877,70 +1386,43 @@ def main():
 
         try:
 
-            updates = get_updates(
-                offset
-            )
+            updates = get_updates(offset)
 
             for update in updates:
 
-                offset = (
-                    update["update_id"]
-                    + 1
-                )
+                offset = update["update_id"] + 1
 
-                message = update.get(
-                    "message"
-                )
+                message = update.get("message")
 
                 if not message:
                     continue
 
-                chat_id = (
-                    message
-                    .get(
-                        "chat",
-                        {},
-                    )
-                    .get(
-                        "id"
-                    )
-                )
+                chat_id = message.get("chat", {}).get("id")
 
-                text = message.get(
-                    "text"
-                )
+                text = message.get("text")
 
                 if not chat_id or not text:
                     continue
 
                 try:
 
-                    handle_text(
-                        chat_id,
-                        text,
-                    )
+                    handle_text(chat_id, text)
 
                 except Exception as exc:
 
                     traceback.print_exc()
 
-                    print(
-                        f"Handler error: {exc}"
-                    )
+                    print(f"Handler error: {exc}")
 
         except KeyboardInterrupt:
 
-            print(
-                f"{BRAND} stopped."
-            )
+            print(f"{BRAND} stopped.")
 
             break
 
         except Exception as exc:
 
-            print(
-                f"Bot error: {exc}"
-            )
+            print(f"Bot error: {exc}")
 
             time.sleep(5)
 

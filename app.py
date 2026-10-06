@@ -12,6 +12,7 @@ Production:
 
 Environment:
   USE_SPORTYBET=1
+  MAX_PARALLEL_TICKETS=3   (optional, how many tickets build at once)
 """
 
 import base64
@@ -23,6 +24,7 @@ import queue
 import re
 import threading
 import time
+import traceback
 
 from flask import Flask, Response, jsonify, redirect, request
 
@@ -33,34 +35,36 @@ RATE_LIMIT = 8
 RATE_WINDOW = 60
 TOOL_LIMIT = 30
 
-LAUNCHER_MODULE = os.getenv(
-    "LAUNCHER_MODULE",
-    "launcher",
+# How many tickets may be built at the same time.
+MAX_PARALLEL_TICKETS = max(
+    1,
+    int(os.getenv("MAX_PARALLEL_TICKETS", "3")),
 )
+
+LAUNCHER_MODULE = os.getenv("LAUNCHER_MODULE", "launcher")
 
 
 # ===============================================================
 # IMPORTANT IMPORT ORDER
+# ===============================================================
+# SportyBet provider MUST be completely loaded before main.py
+# and smart_ticket.py are imported.
+#
+# This prevents:
+# "partially initialized module 'sportybet_provider'"
 # ===============================================================
 
 SPORTYBET_PROVIDER_MODULE = None
 SPORTYBET_PROVIDER_ERROR = None
 
 try:
-
     SPORTYBET_PROVIDER_MODULE = importlib.import_module(
         "sportybet_provider"
     )
-
-    print(
-        "✅ sportybet_provider.py loaded successfully"
-    )
+    print("✅ sportybet_provider.py loaded successfully")
 
 except Exception as exc:
-
-    SPORTYBET_PROVIDER_ERROR = (
-        f"{type(exc).__name__}: {exc}"
-    )
+    SPORTYBET_PROVIDER_ERROR = f"{type(exc).__name__}: {exc}"
 
     print(
         "❌ sportybet_provider.py failed to load:",
@@ -73,47 +77,35 @@ except Exception as exc:
 # ===============================================================
 
 try:
-
-    bot = importlib.import_module(
-        "main"
-    )
-
-    print(
-        "✅ main.py loaded successfully"
-    )
+    bot = importlib.import_module("main")
+    print("✅ main.py loaded successfully")
 
 except Exception as exc:
-
     print(
         "❌ main.py failed to load:",
         f"{type(exc).__name__}: {exc}",
     )
-
     raise
 
 
 # ===============================================================
 # LOAD SMART TICKET BUILDER
 # ===============================================================
+#
+# smart_ticket.py replaces main.prediction_ticket_flow with the
+# real SportyTips ticket-building logic.
+# ===============================================================
 
 SMART_TICKET_MODULE = None
 SMART_TICKET_ERROR = None
 
 try:
+    SMART_TICKET_MODULE = importlib.import_module("smart_ticket")
 
-    SMART_TICKET_MODULE = importlib.import_module(
-        "smart_ticket"
-    )
-
-    print(
-        "✅ smart_ticket.py loaded successfully"
-    )
+    print("✅ smart_ticket.py loaded successfully")
 
 except Exception as exc:
-
-    SMART_TICKET_ERROR = (
-        f"{type(exc).__name__}: {exc}"
-    )
+    SMART_TICKET_ERROR = f"{type(exc).__name__}: {exc}"
 
     print(
         "❌ smart_ticket.py failed to load:",
@@ -126,22 +118,14 @@ except Exception as exc:
 # ===============================================================
 
 try:
-
-    launcher = importlib.import_module(
-        LAUNCHER_MODULE
-    )
-
-    print(
-        f"✅ {LAUNCHER_MODULE}.py loaded successfully"
-    )
+    launcher = importlib.import_module(LAUNCHER_MODULE)
+    print(f"✅ {LAUNCHER_MODULE}.py loaded successfully")
 
 except Exception as exc:
-
     print(
         f"❌ {LAUNCHER_MODULE}.py failed to load:",
         f"{type(exc).__name__}: {exc}",
     )
-
     raise
 
 
@@ -150,13 +134,8 @@ except Exception as exc:
 # ===============================================================
 
 try:
-
-    upgrades = importlib.import_module(
-        "upgrades"
-    )
-
+    upgrades = importlib.import_module("upgrades")
 except ImportError:
-
     upgrades = None
 
 
@@ -168,12 +147,7 @@ _ctx = threading.local()
 
 
 def _emit(item):
-
-    q = getattr(
-        _ctx,
-        "q",
-        None,
-    )
+    q = getattr(_ctx, "q", None)
 
     if q is not None:
         q.put(item)
@@ -187,6 +161,7 @@ HIDE_LINES = re.compile(
 
 
 def _rebrand(text):
+    """Always display SportyTips instead of older branding."""
 
     text = re.sub(
         r"SamuelBet\s*(<span[^>]*>)\s*AI\s*(</span>)",
@@ -196,22 +171,12 @@ def _rebrand(text):
 
     return (
         text
-        .replace(
-            "SamuelBet AI",
-            "SportyTips",
-        )
-        .replace(
-            "SamuelBet",
-            "SportyTips",
-        )
+        .replace("SamuelBet AI", "SportyTips")
+        .replace("SamuelBet", "SportyTips")
     )
 
 
-def web_send_message(
-    chat_id,
-    text,
-):
-
+def web_send_message(chat_id, text):
     kept = [
         line
         for line in text.split("\n")
@@ -225,7 +190,6 @@ def web_send_message(
     ).strip()
 
     if not cleaned:
-
         cleaned = (
             "I couldn't get that right now. "
             "Please try again in a minute."
@@ -233,42 +197,24 @@ def web_send_message(
 
     cleaned = (
         cleaned
-        .replace(
-            "&#x27;",
-            "'",
-        )
-        .replace(
-            "&#39;",
-            "'",
-        )
-        .replace(
-            "&quot;",
-            '"',
-        )
+        .replace("&#x27;", "'")
+        .replace("&#39;", "'")
+        .replace("&quot;", '"')
     )
 
     _emit(
         {
             "type": "text",
-            "html": _rebrand(
-                cleaned
-            ),
+            "html": _rebrand(cleaned),
         }
     )
 
 
-def web_send_photo(
-    chat_id,
-    png,
-    caption="",
-):
-
+def web_send_photo(chat_id, png, caption=""):
     _emit(
         {
             "type": "image",
-            "data": base64.b64encode(
-                png
-            ).decode("ascii"),
+            "data": base64.b64encode(png).decode("ascii"),
             "caption": caption,
         }
     )
@@ -297,7 +243,8 @@ launcher.send_photo = web_send_photo
 
 app = Flask(__name__)
 
-RUN_LOCK = threading.Lock()
+# Allows a few tickets to build at once instead of one at a time.
+RUN_LOCK = threading.Semaphore(MAX_PARALLEL_TICKETS)
 
 _hits = {}
 
@@ -306,26 +253,17 @@ _hits = {}
 # RATE LIMIT
 # ===============================================================
 
-def too_fast(
-    key,
-    limit=RATE_LIMIT,
-):
-
+def too_fast(key, limit=RATE_LIMIT):
     now = time.time()
 
     recent = [
         t
-        for t in _hits.get(
-            key,
-            [],
-        )
+        for t in _hits.get(key, [])
         if now - t < RATE_WINDOW
     ]
 
     if len(recent) >= limit:
-
         _hits[key] = recent
-
         return True
 
     recent.append(now)
@@ -336,12 +274,8 @@ def too_fast(
 
 
 def client_ip():
-
     return (
-        request.headers.get(
-            "X-Forwarded-For",
-            "",
-        )
+        request.headers.get("X-Forwarded-For", "")
         .split(",")[0]
         .strip()
         or request.remote_addr
@@ -353,18 +287,12 @@ def client_ip():
 # RUN ONE CHAT TURN
 # ===============================================================
 
-def run_turn(
-    session,
-    text,
-    q,
-):
-
+def run_turn(session, text, q):
     _ctx.q = q
 
     try:
 
         with RUN_LOCK:
-
             bot.handle_text(
                 session,
                 text,
@@ -372,129 +300,16 @@ def run_turn(
 
     except Exception as exc:
 
-        import traceback
-
-        print(
-            "❌ CHAT ERROR:"
-        )
-
+        # Full details go to the server log only.
+        print(f"Chat turn failed: {type(exc).__name__}: {exc}")
         traceback.print_exc()
 
         q.put(
             {
                 "type": "text",
                 "html": (
-                    "❌ "
-                    + html.escape(
-                        f"{type(exc).__name__}: {exc}"
-                    )
-                ),
-            }
-        )
-
-    finally:
-
-        q.put(None)
-
-
-# ===============================================================
-# RUN CUSTOM SMART TICKET BUILD
-# ===============================================================
-
-def run_custom_build(
-    session,
-    search_days,
-    target_odds,
-    picks,
-    risk,
-    straight_only,
-    q,
-):
-
-    _ctx.q = q
-
-    try:
-
-        if SMART_TICKET_MODULE is None:
-
-            raise RuntimeError(
-                "smart_ticket.py is not loaded."
-            )
-
-        flow = getattr(
-            SMART_TICKET_MODULE,
-            "flow",
-            None,
-        )
-
-        if not callable(flow):
-
-            raise RuntimeError(
-                "smart_ticket.flow is unavailable."
-            )
-
-        # -------------------------------------------------------
-        # Build a natural request for the existing parser.
-        #
-        # The actual custom values are passed directly to
-        # smart_ticket.flow(), so they cannot be lost inside
-        # main.py.
-        # -------------------------------------------------------
-
-        if straight_only:
-
-            text = (
-                "straight win long ticket"
-                if search_days != 1
-                else "straight win today"
-            )
-
-        elif target_odds:
-
-            text = (
-                f"build ticket "
-                f"{target_odds} odds"
-            )
-
-        else:
-
-            text = (
-                f"build ticket "
-                f"{picks} picks"
-            )
-
-        # -------------------------------------------------------
-        # DIRECT SMART TICKET CALL
-        # -------------------------------------------------------
-
-        with RUN_LOCK:
-
-            flow(
-                session,
-                text,
-                search_days=search_days,
-                target_override=target_odds,
-                count_override=picks,
-            )
-
-    except Exception as exc:
-
-        import traceback
-
-        print(
-            "❌ CUSTOM BUILD ERROR:"
-        )
-
-        traceback.print_exc()
-
-        q.put(
-            {
-                "type": "text",
-                "html": (
-                    "❌ "
-                    + html.escape(
-                        f"{type(exc).__name__}: {exc}"
-                    )
+                    "❌ Something went wrong on my side. "
+                    "Please try again in a minute."
                 ),
             }
         )
@@ -550,15 +365,12 @@ CHAT_EXTRAS = r"""
   function copyText(text, btn) {
 
     function done() {
-
       btn.textContent = "Copied";
       btn.classList.add("done");
 
       setTimeout(function () {
-
         btn.textContent = "Copy";
         btn.classList.remove("done");
-
       }, 1500);
     }
 
@@ -632,12 +444,7 @@ CHAT_EXTRAS = r"""
         b.textContent = "Copy";
 
         b.onclick = function () {
-
-          copyText(
-            text,
-            b
-          );
-
+          copyText(text, b);
         };
 
         s.after(b);
@@ -669,32 +476,18 @@ CHAT_EXTRAS = r"""
 @app.get("/")
 def home_page():
 
-    path = os.path.join(
-        BASE_DIR,
-        "home.html",
-    )
+    path = os.path.join(BASE_DIR, "home.html")
 
     if not os.path.exists(path):
+        return redirect("/chat")
 
-        return redirect(
-            "/chat"
-        )
-
-    with open(
-        path,
-        encoding="utf-8",
-    ) as fh:
-
-        page = _rebrand(
-            fh.read()
-        )
+    with open(path, encoding="utf-8") as fh:
+        page = _rebrand(fh.read())
 
     return Response(
         page,
         mimetype="text/html",
-        headers={
-            "Cache-Control": "no-cache"
-        },
+        headers={"Cache-Control": "no-cache"},
     )
 
 
@@ -705,9 +498,7 @@ def home_page():
 @app.get("/index.html")
 def chat_page_alias():
 
-    return redirect(
-        "/chat"
-    )
+    return redirect("/chat")
 
 
 # ===============================================================
@@ -717,10 +508,7 @@ def chat_page_alias():
 @app.get("/chat")
 def chat_page():
 
-    path = os.path.join(
-        BASE_DIR,
-        "index.html",
-    )
+    path = os.path.join(BASE_DIR, "index.html")
 
     if not os.path.exists(path):
 
@@ -729,14 +517,8 @@ def chat_page():
             404,
         )
 
-    with open(
-        path,
-        encoding="utf-8",
-    ) as fh:
-
-        page = _rebrand(
-            fh.read()
-        )
+    with open(path, encoding="utf-8") as fh:
+        page = _rebrand(fh.read())
 
     if "</body>" in page:
 
@@ -753,9 +535,7 @@ def chat_page():
     return Response(
         page,
         mimetype="text/html",
-        headers={
-            "Cache-Control": "no-cache"
-        },
+        headers={"Cache-Control": "no-cache"},
     )
 
 
@@ -767,11 +547,7 @@ def chat_page():
 def health():
 
     provider_loaded = (
-        getattr(
-            bot,
-            "SPORTYBET_PROVIDER",
-            None,
-        )
+        getattr(bot, "SPORTYBET_PROVIDER", None)
         is not None
     )
 
@@ -779,9 +555,7 @@ def health():
         status="ok",
         sportybet=provider_loaded,
         sportybet_error=SPORTYBET_PROVIDER_ERROR,
-        smart_ticket=(
-            SMART_TICKET_MODULE is not None
-        ),
+        smart_ticket=SMART_TICKET_MODULE is not None,
         smart_ticket_error=SMART_TICKET_ERROR,
     )
 
@@ -797,27 +571,16 @@ def _stream_response(q):
         while True:
 
             try:
-
-                item = q.get(
-                    timeout=15
-                )
+                item = q.get(timeout=15)
 
             except queue.Empty:
-
                 yield "\n"
-
                 continue
 
             if item is None:
-
                 break
 
-            yield (
-                json.dumps(
-                    item
-                )
-                + "\n"
-            )
+            yield json.dumps(item) + "\n"
 
     return Response(
         stream(),
@@ -836,372 +599,30 @@ def _stream_response(q):
 @app.post("/api/chat")
 def chat():
 
-    data = (
-        request.get_json(
-            silent=True
-        )
-        or {}
-    )
+    data = request.get_json(silent=True) or {}
 
-    text = str(
-        data.get(
-            "message",
-            "",
-        )
-    ).strip()[:500]
+    text = str(data.get("message", "")).strip()[:500]
 
-    session = str(
-        data.get(
-            "session",
-            "",
-        )
-    )[:64]
+    session = str(data.get("session", ""))[:64]
 
     if not text or not session:
+        return jsonify(error="Empty message."), 400
+
+    if too_fast(client_ip()):
 
         return jsonify(
-            error="Empty message."
-        ), 400
-
-    if too_fast(
-        client_ip()
-    ):
-
-        return jsonify(
-            error=(
-                "Slow down. "
-                "Try again in a minute."
-            )
+            error="Slow down. Try again in a minute."
         ), 429
 
     q = queue.Queue()
 
     threading.Thread(
         target=run_turn,
-        args=(
-            session,
-            text,
-            q,
-        ),
+        args=(session, text, q),
         daemon=True,
     ).start()
 
     return _stream_response(q)
-
-
-# ===============================================================
-# CUSTOM TICKET BUILDER API
-# ===============================================================
-#
-# This is the new endpoint.
-#
-# Frontend sends:
-#
-# {
-#   "session": "...",
-#   "search_days": 7,
-#   "target_odds": 20,
-#   "picks": 5,
-#   "risk": "normal",
-#   "straight_only": false
-# }
-#
-# The values are passed directly to smart_ticket.flow().
-# ===============================================================
-
-@app.post("/api/build")
-def api_build():
-
-    data = (
-        request.get_json(
-            silent=True
-        )
-        or {}
-    )
-
-    session = str(
-        data.get(
-            "session",
-            "",
-        )
-    )[:64]
-
-    if not session:
-
-        return jsonify(
-            error="Missing session."
-        ), 400
-
-    if too_fast(
-        "build:" + client_ip(),
-        RATE_LIMIT,
-    ):
-
-        return jsonify(
-            error=(
-                "Slow down. "
-                "Try again in a minute."
-            )
-        ), 429
-
-    # -----------------------------------------------------------
-    # SEARCH DAYS
-    # -----------------------------------------------------------
-
-    search_days = data.get(
-        "search_days"
-    )
-
-    try:
-
-        search_days = int(
-            search_days
-        )
-
-    except (
-        TypeError,
-        ValueError,
-    ):
-
-        return jsonify(
-            error=(
-                "Search period must be "
-                "1, 2, 3, 5, 7 or 14 days."
-            )
-        ), 400
-
-    if search_days not in (
-        1,
-        2,
-        3,
-        5,
-        7,
-        14,
-    ):
-
-        return jsonify(
-            error=(
-                "Search period must be "
-                "1, 2, 3, 5, 7 or 14 days."
-            )
-        ), 400
-
-    # -----------------------------------------------------------
-    # TARGET ODDS
-    # -----------------------------------------------------------
-
-    target_odds = data.get(
-        "target_odds"
-    )
-
-    if (
-        target_odds is not None
-        and str(
-            target_odds
-        ).strip() != ""
-    ):
-
-        try:
-
-            target_odds = float(
-                target_odds
-            )
-
-        except (
-            TypeError,
-            ValueError,
-        ):
-
-            return jsonify(
-                error=(
-                    "Target odds must be "
-                    "a valid number."
-                )
-            ), 400
-
-        if target_odds <= 1:
-
-            return jsonify(
-                error=(
-                    "Target odds must "
-                    "be greater than 1."
-                )
-            ), 400
-
-    else:
-
-        target_odds = None
-
-    # -----------------------------------------------------------
-    # NUMBER OF PICKS
-    # -----------------------------------------------------------
-
-    picks = data.get(
-        "picks"
-    )
-
-    if (
-        picks is not None
-        and str(
-            picks
-        ).strip() != ""
-    ):
-
-        try:
-
-            picks = int(
-                picks
-            )
-
-        except (
-            TypeError,
-            ValueError,
-        ):
-
-            return jsonify(
-                error=(
-                    "Number of picks "
-                    "must be a valid number."
-                )
-            ), 400
-
-        if picks < 1:
-
-            return jsonify(
-                error=(
-                    "Number of picks "
-                    "must be at least 1."
-                )
-            ), 400
-
-        if picks > 30:
-
-            return jsonify(
-                error=(
-                    "Maximum number of "
-                    "picks is 30."
-                )
-            ), 400
-
-    else:
-
-        picks = None
-
-    # -----------------------------------------------------------
-    # RISK
-    # -----------------------------------------------------------
-
-    risk = str(
-        data.get(
-            "risk",
-            "normal",
-        )
-    ).lower().strip()
-
-    if risk not in (
-        "safe",
-        "normal",
-        "risky",
-    ):
-
-        risk = "normal"
-
-    # -----------------------------------------------------------
-    # STRAIGHT WIN
-    # -----------------------------------------------------------
-
-    straight_value = data.get(
-        "straight_only",
-        False,
-    )
-
-    if isinstance(
-        straight_value,
-        bool,
-    ):
-
-        straight_only = (
-            straight_value
-        )
-
-    else:
-
-        straight_only = str(
-            straight_value
-        ).lower() in (
-            "1",
-            "true",
-            "yes",
-            "on",
-        )
-
-    # -----------------------------------------------------------
-    # STRAIGHT WIN DOES NOT USE OTHER MARKETS
-    # -----------------------------------------------------------
-
-    if straight_only:
-
-        # Straight Win is handled by smart_ticket.py.
-        #
-        # Its safety rules permit ONLY:
-        #   1UP
-        #   2UP
-        #
-        # We intentionally do not inject another market here.
-        pass
-
-    # -----------------------------------------------------------
-    # PROVIDER CHECK
-    # -----------------------------------------------------------
-
-    provider = getattr(
-        bot,
-        "SPORTYBET_PROVIDER",
-        None,
-    )
-
-    if provider is None:
-
-        return jsonify(
-            error=(
-                "SportyBet mode is off. "
-                "Set USE_SPORTYBET to 1 "
-                "on the server."
-            )
-        ), 503
-
-    if SMART_TICKET_MODULE is None:
-
-        return jsonify(
-            error=(
-                "smart_ticket.py "
-                "is not loaded."
-            )
-        ), 503
-
-    # -----------------------------------------------------------
-    # START BUILD
-    # -----------------------------------------------------------
-
-    q = queue.Queue()
-
-    threading.Thread(
-        target=run_custom_build,
-        args=(
-            session,
-            search_days,
-            target_odds,
-            picks,
-            risk,
-            straight_only,
-            q,
-        ),
-        daemon=True,
-    ).start()
-
-    return _stream_response(
-        q
-    )
 
 
 # ===============================================================
@@ -1211,166 +632,89 @@ def api_build():
 @app.post("/api/straight_win")
 def api_straight_win():
 
-    data = (
-        request.get_json(
-            silent=True
-        )
-        or {}
-    )
+    data = request.get_json(silent=True) or {}
 
-    window = str(
-        data.get(
-            "window",
-            "today",
-        )
-    ).lower()
+    window = str(data.get("window", "today")).lower()
 
-    session = str(
-        data.get(
-            "session",
-            "",
-        )
-    )[:64]
+    session = str(data.get("session", ""))[:64]
 
-    if window not in (
-        "today",
-        "long",
-    ):
-
-        return jsonify(
-            error="Unknown window."
-        ), 400
+    if window not in ("today", "long"):
+        return jsonify(error="Unknown window."), 400
 
     if not session:
+        return jsonify(error="Missing session."), 400
+
+    if too_fast(client_ip()):
 
         return jsonify(
-            error="Missing session."
-        ), 400
-
-    if too_fast(
-        client_ip()
-    ):
-
-        return jsonify(
-            error=(
-                "Slow down. "
-                "Try again in a minute."
-            )
+            error="Slow down. Try again in a minute."
         ), 429
 
     if window == "long":
-
-        text = (
-            "straight win long ticket"
-        )
-
+        text = "straight win long ticket"
     else:
-
-        text = (
-            "straight win today"
-        )
+        text = "straight win today"
 
     q = queue.Queue()
 
     threading.Thread(
         target=run_turn,
-        args=(
-            session,
-            text,
-            q,
-        ),
+        args=(session, text, q),
         daemon=True,
     ).start()
 
-    return _stream_response(
-        q
-    )
+    return _stream_response(q)
 
 
 # ===============================================================
 # SPORTYBET CODE TOOLS
 # ===============================================================
 
-CODE_OK = re.compile(
-    r"^[A-Z0-9]{5,12}$"
-)
+CODE_OK = re.compile(r"^[A-Z0-9]{5,12}$")
 
 
 def _ticket_tool(work):
 
-    data = (
-        request.get_json(
-            silent=True
-        )
-        or {}
-    )
+    data = request.get_json(silent=True) or {}
 
-    code = str(
-        data.get(
-            "code",
-            "",
-        )
-    ).strip().upper()
+    code = str(data.get("code", "")).strip().upper()
 
-    if not CODE_OK.match(
-        code
-    ):
+    if not CODE_OK.match(code):
 
         return jsonify(
-            error=(
-                "That does not look "
-                "like a SportyBet code."
-            )
+            error="That does not look like a SportyBet code."
         ), 400
 
-    if too_fast(
-        "tool:" + client_ip(),
-        TOOL_LIMIT,
-    ):
+    if too_fast("tool:" + client_ip(), TOOL_LIMIT):
 
         return jsonify(
-            error=(
-                "Slow down. "
-                "Try again in a minute."
-            )
+            error="Slow down. Try again in a minute."
         ), 429
 
-    provider = getattr(
-        bot,
-        "SPORTYBET_PROVIDER",
-        None,
-    )
+    provider = getattr(bot, "SPORTYBET_PROVIDER", None)
 
     if provider is None:
 
         return jsonify(
             error=(
                 "SportyBet mode is off. "
-                "Set USE_SPORTYBET to 1 "
-                "on the server."
+                "Set USE_SPORTYBET to 1 on the server."
             )
         ), 503
 
     try:
 
-        return jsonify(
-            work(
-                provider,
-                code,
-                data,
-            )
-        )
+        return jsonify(work(provider, code, data))
 
     except Exception as exc:
 
-        print(
-            f"Ticket tool error: {exc}"
-        )
+        print(f"Ticket tool error: {type(exc).__name__}: {exc}")
+        traceback.print_exc()
 
         return jsonify(
             error=(
-                "I could not read "
-                f"SportyBet right now: {exc}"
+                "I could not read SportyBet right now. "
+                "Please try again in a minute."
             )
         ), 502
 
@@ -1392,10 +736,7 @@ def _ints(value):
 def api_check():
 
     return _ticket_tool(
-        lambda p, code, data:
-        p.check_code(
-            code
-        )
+        lambda p, code, data: p.check_code(code)
     )
 
 
@@ -1407,19 +748,10 @@ def api_check():
 def api_edit():
 
     return _ticket_tool(
-        lambda p, code, data:
-        p.edit_code(
+        lambda p, code, data: p.edit_code(
             code,
-            remove=_ints(
-                data.get(
-                    "remove"
-                )
-            ),
-            swap=_ints(
-                data.get(
-                    "swap"
-                )
-            ),
+            remove=_ints(data.get("remove")),
+            swap=_ints(data.get("swap")),
             picker=None,
         )
     )
@@ -1433,10 +765,7 @@ def api_edit():
 def api_safer():
 
     return _ticket_tool(
-        lambda p, code, data:
-        p.make_safer(
-            code
-        )
+        lambda p, code, data: p.make_safer(code)
     )
 
 
@@ -1446,31 +775,16 @@ def api_safer():
 
 if __name__ == "__main__":
 
-    if getattr(
-        bot,
-        "SPORTYBET_PROVIDER",
-        None,
-    ) is None:
+    if getattr(bot, "SPORTYBET_PROVIDER", None) is None:
 
-        print(
-            "⚠️ WARNING: SportyBet provider "
-            "is not active."
-        )
+        print("⚠️ WARNING: SportyBet provider is not active.")
 
     if SMART_TICKET_MODULE is None:
 
-        print(
-            "⚠️ WARNING: smart_ticket.py "
-            "is not loaded."
-        )
+        print("⚠️ WARNING: smart_ticket.py is not loaded.")
 
     app.run(
         host="0.0.0.0",
-        port=int(
-            os.getenv(
-                "PORT",
-                "8000",
-            )
-        ),
+        port=int(os.getenv("PORT", "8000")),
         threaded=True,
     )

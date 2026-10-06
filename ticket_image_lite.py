@@ -1,5 +1,5 @@
 """Draws the ticket picture.
-Style: navy and red header, white card, odds pills (like the SamuelBet AI site).
+Style: navy and red header, white card, odds pills (like the SportyTips site).
 
 Best quality: needs Pillow (add `pillow` to requirements.txt) and the font file
 ticket_font.ttf next to this file. If either is missing it still works, but with
@@ -13,7 +13,7 @@ import struct
 import unicodedata
 import zlib
 
-WATERMARK = "SAMUELBET AI"   # change this text to change the watermark
+WATERMARK = " SportyTips"   # change this text to change the watermark
 WATERMARK_ENABLED = False    # set True to draw the diagonal watermark again
 WATERMARK_ALPHA = 38         # 0 = invisible, 255 = solid
 
@@ -219,7 +219,7 @@ def _make_bitmap_image(rows, title, subtitle, total_odds, win_chance, code=None)
     # brand (top left)
     c.rrect(PAD, 40, PAD + 64, 104, 16, RED)
     c.text(PAD + 32, 56, "S", 6, WHITE, anchor="m", bold=True)
-    c.text(PAD + 84, 62, "SAMUELBET AI", 4, WHITE, bold=True)
+    c.text(PAD + 84, 62, "SportyTips", 4, WHITE, bold=True)
 
     # date pill (top right)
     sub, sub_scale = fit(subtitle, 3, 400, min_scale=2)
@@ -290,7 +290,7 @@ def _make_bitmap_image(rows, title, subtitle, total_odds, win_chance, code=None)
     # footer
     foot_y = card_y0 + card_h + 34
     c.text(PAD, foot_y, "AI PICKS. SMARTER SLIPS.", 3, WHITE, bold=True)
-    c.text(W - PAD, foot_y, "SAMUELBET AI", 3, WHITE, anchor="r", bold=True)
+    c.text(W - PAD, foot_y, "SportyTips", 3, WHITE, anchor="r", bold=True)
     c.text(PAD, foot_y + 44, "ESTIMATES ONLY, NOT GUARANTEES. BET RESPONSIBLY (18+).",
            2, MUTED)
 
@@ -412,7 +412,7 @@ def _make_smooth_image(font_path, rows, title, subtitle, total_odds, win_chance,
     # brand
     rr(PAD, 40, PAD + 64, 104, 16, RED)
     text(PAD + 32, 72, "S", 46, WHITE, "mm")
-    text(PAD + 84, 72, "SAMUELBET AI", 34, WHITE)
+    text(PAD + 84, 72, "SportyTips", 34, WHITE)
 
     # date pill
     sub, sub_size = fit(subtitle, 27, 400, 18)
@@ -479,7 +479,7 @@ def _make_smooth_image(font_path, rows, title, subtitle, total_odds, win_chance,
     # footer
     foot_y = card_y0 + card_h + 46
     text(PAD, foot_y, "AI picks. Smarter slips.", 27, WHITE)
-    text(W - PAD, foot_y, "SamuelBet AI", 27, WHITE, "rm")
+    text(W - PAD, foot_y, "SportyTips", 27, WHITE, "rm")
     text(PAD, foot_y + 46, "Estimates only, not guarantees. Bet responsibly (18+).", 18, MUTED)
 
     out = img.resize((W, height), getattr(Image, "Resampling", Image).LANCZOS)

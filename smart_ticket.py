@@ -33,6 +33,31 @@ import json
 import main as bot
 import sportybet_provider as sp
 
+# main.py may not define these, so read them safely.
+ANTHROPIC_API_KEY = (
+    getattr(bot, "ANTHROPIC_API_KEY", None)
+    or os.getenv("ANTHROPIC_API_KEY")
+)
+
+AI_MODEL = (
+    getattr(bot, "AI_MODEL", None)
+    or os.getenv("AI_MODEL", "claude-sonnet-4-6")
+)
+
+
+def _parse_ai_json(text):
+    parse = getattr(bot, "parse_ai_json", None)
+
+    if parse:
+        return parse(text)
+
+    try:
+        start = text.index("{")
+        end = text.rindex("}") + 1
+        return json.loads(text[start:end])
+    except Exception:
+        return None
+
 
 # ============================================================
 # SETTINGS
@@ -1331,13 +1356,13 @@ def choose_count(groups, count):
 def _ai_json(prompt, system):
     """Ask AI for news/reason review."""
 
-    if not bot.ANTHROPIC_API_KEY:
+    if not ANTHROPIC_API_KEY:
         return None
 
     for use_tools in (True, False):
 
         body = {
-            "model": bot.AI_MODEL,
+            "model": AI_MODEL,
             "max_tokens": 3500,
             "system": system,
             "messages": [
@@ -1364,7 +1389,7 @@ def _ai_json(prompt, system):
             method="POST",
             headers={
                 "content-type": "application/json",
-                "x-api-key": bot.ANTHROPIC_API_KEY,
+                "x-api-key": ANTHROPIC_API_KEY,
                 "anthropic-version": "2023-06-01",
             },
         )
@@ -1387,7 +1412,7 @@ def _ai_json(prompt, system):
             if block.get("type") == "text"
         )
 
-        parsed = bot.parse_ai_json(text)
+        parsed = _parse_ai_json(text)
 
         if parsed:
             return parsed
@@ -1734,7 +1759,7 @@ def flow(
     reasons = {}
     swapped = []
 
-    if USE_AI_REVIEW and bot.ANTHROPIC_API_KEY:
+    if USE_AI_REVIEW and ANTHROPIC_API_KEY:
 
         reasons = ai_review(chosen, local_now)
 
@@ -1948,7 +1973,7 @@ def flow(
             "⚠️ SportyBet booking code could not be created."
         )
 
-    if bot.ANTHROPIC_API_KEY and USE_AI_REVIEW:
+    if ANTHROPIC_API_KEY and USE_AI_REVIEW:
 
         lines.append(
             (

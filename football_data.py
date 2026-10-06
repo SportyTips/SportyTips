@@ -1,21 +1,43 @@
-"""Real football facts for SamuelBet AI.
+"""
+Real football facts for SamuelBet AI.
 
-Uses API-Football to match SportyBet fixtures and collect:
-- last-5 form
-- last-5 goals
-- home/away records
-- head-to-head
-- API-Football prediction data
+Football evidence comes FIRST.
 
-Football evidence comes first. SportyBet odds are used only to identify
-available markets, not as the football evidence itself.
+SportyBet is used only for:
+    - available markets
+    - available selections
+    - odds / prices
+    - final booking code
+
+Football data is used for:
+    - fixture matching
+    - recent form
+    - goals
+    - home / away performance
+    - API-Football prediction data
+    - H2H
+    - Poisson goal model
+    - evidence-based market probability
+
+Persistent cache:
+    - Upstash Redis REST API when configured
+    - local SQLite fallback when Redis is not configured
+
+The persistent cache has no user-entered limit.
+Old entries naturally expire according to their TTL.
 """
 
+import json
 import math
 import os
 import re
+import sqlite3
 import time
 import unicodedata
+import urllib.error
+import urllib.parse
+import urllib.request
+
 from datetime import datetime, timezone, timedelta
 from difflib import SequenceMatcher
 
@@ -23,1597 +45,3138 @@ import main as bot
 import sportybet_provider as sp
 
 
-# ------------------------------------------------------------
+# ============================================================
 # SETTINGS
-# ------------------------------------------------------------
+# ============================================================
 
 ENRICH_MAX = int(os.getenv("ENRICH_MAX", "10"))
 ENRICH_SECONDS = int(os.getenv("ENRICH_SECONDS", "100"))
-
-# Do not waste API calls just because only a few remain.
 MIN_QUOTA = int(os.getenv("MIN_QUOTA", "1"))
 
-FACTS_CACHE_SECONDS = 3 * 3600
-FIXTURE_CACHE_SECONDS = 10 * 60
+# Facts can safely live for several hours.
+FACTS_CACHE_SECONDS = int(
+    os.getenv("FACTS_CACHE_SECONDS", str(6 * 3600))
+)
 
-# These are used by the safer-ticket helper.
+# Fixture lists change more often.
+FIXTURE_CACHE_SECONDS = int(
+    os.getenv("FIXTURE_CACHE_SECONDS", str(15 * 60))
+)
+
+# Persistent cache entries for predictions.
+PREDICTION_CACHE_SECONDS = int(
+    os.getenv("PREDICTION_CACHE_SECONDS", str(3 * 3600))
+)
+
+# Cache version.
+# Change this when the prediction model changes substantially.
+CACHE_VERSION = os.getenv("FOOTBALL_CACHE_VERSION", "v4")
+
 SURE_P_DATA = 0.78
 SURE_P_NODATA = 0.00
 
+
+# ============================================================
+# MEMORY CACHE
+# ============================================================
+
 _facts_cache = {}
 _fixture_index = {}
+_prediction_cache = {}
 
 
-# ------------------------------------------------------------
-# TEAM NAME NORMALISATION
-# ------------------------------------------------------------
+# ============================================================
+# PERSISTENT REDIS CACHE
+# ============================================================
+
+REDIS_URL = (
+    os.getenv("UPSTASH_REDIS_REST_URL")
+    or os.getenv("REDIS_URL")
+    or ""
+).strip().rstrip("/")
+
+REDIS_TOKEN = (
+    os.getenv("UPSTASH_REDIS_REST_TOKEN")
+    or os.getenv("REDIS_TOKEN")
+    or ""
+).strip()
+
+
+def _redis_enabled():
+    """
+    Upstash REST is preferred.
+
+    We deliberately use urllib instead of requiring another Python
+    package, so deployment is simpler on Render.
+    """
+    return bool(
+        REDIS_URL
+        and REDIS_TOKEN
+        and (
+            "upstash.io" in REDIS_URL
+            or REDIS_URL.startswith("https://")
+        )
+    )
+
+
+def _redis_request(command):
+    """
+    Execute one Redis command through Upstash REST.
+
+    Returns None on failure so football prediction can continue
+    using memory/local fallback rather than crashing.
+    """
+    if not _redis_enabled():
+        return None
+
+    try:
+        url = REDIS_URL
+
+        if not url.endswith("/"):
+            url += "/"
+
+        encoded = "/".join(
+            urllib.parse.quote(str(x), safe="")
+            for x in command
+        )
+
+        request = urllib.request.Request(
+            url + encoded,
+            headers={
+                "Authorization": "Bearer " + REDIS_TOKEN,
+                "Content-Type": "application/json",
+            },
+            method="GET",
+        )
+
+        with urllib.request.urlopen(request, timeout=8) as response:
+            raw = response.read().decode("utf-8")
+
+        data = json.loads(raw)
+        return data.get("result")
+
+    except Exception:
+        return None
+
+
+def _redis_get(key):
+    value = _redis_request(["GET", key])
+
+    if value is None:
+        return None
+
+    try:
+        return json.loads(value)
+    except Exception:
+        return value
+
+
+def _redis_set(key, value, ttl):
+    if not _redis_enabled():
+        return False
+
+    try:
+        payload = json.dumps(
+            value,
+            ensure_ascii=False,
+            separators=(",", ":"),
+        )
+
+        result = _redis_request(
+            ["SET", key, payload, "EX", int(ttl)]
+        )
+
+        return result == "OK"
+
+    except Exception:
+        return False
+
+
+def _redis_delete(key):
+    if not _redis_enabled():
+        return False
+
+    try:
+        _redis_request(["DEL", key])
+        return True
+    except Exception:
+        return False
+
+
+# ============================================================
+# LOCAL SQLITE FALLBACK
+# ============================================================
+
+CACHE_DB = os.getenv(
+    "FOOTBALL_CACHE_DB",
+    "/tmp/samuelbet_football_cache.sqlite3",
+)
+
+
+def _sqlite_connect():
+    connection = sqlite3.connect(
+        CACHE_DB,
+        timeout=15,
+        check_same_thread=False,
+    )
+
+    connection.execute(
+        """
+        CREATE TABLE IF NOT EXISTS football_cache (
+            cache_key TEXT PRIMARY KEY,
+            value TEXT NOT NULL,
+            expires_at INTEGER NOT NULL,
+            created_at INTEGER NOT NULL
+        )
+        """
+    )
+
+    connection.commit()
+    return connection
+
+
+def _sqlite_get(key):
+    try:
+        now = int(time.time())
+
+        connection = _sqlite_connect()
+
+        row = connection.execute(
+            """
+            SELECT value, expires_at
+            FROM football_cache
+            WHERE cache_key = ?
+            """,
+            (key,),
+        ).fetchone()
+
+        connection.close()
+
+        if not row:
+            return None
+
+        value, expires_at = row
+
+        if expires_at <= now:
+            _sqlite_delete(key)
+            return None
+
+        return json.loads(value)
+
+    except Exception:
+        return None
+
+
+def _sqlite_set(key, value, ttl):
+    try:
+        now = int(time.time())
+
+        connection = _sqlite_connect()
+
+        connection.execute(
+            """
+            INSERT INTO football_cache
+            (cache_key, value, expires_at, created_at)
+            VALUES (?, ?, ?, ?)
+            ON CONFLICT(cache_key)
+            DO UPDATE SET
+                value = excluded.value,
+                expires_at = excluded.expires_at,
+                created_at = excluded.created_at
+            """,
+            (
+                key,
+                json.dumps(
+                    value,
+                    ensure_ascii=False,
+                    separators=(",", ":"),
+                ),
+                now + int(ttl),
+                now,
+            ),
+        )
+
+        connection.commit()
+        connection.close()
+
+        return True
+
+    except Exception:
+        return False
+
+
+def _sqlite_delete(key):
+    try:
+        connection = _sqlite_connect()
+
+        connection.execute(
+            "DELETE FROM football_cache WHERE cache_key = ?",
+            (key,),
+        )
+
+        connection.commit()
+        connection.close()
+
+        return True
+
+    except Exception:
+        return False
+
+
+# ============================================================
+# UNIFIED CACHE
+# ============================================================
+
+def _cache_get(key):
+    """
+    Memory → Redis → SQLite.
+
+    Redis is preferred because it survives Render restarts/redeploys.
+    """
+
+    now = time.time()
+
+    item = _facts_cache.get(key)
+
+    if item:
+        expires, value = item
+
+        if expires > now:
+            return value
+
+        _facts_cache.pop(key, None)
+
+    value = _redis_get(key)
+
+    if value is not None:
+        _facts_cache[key] = (
+            now + min(FACTS_CACHE_SECONDS, 300),
+            value,
+        )
+        return value
+
+    value = _sqlite_get(key)
+
+    if value is not None:
+        _facts_cache[key] = (
+            now + min(FACTS_CACHE_SECONDS, 300),
+            value,
+        )
+        return value
+
+    return None
+
+
+def _cache_set(key, value, ttl):
+    """
+    Save to memory plus persistent cache.
+    """
+
+    _facts_cache[key] = (
+        time.time() + min(int(ttl), 300),
+        value,
+    )
+
+    if _redis_enabled():
+        _redis_set(key, value, ttl)
+
+    # SQLite is also maintained as a fallback.
+    _sqlite_set(key, value, ttl)
+
+    return value
+
+
+def _cache_delete(key):
+    _facts_cache.pop(key, None)
+    _prediction_cache.pop(key, None)
+
+    _redis_delete(key)
+    _sqlite_delete(key)
+
+
+# ============================================================
+# TEAM NORMALISATION
+# ============================================================
 
 TEAM_ALIASES = {
-    "man utd": "manchester united",
-    "man united": "manchester united",
-    "manchester utd": "manchester united",
-    "manchester united fc": "manchester united",
+    "manchester united": [
+        "man utd",
+        "man united",
+        "manchester utd",
+        "manchester united",
+        "man united fc",
+        "manchester united fc",
+    ],
+    "manchester city": [
+        "man city",
+        "manchester city",
+        "manchester city fc",
+    ],
+    "tottenham hotspur": [
+        "tottenham",
+        "spurs",
+        "tottenham hotspur",
+        "tottenham hotspur fc",
+    ],
+    "newcastle united": [
+        "newcastle",
+        "newcastle united",
+        "newcastle utd",
+    ],
+    "west ham united": [
+        "west ham",
+        "west ham united",
+        "west ham utd",
+    ],
+    "wolverhampton wanderers": [
+        "wolves",
+        "wolverhampton",
+        "wolverhampton wanderers",
+    ],
+    "brighton and hove albion": [
+        "brighton",
+        "brighton and hove albion",
+        "brighton hove albion",
+    ],
+    "nottingham forest": [
+        "nottingham forest",
+        "nottm forest",
+        "forest",
+    ],
+    "crystal palace": [
+        "crystal palace",
+        "palace",
+    ],
+    "aston villa": [
+        "aston villa",
+        "villa",
+    ],
+    "afc bournemouth": [
+        "bournemouth",
+        "afc bournemouth",
+    ],
+    "leicester city": [
+        "leicester",
+        "leicester city",
+    ],
+    "ipswich town": [
+        "ipswich",
+        "ipswich town",
+    ],
+    "leeds united": [
+        "leeds",
+        "leeds united",
+        "leeds utd",
+    ],
+    "everton": [
+        "everton",
+        "everton fc",
+    ],
+    "liverpool": [
+        "liverpool",
+        "liverpool fc",
+    ],
+    "arsenal": [
+        "arsenal",
+        "arsenal fc",
+    ],
+    "chelsea": [
+        "chelsea",
+        "chelsea fc",
+    ],
+    "fulham": [
+        "fulham",
+        "fulham fc",
+    ],
+    "brentford": [
+        "brentford",
+        "brentford fc",
+    ],
+    "burnley": [
+        "burnley",
+        "burnley fc",
+    ],
+    "sunderland": [
+        "sunderland",
+        "sunderland afc",
+    ],
 
-    "man city": "manchester city",
-    "manchester city fc": "manchester city",
+    # Spain
+    "real madrid": [
+        "real madrid",
+        "real madrid cf",
+    ],
+    "barcelona": [
+        "barcelona",
+        "fc barcelona",
+    ],
+    "atletico madrid": [
+        "atletico madrid",
+        "atl madrid",
+        "atletico",
+    ],
+    "sevilla": [
+        "sevilla",
+        "sevilla fc",
+    ],
+    "real sociedad": [
+        "real sociedad",
+    ],
+    "athletic club": [
+        "athletic bilbao",
+        "athletic club",
+    ],
+    "villarreal": [
+        "villarreal",
+        "villarreal cf",
+    ],
+    "real betis": [
+        "real betis",
+        "betis",
+    ],
+    "valencia": [
+        "valencia",
+        "valencia cf",
+    ],
+    "girona": [
+        "girona",
+        "girona fc",
+    ],
 
-    "spurs": "tottenham hotspur",
-    "tottenham": "tottenham hotspur",
-    "tottenham hotspur fc": "tottenham hotspur",
+    # Germany
+    "bayern munich": [
+        "bayern",
+        "bayern munich",
+        "fc bayern munich",
+    ],
+    "borussia dortmund": [
+        "dortmund",
+        "borussia dortmund",
+        "bvb",
+    ],
+    "rb leipzig": [
+        "rb leipzig",
+        "leipzig",
+    ],
+    "bayer leverkusen": [
+        "bayer leverkusen",
+        "leverkusen",
+    ],
+    "eintracht frankfurt": [
+        "eintracht frankfurt",
+        "frankfurt",
+    ],
 
-    "wolves": "wolverhampton wanderers",
-    "wolverhampton": "wolverhampton wanderers",
-    "wolverhampton wanderers fc": "wolverhampton wanderers",
+    # Italy
+    "inter milan": [
+        "inter",
+        "inter milan",
+        "internazionale",
+    ],
+    "ac milan": [
+        "ac milan",
+        "milan",
+    ],
+    "juventus": [
+        "juventus",
+        "juve",
+    ],
+    "napoli": [
+        "napoli",
+        "ssc napoli",
+    ],
+    "roma": [
+        "roma",
+        "as roma",
+    ],
+    "lazio": [
+        "lazio",
+        "ss lazio",
+    ],
+    "atalanta": [
+        "atalanta",
+        "atalanta bc",
+    ],
 
-    "newcastle": "newcastle united",
-    "newcastle utd": "newcastle united",
-    "newcastle united fc": "newcastle united",
+    # France
+    "paris saint germain": [
+        "psg",
+        "paris saint-germain",
+        "paris saint germain",
+        "paris sg",
+    ],
+    "marseille": [
+        "marseille",
+        "olympique marseille",
+    ],
+    "lyon": [
+        "lyon",
+        "olympique lyon",
+    ],
+    "monaco": [
+        "monaco",
+        "as monaco",
+    ],
+    "lille": [
+        "lille",
+        "losc lille",
+    ],
 
-    "west ham": "west ham united",
-    "west ham utd": "west ham united",
+    # Netherlands
+    "ajax": [
+        "ajax",
+        "afc ajax",
+    ],
+    "psv eindhoven": [
+        "psv",
+        "psv eindhoven",
+    ],
+    "feyenoord": [
+        "feyenoord",
+    ],
 
-    "brighton": "brighton and hove albion",
-    "brighton hove albion": "brighton and hove albion",
-    "brighton and hove albion fc": "brighton and hove albion",
+    # Portugal
+    "benfica": [
+        "benfica",
+        "sl benfica",
+    ],
+    "porto": [
+        "porto",
+        "fc porto",
+    ],
+    "sporting cp": [
+        "sporting",
+        "sporting lisbon",
+        "sporting cp",
+    ],
 
-    "forest": "nottingham forest",
-    "nottm forest": "nottingham forest",
-    "nottingham forest fc": "nottingham forest",
+    # Turkey
+    "galatasaray": [
+        "galatasaray",
+        "galatasaray sk",
+    ],
+    "fenerbahce": [
+        "fenerbahce",
+        "fenerbahçe",
+        "fenerbahce sk",
+    ],
+    "besiktas": [
+        "besiktas",
+        "beşiktaş",
+    ],
 
-    "sheffield utd": "sheffield united",
-    "sheffield united fc": "sheffield united",
-
-    "leicester": "leicester city",
-    "leicester city fc": "leicester city",
-
-    "ipswich": "ipswich town",
-    "ipswich town fc": "ipswich town",
-
-    "psg": "paris saint germain",
-    "paris sg": "paris saint germain",
-    "paris saint germain fc": "paris saint germain",
-
-    "inter": "inter milan",
-    "internazionale": "inter milan",
-    "inter milan fc": "inter milan",
-
-    "milan": "ac milan",
-    "ac milan fc": "ac milan",
-
-    "roma": "as roma",
-    "as roma fc": "as roma",
-
-    "lazio": "ss lazio",
-    "ss lazio": "ss lazio",
-
-    "juventus fc": "juventus",
-
-    "bayern munchen": "bayern munich",
-    "fc bayern munchen": "bayern munich",
-    "bayern munich fc": "bayern munich",
-
-    "dortmund": "borussia dortmund",
-    "borussia dortmund fc": "borussia dortmund",
-
-    "sporting lisbon": "sporting cp",
-    "sporting lisboa": "sporting cp",
-    "sporting cp fc": "sporting cp",
-
-    "psv eindhoven": "psv",
-    "psv eindhoven fc": "psv",
-
-    "ajax amsterdam": "ajax",
-    "afc ajax": "ajax",
-
-    "porto fc": "fc porto",
-    "sl benfica": "benfica",
-
-    "ath madrid": "atletico madrid",
-    "atletico de madrid": "atletico madrid",
-    "atletico madrid fc": "atletico madrid",
-
-    "barca": "barcelona",
-    "fc barcelona": "barcelona",
-
-    "real madrid cf": "real madrid",
-
-    "monaco fc": "monaco",
-    "as monaco": "monaco",
+    # Scotland
+    "celtic": [
+        "celtic",
+        "celtic fc",
+    ],
+    "rangers": [
+        "rangers",
+        "rangers fc",
+    ],
 }
 
 
 def _normalise_team(value):
-    """Turn different team-name styles into a comparable form."""
-    if isinstance(value, dict):
-        value = value.get("name") or value.get("team") or ""
+    if value is None:
+        return ""
 
-    value = str(value or "").strip().lower()
-
-    # Remove accents.
-    value = unicodedata.normalize("NFKD", value)
-    value = "".join(ch for ch in value if not unicodedata.combining(ch))
-
-    # Replace punctuation with spaces.
-    value = re.sub(r"[^a-z0-9]+", " ", value)
-
-    # Common football suffixes.
-    value = re.sub(
-        r"\b(fc|cf|afc|sc|ac|club|football club)\b",
-        " ",
-        value,
+    text = unicodedata.normalize(
+        "NFKD",
+        str(value),
     )
 
-    value = re.sub(r"\s+", " ", value).strip()
+    text = "".join(
+        c for c in text
+        if not unicodedata.combining(c)
+    )
 
-    return TEAM_ALIASES.get(value, value)
+    text = text.lower()
+
+    text = re.sub(
+        r"\b(fc|afc|cf|sc|sk|fk|club|football club)\b",
+        " ",
+        text,
+    )
+
+    text = re.sub(r"[^a-z0-9]+", " ", text)
+
+    text = re.sub(r"\s+", " ", text).strip()
+
+    for canonical, aliases in TEAM_ALIASES.items():
+        names = [canonical] + aliases
+
+        for alias in names:
+            alias_n = re.sub(
+                r"[^a-z0-9]+",
+                " ",
+                alias.lower(),
+            )
+
+            alias_n = re.sub(
+                r"\s+",
+                " ",
+                alias_n,
+            ).strip()
+
+            if text == alias_n:
+                return canonical
+
+    return text
 
 
 def _team_similarity(a, b):
-    """Similarity score between two football team names."""
-    a = _normalise_team(a)
-    b = _normalise_team(b)
+    aa = _normalise_team(a)
+    bb = _normalise_team(b)
 
-    if not a or not b:
+    if not aa or not bb:
         return 0.0
 
-    if a == b:
+    if aa == bb:
         return 1.0
 
-    if a in b or b in a:
-        shorter = min(len(a), len(b))
-        longer = max(len(a), len(b))
+    if aa in bb or bb in aa:
+        return 0.92
 
-        if shorter >= 5 and shorter / max(longer, 1) >= 0.55:
-            return 0.96
-
-    ratio = SequenceMatcher(None, a, b).ratio()
-
-    at = set(a.split())
-    bt = set(b.split())
-
-    if at and bt:
-        overlap = len(at & bt) / len(at | bt)
-    else:
-        overlap = 0.0
-
-    return max(ratio, overlap)
+    return SequenceMatcher(
+        None,
+        aa,
+        bb,
+    ).ratio()
 
 
-# ------------------------------------------------------------
-# API FOOTBALL FIXTURE HELPERS
-# ------------------------------------------------------------
+# ============================================================
+# FIXTURE HELPERS
+# ============================================================
 
 def _fixture_teams(fixture):
+    """
+    Read home/away names from several common API-Football shapes.
+    """
+
+    if not isinstance(fixture, dict):
+        return "", ""
+
     teams = fixture.get("teams") or {}
 
-    home = teams.get("home") or {}
-    away = teams.get("away") or {}
-
-    return (
-        home.get("name", ""),
-        away.get("name", ""),
+    home = (
+        (teams.get("home") or {}).get("name")
+        or fixture.get("home")
+        or fixture.get("homeTeam")
+        or fixture.get("home_name")
+        or ""
     )
+
+    away = (
+        (teams.get("away") or {}).get("name")
+        or fixture.get("away")
+        or fixture.get("awayTeam")
+        or fixture.get("away_name")
+        or ""
+    )
+
+    return str(home), str(away)
 
 
 def _fixture_timestamp(fixture):
-    value = (fixture.get("fixture") or {}).get("timestamp")
+    if not isinstance(fixture, dict):
+        return None
+
+    fixture_data = fixture.get("fixture") or {}
+
+    value = (
+        fixture_data.get("date")
+        or fixture.get("date")
+        or fixture.get("kickoff")
+        or fixture.get("startTime")
+        or fixture.get("start_time")
+    )
+
+    if value is None:
+        return None
+
+    if isinstance(value, (int, float)):
+        try:
+            return datetime.fromtimestamp(
+                value,
+                timezone.utc,
+            )
+        except Exception:
+            return None
+
+    text = str(value).strip()
 
     try:
-        return float(value)
-    except (TypeError, ValueError):
+        if text.endswith("Z"):
+            text = text[:-1] + "+00:00"
+
+        dt = datetime.fromisoformat(text)
+
+        if dt.tzinfo is None:
+            dt = dt.replace(tzinfo=timezone.utc)
+
+        return dt.astimezone(timezone.utc)
+
+    except Exception:
         return None
 
 
 def _event_kickoff(event):
-    value = event.get("estimateStartTime")
-
-    try:
-        return datetime.fromtimestamp(
-            float(value) / 1000,
-            tz=timezone.utc,
-        )
-    except (TypeError, ValueError, OSError):
+    if not isinstance(event, dict):
         return None
+
+    values = [
+        event.get("kickoff"),
+        event.get("startTime"),
+        event.get("start_time"),
+        event.get("date"),
+        event.get("eventDate"),
+        event.get("commence_time"),
+        event.get("commenceTime"),
+    ]
+
+    for value in values:
+        if not value:
+            continue
+
+        if isinstance(value, (int, float)):
+            try:
+                return datetime.fromtimestamp(
+                    value,
+                    timezone.utc,
+                )
+            except Exception:
+                continue
+
+        text = str(value).strip()
+
+        try:
+            if text.endswith("Z"):
+                text = text[:-1] + "+00:00"
+
+            dt = datetime.fromisoformat(text)
+
+            if dt.tzinfo is None:
+                dt = dt.replace(tzinfo=timezone.utc)
+
+            return dt.astimezone(timezone.utc)
+
+        except Exception:
+            pass
+
+    return None
+
+
+def _event_teams(event):
+    if not isinstance(event, dict):
+        return "", ""
+
+    home = (
+        event.get("home")
+        or event.get("homeTeam")
+        or event.get("home_team")
+        or event.get("home_name")
+        or ""
+    )
+
+    away = (
+        event.get("away")
+        or event.get("awayTeam")
+        or event.get("away_team")
+        or event.get("away_name")
+        or ""
+    )
+
+    if isinstance(home, dict):
+        home = home.get("name") or ""
+
+    if isinstance(away, dict):
+        away = away.get("name") or ""
+
+    return str(home), str(away)
+
+
+# ============================================================
+# FOOTBALL FIXTURE RETRIEVAL
+# ============================================================
+
+def _football_request(endpoint, params=None):
+    """
+    Use the API-Football request helper already exposed by main.py.
+
+    Different versions of the project have used slightly different
+    helper signatures, so we try the common forms.
+    """
+
+    params = params or {}
+
+    fn = getattr(bot, "football_request", None)
+
+    if not callable(fn):
+        return None
+
+    attempts = [
+        lambda: fn(endpoint, params),
+        lambda: fn(endpoint=endpoint, params=params),
+        lambda: fn(endpoint, **params),
+    ]
+
+    for attempt in attempts:
+        try:
+            result = attempt()
+
+            if result is not None:
+                return result
+
+        except TypeError:
+            continue
+
+        except Exception:
+            return None
+
+    return None
+
+
+def _extract_response_list(response):
+    if response is None:
+        return []
+
+    if isinstance(response, list):
+        return response
+
+    if isinstance(response, dict):
+        response_list = response.get("response")
+
+        if isinstance(response_list, list):
+            return response_list
+
+        data = response.get("data")
+
+        if isinstance(data, list):
+            return data
+
+        results = response.get("results")
+
+        if isinstance(results, list):
+            return results
+
+    return []
 
 
 def _fixtures_for(date_string):
-    """Get API-Football fixtures for a date, cached briefly."""
-    cached = _fixture_index.get(date_string)
+    """
+    First use the existing SportyTips football fixture cache/helper.
 
-    if cached:
-        created, fixtures = cached
+    If that fails or returns nothing, ask API-Football directly.
 
-        if time.time() - created < FIXTURE_CACHE_SECONDS:
-            return fixtures
+    This fallback is important because the previous 159 SportyBet /
+    0 football matches problem can happen when the internal fixture
+    list is empty.
+    """
 
-    try:
-        fixtures = bot.get_allowed_fixtures_cached(date_string)
-    except Exception as exc:
-        print(f"Fixture lookup failed for {date_string}: {exc}")
-        fixtures = []
-
-    _fixture_index[date_string] = (
-        time.time(),
-        fixtures or [],
+    cache_key = (
+        f"football-fixtures:{CACHE_VERSION}:{date_string}"
     )
 
-    return fixtures or []
+    cached = _cache_get(cache_key)
+
+    if cached is not None:
+        return cached
+
+    fixtures = []
+
+    # Existing project helper.
+    try:
+        helper = getattr(
+            bot,
+            "get_allowed_fixtures_cached",
+            None,
+        )
+
+        if callable(helper):
+            result = helper(date_string)
+
+            if isinstance(result, list):
+                fixtures.extend(result)
+
+            elif isinstance(result, dict):
+                fixtures.extend(
+                    _extract_response_list(result)
+                )
+
+    except Exception:
+        pass
+
+    # Direct API-Football fallback.
+    if not fixtures:
+        response = _football_request(
+            "fixtures",
+            {
+                "date": date_string,
+            },
+        )
+
+        fixtures.extend(
+            _extract_response_list(response)
+        )
+
+    # Remove duplicates.
+    unique = {}
+    for fixture in fixtures:
+        if not isinstance(fixture, dict):
+            continue
+
+        fixture_id = (
+            (fixture.get("fixture") or {}).get("id")
+            or fixture.get("id")
+        )
+
+        if fixture_id is not None:
+            unique[str(fixture_id)] = fixture
+        else:
+            home, away = _fixture_teams(fixture)
+            key = (
+                _normalise_team(home)
+                + "|"
+                + _normalise_team(away)
+            )
+
+            unique[key] = fixture
+
+    fixtures = list(unique.values())
+
+    _cache_set(
+        cache_key,
+        fixtures,
+        FIXTURE_CACHE_SECONDS,
+    )
+
+    return fixtures
 
 
-def _candidate_dates(kickoff):
-    """Check the kickoff date plus neighbouring UTC/local dates."""
-    local_date = kickoff.astimezone(bot.LOCAL_TZ).date()
+def _candidate_dates(event):
+    kickoff = _event_kickoff(event)
 
-    dates = []
+    if kickoff is None:
+        now = datetime.now(timezone.utc)
+        base = now.date()
+    else:
+        base = kickoff.date()
 
-    for offset in (-1, 0, 1):
-        value = local_date + timedelta(days=offset)
-        dates.append(value.isoformat())
+    return [
+        base,
+        base - timedelta(days=1),
+        base + timedelta(days=1),
+    ]
 
-    return dates
 
+def _match_score(event, fixture):
+    eh, ea = _event_teams(event)
+    fh, fa = _fixture_teams(fixture)
 
-def _match_score(event_home, event_away, fixture):
-    """Return team-name score and whether the fixture is reversed."""
-    fixture_home, fixture_away = _fixture_teams(fixture)
+    if not eh or not ea or not fh or not fa:
+        return 0.0
 
     normal = (
-        _team_similarity(event_home, fixture_home)
-        + _team_similarity(event_away, fixture_away)
+        _team_similarity(eh, fh)
+        + _team_similarity(ea, fa)
     ) / 2
 
     reversed_score = (
-        _team_similarity(event_home, fixture_away)
-        + _team_similarity(event_away, fixture_home)
+        _team_similarity(eh, fa)
+        + _team_similarity(ea, fh)
     ) / 2
 
-    if reversed_score > normal:
-        return reversed_score, True
+    score = max(normal, reversed_score)
 
-    return normal, False
+    event_dt = _event_kickoff(event)
+    fixture_dt = _fixture_timestamp(fixture)
 
+    if event_dt and fixture_dt:
+        difference = abs(
+            (event_dt - fixture_dt).total_seconds()
+        )
 
-# ------------------------------------------------------------
-# FIND MATCH
-# ------------------------------------------------------------
+        # 15 minutes or less: excellent.
+        if difference <= 15 * 60:
+            score += 0.12
+
+        # Up to 2 hours: still useful.
+        elif difference <= 2 * 3600:
+            score += 0.08
+
+        # Same calendar day.
+        elif event_dt.date() == fixture_dt.date():
+            score += 0.04
+
+        # Different day and large time difference.
+        else:
+            score -= 0.05
+
+    return min(score, 1.20)
+
 
 def find_fixture(event):
     """
-    Find the API-Football fixture belonging to a SportyBet event.
+    Match a SportyBet event to a real football fixture.
 
-    Matching is based primarily on the two team names.
-    Kickoff time is used as a secondary check instead of requiring
-    an unrealistically small 45-minute window.
+    Returns the actual API-Football fixture dictionary or None.
     """
 
     if not event:
         return None
 
-    kickoff = _event_kickoff(event)
+    home, away = _event_teams(event)
 
-    if kickoff is None:
+    if not home or not away:
         return None
 
-    event_home = event.get("homeTeamName", "")
-    event_away = event.get("awayTeamName", "")
+    event_dt = _event_kickoff(event)
 
-    if not event_home or not event_away:
-        return None
+    cache_key = (
+        "fixture-match:"
+        + CACHE_VERSION
+        + ":"
+        + _normalise_team(home)
+        + ":"
+        + _normalise_team(away)
+        + ":"
+        + (
+            event_dt.strftime("%Y-%m-%d-%H")
+            if event_dt
+            else "unknown"
+        )
+    )
 
-    best = None
-    best_score = 0.0
+    cached = _cache_get(cache_key)
 
-    for date_string in _candidate_dates(kickoff):
-        fixtures = _fixtures_for(date_string)
+    if cached:
+        return cached
 
-        for fixture in fixtures:
-            team_score, reversed_match = _match_score(
-                event_home,
-                event_away,
+    candidates = []
+
+    for date_value in _candidate_dates(event):
+        date_string = date_value.strftime("%Y-%m-%d")
+
+        for fixture in _fixtures_for(date_string):
+            score = _match_score(
+                event,
                 fixture,
             )
 
-            # Completely unrelated teams are ignored.
-            if team_score < 0.70:
-                continue
-
-            fixture_time = _fixture_timestamp(fixture)
-
-            time_score = 0.0
-
-            if fixture_time is not None:
-                difference = abs(
-                    fixture_time - kickoff.timestamp()
+            if score >= 0.72:
+                candidates.append(
+                    (
+                        score,
+                        fixture,
+                    )
                 )
 
-                # Strong time bonus when the kickoff is close.
-                if difference <= 30 * 60:
-                    time_score = 0.20
-                elif difference <= 90 * 60:
-                    time_score = 0.16
-                elif difference <= 180 * 60:
-                    time_score = 0.10
-                elif difference <= 6 * 3600:
-                    time_score = 0.04
-                else:
-                    time_score = -0.08
-
-            # Team names matter much more than time.
-            combined = (
-                team_score * 0.84
-                + time_score
-            )
-
-            # A very strong exact team match can survive a larger
-            # kickoff difference.
-            if team_score >= 0.94:
-                combined += 0.08
-
-            if combined > best_score:
-                best_score = combined
-                best = fixture
-
-    if best is None:
+    if not candidates:
         return None
 
-    # Final safety gate.
-    home_score = _team_similarity(
-        event_home,
-        _fixture_teams(best)[0],
-    )
-    away_score = _team_similarity(
-        event_away,
-        _fixture_teams(best)[1],
+    candidates.sort(
+        key=lambda item: item[0],
+        reverse=True,
     )
 
-    normal_score = (home_score + away_score) / 2
+    best_score, best_fixture = candidates[0]
 
-    if normal_score >= 0.78:
-        return best
+    # Require strong team identity.
+    if best_score < 0.82:
+        return None
 
-    # Sometimes SportyBet/API-Football naming can be reversed.
-    reverse_home = _team_similarity(
-        event_home,
-        _fixture_teams(best)[1],
-    )
-    reverse_away = _team_similarity(
-        event_away,
-        _fixture_teams(best)[0],
+    _cache_set(
+        cache_key,
+        best_fixture,
+        FIXTURE_CACHE_SECONDS,
     )
 
-    if (reverse_home + reverse_away) / 2 >= 0.90:
-        return best
+    return best_fixture
+
+
+# ============================================================
+# FACT EXTRACTION
+# ============================================================
+
+def _safe_float(value, default=None):
+    try:
+        if value is None or value == "":
+            return default
+
+        return float(value)
+
+    except Exception:
+        return default
+
+
+def _safe_int(value, default=0):
+    try:
+        if value is None or value == "":
+            return default
+
+        return int(float(value))
+
+    except Exception:
+        return default
+
+
+def _goals_from_fixture(fixture):
+    goals = fixture.get("goals") or {}
+
+    home = _safe_int(
+        goals.get("home"),
+        0,
+    )
+
+    away = _safe_int(
+        goals.get("away"),
+        0,
+    )
+
+    return home, away
+
+
+def _fixture_team_name(fixture, side):
+    teams = fixture.get("teams") or {}
+    team = teams.get(side) or {}
+
+    return team.get("name") or ""
+
+
+def _extract_form_from_prediction(prediction):
+    """
+    API-Football prediction endpoint often returns:
+        predictions.form.home
+        predictions.form.away
+
+    Form strings may contain W/D/L.
+    """
+
+    if not isinstance(prediction, dict):
+        return "", ""
+
+    predictions = prediction.get("predictions") or {}
+
+    form = predictions.get("form") or {}
+
+    home = (
+        form.get("home")
+        or prediction.get("home_form")
+        or ""
+    )
+
+    away = (
+        form.get("away")
+        or prediction.get("away_form")
+        or ""
+    )
+
+    return str(home), str(away)
+
+
+def _count_form(form):
+    text = str(form or "").upper()
+
+    return {
+        "W": text.count("W"),
+        "D": text.count("D"),
+        "L": text.count("L"),
+    }
+
+
+def _extract_percentages(prediction):
+    predictions = (
+        prediction.get("predictions")
+        if isinstance(prediction, dict)
+        else {}
+    ) or {}
+
+    percent = (
+        predictions.get("percent")
+        or prediction.get("percent")
+        or {}
+    ) or {}
+
+    home = _safe_float(
+        percent.get("home"),
+    )
+
+    draw = _safe_float(
+        percent.get("draw"),
+    )
+
+    away = _safe_float(
+        percent.get("away"),
+    )
+
+    def normalise(value):
+        if value is None:
+            return None
+
+        if value > 1:
+            return value / 100.0
+
+        return value
+
+    return (
+        normalise(home),
+        normalise(draw),
+        normalise(away),
+    )
+
+
+def _extract_lambda(prediction, side):
+    """
+    Attempt to read expected-goal values from API-Football.
+    """
+
+    if not isinstance(prediction, dict):
+        return None
+
+    predictions = prediction.get("predictions") or {}
+
+    candidates = [
+        predictions.get(
+            f"expected_goals_{side}"
+        ),
+        predictions.get(
+            f"expectedGoals{side.title()}"
+        ),
+        predictions.get(
+            f"lambda_{side}"
+        ),
+        prediction.get(
+            f"expected_goals_{side}"
+        ),
+        prediction.get(
+            f"lambda_{side}"
+        ),
+    ]
+
+    for value in candidates:
+        number = _safe_float(value)
+
+        if number is not None and 0 < number < 8:
+            return number
 
     return None
 
 
-# ------------------------------------------------------------
-# FACTS
-# ------------------------------------------------------------
-
-def _num(value):
-    try:
-        return float(str(value).replace("%", ""))
-    except (TypeError, ValueError):
+def _extract_prediction_fixture_id(prediction):
+    if not isinstance(prediction, dict):
         return None
 
+    fixture = prediction.get("fixture") or {}
 
-def parse_facts(item):
-    """Extract useful football facts from API-Football predictions."""
-    if not item:
-        return None
-
-    teams = item.get("teams") or {}
-
-    home_t = teams.get("home") or {}
-    away_t = teams.get("away") or {}
-
-    def form5(team):
-        form = ((team.get("league") or {}).get("form")) or ""
-        return str(form)[-5:]
-
-    def last5_goal(team, kind):
-        node = (
-            ((team.get("last_5") or {}).get("goals") or {})
-            .get(kind)
-            or {}
-        )
-
-        return _num(node.get("average"))
-
-    def venue_record(team, venue):
-        fixtures = (
-            (team.get("league") or {}).get("fixtures")
-            or {}
-        )
-
-        node = fixtures.get(venue) or {}
-
-        return {
-            "played": node.get("played"),
-            "w": node.get("wins"),
-            "d": node.get("draws"),
-            "l": node.get("loses"),
-        }
-
-    # API-Football prediction percentages.
-    percent = (
-        (item.get("predictions") or {}).get("percent")
-        or {}
+    return (
+        fixture.get("id")
+        or prediction.get("fixture_id")
+        or prediction.get("id")
     )
 
-    api = {}
 
-    for key in ("home", "draw", "away"):
-        value = _num(percent.get(key))
-        api[key] = (value or 0.0) / 100
+def _h2h_results(home, away):
+    """
+    Retrieve H2H using API-Football.
 
-    # --------------------------------------------------------
-    # HEAD TO HEAD
-    # --------------------------------------------------------
+    Returns a list of fixtures.
+    """
 
-    home_id = home_t.get("id")
-
-    meetings = list(item.get("h2h") or [])
-
-    meetings.sort(
-        key=lambda m: str(
-            (m.get("fixture") or {}).get("date")
-        ),
-        reverse=True,
+    response = _football_request(
+        "fixtures/headtohead",
+        {
+            "h2h": (
+                f"{home}-{away}"
+            ),
+            "last": 10,
+        },
     )
 
-    rows = []
+    return _extract_response_list(response)
 
-    for meeting in meetings[:6]:
-        goals = meeting.get("goals") or {}
 
-        gh = goals.get("home")
-        ga = goals.get("away")
+def _recent_team_results(team_id, last=5):
+    if not team_id:
+        return []
 
-        if gh is None or ga is None:
+    response = _football_request(
+        "fixtures",
+        {
+            "team": team_id,
+            "last": last,
+        },
+    )
+
+    return _extract_response_list(response)
+
+
+def _team_id_from_fixture(fixture, side):
+    teams = fixture.get("teams") or {}
+    team = teams.get(side) or {}
+
+    return (
+        team.get("id")
+        or fixture.get(f"{side}_id")
+    )
+
+
+def _calculate_recent_stats(
+    results,
+    team_id,
+):
+    wins = 0
+    draws = 0
+    losses = 0
+
+    scored = 0
+    conceded = 0
+
+    count = 0
+
+    for fixture in results or []:
+        if not isinstance(fixture, dict):
             continue
 
-        meeting_home = (
-            ((meeting.get("teams") or {}).get("home") or {})
-            .get("id")
+        teams = fixture.get("teams") or {}
+        goals = fixture.get("goals") or {}
+
+        home = teams.get("home") or {}
+        away = teams.get("away") or {}
+
+        home_id = home.get("id")
+        away_id = away.get("id")
+
+        if home_id != team_id and away_id != team_id:
+            continue
+
+        hg = _safe_int(
+            goals.get("home"),
+            0,
         )
 
-        if meeting_home == home_id:
-            rows.append((gh, ga))
+        ag = _safe_int(
+            goals.get("away"),
+            0,
+        )
+
+        count += 1
+
+        if home_id == team_id:
+            scored += hg
+            conceded += ag
+
+            if hg > ag:
+                wins += 1
+            elif hg == ag:
+                draws += 1
+            else:
+                losses += 1
+
         else:
-            rows.append((ga, gh))
+            scored += ag
+            conceded += hg
 
-    h2h = {
-        "n": len(rows),
-        "home_w": sum(
-            1 for a, b in rows
-            if a > b
-        ),
-        "draws": sum(
-            1 for a, b in rows
-            if a == b
-        ),
-        "away_w": sum(
-            1 for a, b in rows
-            if a < b
-        ),
-        "avg_goals": (
-            sum(a + b for a, b in rows) / len(rows)
-            if rows else None
-        ),
-        "btts": sum(
-            1 for a, b in rows
-            if a > 0 and b > 0
-        ),
+            if ag > hg:
+                wins += 1
+            elif ag == hg:
+                draws += 1
+            else:
+                losses += 1
+
+    if count == 0:
+        return {
+            "played": 0,
+            "wins": 0,
+            "draws": 0,
+            "losses": 0,
+            "scored": 0,
+            "conceded": 0,
+            "avg_scored": None,
+            "avg_conceded": None,
+        }
+
+    return {
+        "played": count,
+        "wins": wins,
+        "draws": draws,
+        "losses": losses,
+        "scored": scored,
+        "conceded": conceded,
+        "avg_scored": scored / count,
+        "avg_conceded": conceded / count,
     }
 
-    # --------------------------------------------------------
-    # GOALS
-    # --------------------------------------------------------
 
-    gf_h = last5_goal(home_t, "for")
-    ga_h = last5_goal(home_t, "against")
+def _venue_stats(results, team_id, venue):
+    wins = 0
+    draws = 0
+    losses = 0
+    scored = 0
+    conceded = 0
+    played = 0
 
-    gf_a = last5_goal(away_t, "for")
-    ga_a = last5_goal(away_t, "against")
+    for fixture in results or []:
+        teams = fixture.get("teams") or {}
+        goals = fixture.get("goals") or {}
 
-    lam_h = (
-        (gf_h + ga_a) / 2
-        if gf_h is not None and ga_a is not None
-        else None
-    )
+        home = teams.get("home") or {}
+        away = teams.get("away") or {}
 
-    lam_a = (
-        (gf_a + ga_h) / 2
-        if gf_a is not None and ga_h is not None
-        else None
-    )
+        home_id = home.get("id")
+        away_id = away.get("id")
 
-    facts = {
-        "form_h": form5(home_t),
-        "form_a": form5(away_t),
+        if team_id not in (
+            home_id,
+            away_id,
+        ):
+            continue
 
-        "gf_h": gf_h,
-        "ga_h": ga_h,
-        "gf_a": gf_a,
-        "ga_a": ga_a,
+        is_home = home_id == team_id
 
-        "lam_h": lam_h,
-        "lam_a": lam_a,
+        if venue == "home" and not is_home:
+            continue
 
-        "rec_h": venue_record(home_t, "home"),
-        "rec_a": venue_record(away_t, "away"),
+        if venue == "away" and is_home:
+            continue
 
-        "h2h": h2h,
-        "api": api,
-    }
-
-    has_something = any(
-        (
-            facts["form_h"],
-            facts["form_a"],
-            h2h["n"],
-            gf_h is not None,
-            ga_h is not None,
-            gf_a is not None,
-            ga_a is not None,
+        hg = _safe_int(
+            goals.get("home"),
+            0,
         )
+
+        ag = _safe_int(
+            goals.get("away"),
+            0,
+        )
+
+        played += 1
+
+        if is_home:
+            scored += hg
+            conceded += ag
+
+            if hg > ag:
+                wins += 1
+            elif hg == ag:
+                draws += 1
+            else:
+                losses += 1
+
+        else:
+            scored += ag
+            conceded += hg
+
+            if ag > hg:
+                wins += 1
+            elif ag == hg:
+                draws += 1
+            else:
+                losses += 1
+
+    return {
+        "played": played,
+        "wins": wins,
+        "draws": draws,
+        "losses": losses,
+        "scored": scored,
+        "conceded": conceded,
+    }
+
+
+def _parse_h2h(h2h, home_id, away_id):
+    home_wins = 0
+    away_wins = 0
+    draws = 0
+
+    home_scored = 0
+    away_scored = 0
+
+    played = 0
+
+    for fixture in h2h or []:
+        teams = fixture.get("teams") or {}
+        goals = fixture.get("goals") or {}
+
+        fh = (teams.get("home") or {}).get("id")
+        fa = (teams.get("away") or {}).get("id")
+
+        hg = _safe_int(
+            goals.get("home"),
+            0,
+        )
+
+        ag = _safe_int(
+            goals.get("away"),
+            0,
+        )
+
+        if {
+            fh,
+            fa,
+        } != {
+            home_id,
+            away_id,
+        }:
+            continue
+
+        played += 1
+
+        if fh == home_id:
+            home_scored += hg
+            away_scored += ag
+
+            if hg > ag:
+                home_wins += 1
+            elif hg == ag:
+                draws += 1
+            else:
+                away_wins += 1
+
+        else:
+            home_scored += ag
+            away_scored += hg
+
+            if ag > hg:
+                home_wins += 1
+            elif ag == hg:
+                draws += 1
+            else:
+                away_wins += 1
+
+    return {
+        "played": played,
+        "home_wins": home_wins,
+        "draws": draws,
+        "away_wins": away_wins,
+        "home_scored": home_scored,
+        "away_scored": away_scored,
+    }
+
+
+def parse_facts(
+    fixture,
+    prediction=None,
+    h2h=None,
+    home_recent=None,
+    away_recent=None,
+):
+    """
+    Convert API-Football information into a compact facts object.
+    """
+
+    prediction = prediction or {}
+    h2h = h2h or []
+
+    home = _fixture_team_name(
+        fixture,
+        "home",
     )
 
-    return facts if has_something else None
+    away = _fixture_team_name(
+        fixture,
+        "away",
+    )
+
+    home_id = _team_id_from_fixture(
+        fixture,
+        "home",
+    )
+
+    away_id = _team_id_from_fixture(
+        fixture,
+        "away",
+    )
+
+    home_form, away_form = _extract_form_from_prediction(
+        prediction
+    )
+
+    home_form_counts = _count_form(
+        home_form
+    )
+
+    away_form_counts = _count_form(
+        away_form
+    )
+
+    prediction_home, prediction_draw, prediction_away = (
+        _extract_percentages(prediction)
+    )
+
+    if home_recent is None:
+        home_recent = []
+
+    if away_recent is None:
+        away_recent = []
+
+    home_recent_stats = _calculate_recent_stats(
+        home_recent,
+        home_id,
+    )
+
+    away_recent_stats = _calculate_recent_stats(
+        away_recent,
+        away_id,
+    )
+
+    home_venue = _venue_stats(
+        home_recent,
+        home_id,
+        "home",
+    )
+
+    away_venue = _venue_stats(
+        away_recent,
+        away_id,
+        "away",
+    )
+
+    h2h_stats = _parse_h2h(
+        h2h,
+        home_id,
+        away_id,
+    )
+
+    home_lambda = _extract_lambda(
+        prediction,
+        "home",
+    )
+
+    away_lambda = _extract_lambda(
+        prediction,
+        "away",
+    )
+
+    # Build reasonable Poisson lambdas if API-Football does not provide
+    # expected goals directly.
+    if home_lambda is None:
+        components = []
+
+        if home_recent_stats["avg_scored"] is not None:
+            components.append(
+                home_recent_stats["avg_scored"]
+            )
+
+        if away_recent_stats["avg_conceded"] is not None:
+            components.append(
+                away_recent_stats["avg_conceded"]
+            )
+
+        if components:
+            home_lambda = sum(components) / len(
+                components
+            )
+
+    if away_lambda is None:
+        components = []
+
+        if away_recent_stats["avg_scored"] is not None:
+            components.append(
+                away_recent_stats["avg_scored"]
+            )
+
+        if home_recent_stats["avg_conceded"] is not None:
+            components.append(
+                home_recent_stats["avg_conceded"]
+            )
+
+        if components:
+            away_lambda = sum(components) / len(
+                components
+            )
+
+    if home_lambda is not None:
+        home_lambda = max(
+            0.10,
+            min(home_lambda, 5.0),
+        )
+
+    if away_lambda is not None:
+        away_lambda = max(
+            0.10,
+            min(away_lambda, 5.0),
+        )
+
+    return {
+        "home": home,
+        "away": away,
+
+        "home_id": home_id,
+        "away_id": away_id,
+
+        "form": {
+            "home": home_form,
+            "away": away_form,
+            "home_counts": home_form_counts,
+            "away_counts": away_form_counts,
+        },
+
+        "recent": {
+            "home": home_recent_stats,
+            "away": away_recent_stats,
+        },
+
+        "venue": {
+            "home": home_venue,
+            "away": away_venue,
+        },
+
+        "prediction": {
+            "home": prediction_home,
+            "draw": prediction_draw,
+            "away": prediction_away,
+        },
+
+        "h2h": h2h_stats,
+
+        "lambda": {
+            "home": home_lambda,
+            "away": away_lambda,
+        },
+
+        "fixture_id": (
+            (fixture.get("fixture") or {}).get("id")
+            or fixture.get("id")
+        ),
+
+        "retrieved_at": datetime.now(
+            timezone.utc
+        ).isoformat(),
+    }
 
 
-# ------------------------------------------------------------
+# ============================================================
 # GET FACTS
-# ------------------------------------------------------------
+# ============================================================
 
 def get_facts(fixture):
-    """Get football facts for one fixture."""
+    """
+    Get football facts for a real fixture.
+
+    Persistent cache is checked first.
+    """
+
     if not fixture:
         return None
 
     fixture_id = (
-        (fixture.get("fixture") or {})
-        .get("id")
+        (fixture.get("fixture") or {}).get("id")
+        or fixture.get("id")
     )
 
-    if not fixture_id:
-        return None
-
-    cached = _facts_cache.get(fixture_id)
-
-    if cached:
-        created, facts = cached
-
-        if time.time() - created < FACTS_CACHE_SECONDS:
-            return facts
-
-    remaining = getattr(
-        bot,
-        "_api_remaining",
-        None,
+    home = _fixture_team_name(
+        fixture,
+        "home",
     )
 
-    if (
-        remaining is not None
-        and remaining < MIN_QUOTA
-    ):
-        return None
+    away = _fixture_team_name(
+        fixture,
+        "away",
+    )
 
-    try:
-        result = bot.football_request(
+    if fixture_id:
+        identifier = str(fixture_id)
+    else:
+        identifier = (
+            _normalise_team(home)
+            + "-"
+            + _normalise_team(away)
+        )
+
+    cache_key = (
+        "football-facts:"
+        + CACHE_VERSION
+        + ":"
+        + identifier
+    )
+
+    cached = _cache_get(cache_key)
+
+    if cached is not None:
+        return cached
+
+    # --------------------------------------------------------
+    # Prediction
+    # --------------------------------------------------------
+
+    prediction = None
+
+    if fixture_id:
+        response = _football_request(
             "predictions",
-            {"fixture": fixture_id},
+            {
+                "fixture": fixture_id,
+            },
         )
-    except Exception as exc:
-        print(
-            f"Facts for fixture {fixture_id} failed: {exc}"
+
+        prediction_items = _extract_response_list(
+            response
         )
-        return None
 
-    response = result.get("response") or []
+        if prediction_items:
+            prediction = prediction_items[0]
 
-    facts = (
-        parse_facts(response[0])
-        if response
-        else None
+    if prediction is None:
+        prediction = {}
+
+    # --------------------------------------------------------
+    # Recent form
+    # --------------------------------------------------------
+
+    home_id = _team_id_from_fixture(
+        fixture,
+        "home",
     )
 
-    _facts_cache[fixture_id] = (
-        time.time(),
+    away_id = _team_id_from_fixture(
+        fixture,
+        "away",
+    )
+
+    home_recent = _recent_team_results(
+        home_id,
+        last=5,
+    )
+
+    away_recent = _recent_team_results(
+        away_id,
+        last=5,
+    )
+
+    # --------------------------------------------------------
+    # H2H
+    # --------------------------------------------------------
+
+    h2h = _h2h_results(
+        home_id,
+        away_id,
+    ) if home_id and away_id else []
+
+    facts = parse_facts(
+        fixture,
+        prediction=prediction,
+        h2h=h2h,
+        home_recent=home_recent,
+        away_recent=away_recent,
+    )
+
+    _cache_set(
+        cache_key,
         facts,
+        FACTS_CACHE_SECONDS,
     )
 
     return facts
 
 
-# ------------------------------------------------------------
-# FACT SUMMARY
-# ------------------------------------------------------------
+# ============================================================
+# FACTS DIGEST
+# ============================================================
 
 def facts_digest(facts):
-    """One short football-facts line for the AI reviewer."""
     if not facts:
-        return "no head-to-head or last-5 data"
+        return "No football facts available."
 
-    h2h = facts["h2h"]
+    home = facts.get("home") or "Home"
+    away = facts.get("away") or "Away"
 
-    parts = [
-        f"last 5 form home {facts['form_h'] or '?'} / "
-        f"away {facts['form_a'] or '?'}"
-    ]
+    recent = facts.get("recent") or {}
+    venue = facts.get("venue") or {}
+    prediction = facts.get("prediction") or {}
+    h2h = facts.get("h2h") or {}
+    lambdas = facts.get("lambda") or {}
 
-    if (
-        facts["gf_h"] is not None
-        and facts["ga_h"] is not None
-        and facts["gf_a"] is not None
-        and facts["ga_a"] is not None
-    ):
-        parts.append(
-            f"last-5 goals per game: "
-            f"home {facts['gf_h']:.1f} for / "
-            f"{facts['ga_h']:.1f} against, "
-            f"away {facts['gf_a']:.1f} for / "
-            f"{facts['ga_a']:.1f} against"
-        )
+    h_recent = recent.get("home") or {}
+    a_recent = recent.get("away") or {}
 
-    if h2h["n"]:
-        text = (
-            f"last {h2h['n']} meetings: "
-            f"home won {h2h['home_w']}, "
-            f"draws {h2h['draws']}, "
-            f"away won {h2h['away_w']}"
-        )
+    h_venue = venue.get("home") or {}
+    a_venue = venue.get("away") or {}
 
-        if h2h["avg_goals"] is not None:
-            text += (
-                f", {h2h['avg_goals']:.1f} goals a game"
-            )
-
-        text += f", both scored {h2h['btts']}"
-
-        parts.append(text)
-
-    rec_h = facts["rec_h"]
-    rec_a = facts["rec_a"]
-
-    if rec_h.get("played"):
-        parts.append(
-            f"home team won {rec_h['w']} "
-            f"of {rec_h['played']} at home this season"
-        )
-
-    if rec_a.get("played"):
-        parts.append(
-            f"away team won {rec_a['w']} "
-            f"of {rec_a['played']} away this season"
-        )
-
-    return "; ".join(parts)
+    return (
+        f"{home}: "
+        f"last 5 "
+        f"{h_recent.get('wins', 0)}W/"
+        f"{h_recent.get('draws', 0)}D/"
+        f"{h_recent.get('losses', 0)}L, "
+        f"scored {h_recent.get('scored', 0)}, "
+        f"conceded {h_recent.get('conceded', 0)}. "
+        f"Home record "
+        f"{h_venue.get('wins', 0)}W/"
+        f"{h_venue.get('draws', 0)}D/"
+        f"{h_venue.get('losses', 0)}L. "
+        f"{away}: "
+        f"last 5 "
+        f"{a_recent.get('wins', 0)}W/"
+        f"{a_recent.get('draws', 0)}D/"
+        f"{a_recent.get('losses', 0)}L, "
+        f"scored {a_recent.get('scored', 0)}, "
+        f"conceded {a_recent.get('conceded', 0)}. "
+        f"Away record "
+        f"{a_venue.get('wins', 0)}W/"
+        f"{a_venue.get('draws', 0)}D/"
+        f"{a_venue.get('losses', 0)}L. "
+        f"Model percentages "
+        f"H={prediction.get('home')}, "
+        f"D={prediction.get('draw')}, "
+        f"A={prediction.get('away')}. "
+        f"H2H: "
+        f"{h2h.get('home_wins', 0)} home wins, "
+        f"{h2h.get('draws', 0)} draws, "
+        f"{h2h.get('away_wins', 0)} away wins. "
+        f"Expected goals "
+        f"{lambdas.get('home')} - "
+        f"{lambdas.get('away')}."
+    )
 
 
-# ------------------------------------------------------------
+# ============================================================
 # POISSON
-# ------------------------------------------------------------
+# ============================================================
+
+def _poisson_pmf(k, lam):
+    if lam is None or lam <= 0:
+        return 0.0
+
+    try:
+        return math.exp(
+            -lam
+            + k * math.log(lam)
+            - math.lgamma(k + 1)
+        )
+    except Exception:
+        return 0.0
+
 
 def _poisson_cdf(k, lam):
     if lam is None or lam < 0:
+        return 0.0
+
+    total = 0.0
+
+    for i in range(
+        int(k) + 1
+    ):
+        total += _poisson_pmf(
+            i,
+            lam,
+        )
+
+    return max(
+        0.0,
+        min(1.0, total),
+    )
+
+
+def _score_probability(
+    home_lambda,
+    away_lambda,
+    condition,
+):
+    if (
+        home_lambda is None
+        or away_lambda is None
+    ):
+        return None
+
+    total = 0.0
+
+    for home_goals in range(0, 11):
+        for away_goals in range(0, 11):
+
+            p = (
+                _poisson_pmf(
+                    home_goals,
+                    home_lambda,
+                )
+                * _poisson_pmf(
+                    away_goals,
+                    away_lambda,
+                )
+            )
+
+            if condition(
+                home_goals,
+                away_goals,
+            ):
+                total += p
+
+    return max(
+        0.0,
+        min(1.0, total),
+    )
+
+
+# ============================================================
+# MARKET CLASSIFICATION
+# ============================================================
+
+def _candidate_text(candidate):
+    if not isinstance(candidate, dict):
+        return ""
+
+    return " ".join(
+        str(
+            candidate.get(key)
+            or ""
+        )
+        for key in (
+            "market",
+            "selection",
+            "name",
+            "label",
+            "type",
+        )
+    ).lower()
+
+
+def _win_like(candidate):
+    text = _candidate_text(candidate)
+
+    return any(
+        value in text
+        for value in (
+            "1up",
+            "2up",
+            "home win",
+            "away win",
+            "straight win",
+            "to win",
+            "either half",
+        )
+    )
+
+
+def _goals_like(candidate):
+    text = _candidate_text(candidate)
+
+    return any(
+        value in text
+        for value in (
+            "over 1.5",
+            "over 2.5",
+            "over 3.5",
+            "over 0.5",
+            "team goals",
+            "total goals",
+            "btts",
+            "both teams to score",
+        )
+    )
+
+
+def _dc_like(candidate):
+    text = _candidate_text(candidate)
+
+    return any(
+        value in text
+        for value in (
+            "double chance",
+            "draw no bet",
+            "dnb",
+        )
+    )
+
+
+def _is_under(candidate):
+    return "under" in _candidate_text(candidate)
+
+
+def _is_yellow_card(candidate):
+    text = _candidate_text(candidate)
+
+    return any(
+        value in text
+        for value in (
+            "yellow card",
+            "yellow cards",
+            "booking",
+            "bookings",
+        )
+    )
+
+
+def _is_negative_handicap(candidate):
+    text = _candidate_text(candidate)
+
+    # Explicitly reject negative handicap lines.
+    return bool(
+        re.search(
+            r"handicap[^0-9\-]*-\s*\d",
+            text,
+        )
+        or re.search(
+            r"\-\s*1(?:\.25|\.5|\.75)?",
+            text,
+        )
+        or re.search(
+            r"\-\s*2(?:\.25|\.5|\.75)?",
+            text,
+        )
+    )
+
+
+# ============================================================
+# FOOTBALL-ONLY PROBABILITY MODEL
+# ============================================================
+
+def _clamp(value, low=0.0, high=0.995):
+    try:
+        value = float(value)
+    except Exception:
+        return low
+
+    return max(
+        low,
+        min(high, value),
+    )
+
+
+def _blend(values, weights):
+    usable = []
+
+    for value, weight in zip(
+        values,
+        weights,
+    ):
+        if value is None:
+            continue
+
+        usable.append(
+            (
+                float(value),
+                float(weight),
+            )
+        )
+
+    if not usable:
+        return None
+
+    total_weight = sum(
+        weight
+        for _, weight in usable
+    )
+
+    if total_weight <= 0:
         return None
 
     return sum(
-        math.exp(-lam)
-        * lam ** i
-        / math.factorial(i)
-        for i in range(int(k) + 1)
-    )
+        value * weight
+        for value, weight in usable
+    ) / total_weight
 
 
-# ------------------------------------------------------------
-# FOOTBALL-EVIDENCE PROBABILITY
-# ------------------------------------------------------------
-
-def adjusted_p(c, facts):
-    """
-    Recalculate the candidate using football evidence.
-
-    The original SportyBet probability is treated only as a starting point.
-    API-Football form/goals/H2H evidence then adjusts it.
-    """
-
-    p = float(c.get("p") or 0.0)
-
-    if not facts:
-        return p
-
-    kind = c.get("kind")
-    side = c.get("side")
-
-    api = facts.get("api") or {}
-
-    # --------------------------------------------------------
-    # WIN / 1UP / 2UP / EITHER HALF
-    # --------------------------------------------------------
-
-    if (
-        kind in (
-            "up",
-            "either_half",
-            "win",
-            "handicap",
-        )
-        and side in ("home", "away")
-    ):
-        form = (
-            facts.get("form_h")
-            if side == "home"
-            else facts.get("form_a")
-        )
-
-        opp_form = (
-            facts.get("form_a")
-            if side == "home"
-            else facts.get("form_h")
-        )
-
-        rec = (
-            facts.get("rec_h")
-            if side == "home"
-            else facts.get("rec_a")
-        )
-
-        h2h = facts.get("h2h") or {}
-
-        evidence = []
-
-        if form:
-            evidence.append(
-                form.count("W") / len(form)
-            )
-
-        if opp_form:
-            # Opponent losing form helps the selected side.
-            evidence.append(
-                1 - (
-                    opp_form.count("W")
-                    / len(opp_form)
-                )
-            )
-
-        if rec and rec.get("played"):
-            try:
-                evidence.append(
-                    float(rec.get("w") or 0)
-                    / float(rec["played"])
-                )
-            except (TypeError, ValueError, ZeroDivisionError):
-                pass
-
-        if h2h.get("n", 0) >= 3:
-            wins = (
-                h2h["home_w"]
-                if side == "home"
-                else h2h["away_w"]
-            )
-
-            evidence.append(
-                wins / h2h["n"]
-            )
-
-        # API-Football prediction is football analysis,
-        # not bookmaker odds.
-        if api.get(side):
-            evidence.append(api[side])
-
-        if evidence:
-            football_p = sum(evidence) / len(evidence)
-
-            # Blend with the market baseline, but let the football
-            # evidence have the stronger influence.
-            p = (
-                0.35 * p
-                + 0.65 * football_p
-            )
-
-    # --------------------------------------------------------
-    # GOALS
-    # --------------------------------------------------------
-
-    lam_h = facts.get("lam_h")
-    lam_a = facts.get("lam_a")
-
-    if (
-        lam_h is not None
-        and lam_a is not None
-    ):
-        total_lam = lam_h + lam_a
-
-        if (
-            kind in (
-                "over",
-                "over15",
-                "under",
-            )
-            and c.get("line") is not None
-        ):
-            line = float(c["line"])
-
-            # For total goals > line:
-            # P(X >= floor(line)+1)
-            cutoff = math.floor(line)
-
-            under_probability = _poisson_cdf(
-                cutoff,
-                total_lam,
-            )
-
-            if under_probability is not None:
-                over_probability = (
-                    1 - under_probability
-                )
-
-                model = (
-                    over_probability
-                    if kind != "under"
-                    else under_probability
-                )
-
-                p = (
-                    0.30 * p
-                    + 0.70 * model
-                )
-
-        elif kind == "btts":
-            both_score = (
-                1 - math.exp(-lam_h)
-            ) * (
-                1 - math.exp(-lam_a)
-            )
-
-            model = (
-                both_score
-                if c.get("label")
-                == "Both teams to score"
-                else 1 - both_score
-            )
-
-            p = (
-                0.30 * p
-                + 0.70 * model
-            )
-
-    return max(
-        0.02,
-        min(0.97, p),
-    )
-
-
-# ------------------------------------------------------------
-# REASONS
-# ------------------------------------------------------------
-
-def _cap(text):
-    return (
-        text[:1].upper() + text[1:]
-        if text
-        else text
-    )
-
-
-def _win_like(c, facts, home, away):
-    side = c.get("side")
-
-    if side not in ("home", "away"):
+def _form_win_rate(stats):
+    if not stats:
         return None
 
-    team, opp = (
-        (home, away)
-        if side == "home"
-        else (away, home)
-    )
+    played = stats.get("played", 0)
 
-    form = (
-        facts["form_h"]
-        if side == "home"
-        else facts["form_a"]
-    )
-
-    opp_form = (
-        facts["form_a"]
-        if side == "home"
-        else facts["form_h"]
-    )
-
-    rec = (
-        facts["rec_h"]
-        if side == "home"
-        else facts["rec_a"]
-    )
-
-    h2h = facts["h2h"]
-
-    first = []
-
-    if form:
-        first.append(
-            f"{team} won {form.count('W')} "
-            f"of their last {len(form)} games ({form})"
-        )
-
-    if rec and rec.get("played"):
-        location = (
-            "at home"
-            if side == "home"
-            else "away"
-        )
-
-        first.append(
-            f"{location} they have won "
-            f"{rec['w']} of {rec['played']} "
-            f"this season"
-        )
-
-    sentence = (
-        _cap(" and ".join(first) + ".")
-        if first
-        else ""
-    )
-
-    second = ""
-
-    if h2h["n"] >= 3:
-        mine = (
-            h2h["home_w"]
-            if side == "home"
-            else h2h["away_w"]
-        )
-
-        second = (
-            f" In the last {h2h['n']} meetings "
-            f"with {opp} they won {mine}."
-        )
-
-    elif opp_form:
-        second = (
-            f" {opp} won only "
-            f"{opp_form.count('W')} of their "
-            f"last {len(opp_form)} "
-            f"({opp_form})."
-        )
-
-    kind = c["kind"]
-
-    tail = ""
-
-    if kind == "up":
-        if "2UP" in c["label"]:
-            tail = (
-                " The 2UP market needs them to establish "
-                "the required two-goal advantage."
-            )
-        else:
-            tail = (
-                " The 1UP market gives an early payout "
-                "when they establish the required lead."
-            )
-
-    elif kind == "either_half":
-        tail = (
-            " They only need to win one half."
-        )
-
-    elif kind == "handicap":
-        tail = (
-            " The recent form makes the handicap "
-            "line worth considering."
-        )
+    if not played:
+        return None
 
     return (
-        sentence
-        + second
-        + tail
-    ).strip() or None
-
-
-def _dc_like(c, facts, home, away):
-    side = c.get("side")
-
-    if side not in ("home", "away"):
-        return None
-
-    team = (
-        home
-        if side == "home"
-        else away
+        stats.get("wins", 0)
+        / played
     )
 
-    form = (
-        facts["form_h"]
-        if side == "home"
-        else facts["form_a"]
-    )
 
-    if not form:
+def _venue_win_rate(stats):
+    if not stats:
         return None
 
-    text = (
-        f"{team} lost only "
-        f"{form.count('L')} of their "
-        f"last {len(form)} games ({form})."
-    )
+    played = stats.get("played", 0)
 
-    h2h = facts["h2h"]
-
-    if h2h["n"] >= 3:
-        lost = (
-            h2h["away_w"]
-            if side == "home"
-            else h2h["home_w"]
-        )
-
-        text += (
-            f" They lost {lost} of the last "
-            f"{h2h['n']} meetings."
-        )
-
-    return text
-
-
-def _goals_like(c, facts, home, away):
-    kind = c["kind"]
-
-    gf_h = facts["gf_h"]
-    ga_h = facts["ga_h"]
-    gf_a = facts["gf_a"]
-    ga_a = facts["ga_a"]
-
-    h2h = facts["h2h"]
-
-    avg = ""
-
-    if (
-        h2h["n"] >= 3
-        and h2h["avg_goals"] is not None
-    ):
-        avg = (
-            f" The last {h2h['n']} meetings "
-            f"averaged {h2h['avg_goals']:.1f} goals."
-        )
-
-    if None in (
-        gf_h,
-        ga_h,
-        gf_a,
-        ga_a,
-    ):
+    if not played:
         return None
 
-    if kind in ("over", "over15"):
-        return (
-            f"{home} score {gf_h:.1f} and "
-            f"{away} {gf_a:.1f} goals a game "
-            f"over their last 5.{avg}"
+    return (
+        stats.get("wins", 0)
+        / played
+    )
+
+
+def _poisson_home_win(
+    home_lambda,
+    away_lambda,
+):
+    return _score_probability(
+        home_lambda,
+        away_lambda,
+        lambda h, a: h > a,
+    )
+
+
+def _poisson_away_win(
+    home_lambda,
+    away_lambda,
+):
+    return _score_probability(
+        home_lambda,
+        away_lambda,
+        lambda h, a: a > h,
+    )
+
+
+def _poisson_draw(
+    home_lambda,
+    away_lambda,
+):
+    return _score_probability(
+        home_lambda,
+        away_lambda,
+        lambda h, a: h == a,
+    )
+
+
+def _poisson_over(
+    home_lambda,
+    away_lambda,
+    line,
+):
+    return _score_probability(
+        home_lambda,
+        away_lambda,
+        lambda h, a: (
+            h + a
+        ) > line,
+    )
+
+
+def _poisson_btts(
+    home_lambda,
+    away_lambda,
+):
+    return _score_probability(
+        home_lambda,
+        away_lambda,
+        lambda h, a: (
+            h >= 1
+            and a >= 1
+        ),
+    )
+
+
+def _poisson_home_team_over(
+    home_lambda,
+    line,
+):
+    if home_lambda is None:
+        return None
+
+    return _clamp(
+        1.0 - _poisson_cdf(
+            math.floor(line),
+            home_lambda,
         )
+    )
 
-    if kind == "under":
-        return (
-            f"{home} concede {ga_h:.1f} and "
-            f"{away} {ga_a:.1f} a game "
-            f"over their last 5.{avg}"
+
+def _poisson_away_team_over(
+    away_lambda,
+    line,
+):
+    if away_lambda is None:
+        return None
+
+    return _clamp(
+        1.0 - _poisson_cdf(
+            math.floor(line),
+            away_lambda,
         )
-
-    if kind == "btts":
-        both = ""
-
-        if h2h["n"] >= 3:
-            both = (
-                f" Both teams scored in "
-                f"{h2h['btts']} of the last "
-                f"{h2h['n']} meetings."
-            )
-
-        if c["label"] == "Both teams to score":
-            return (
-                f"{home} score {gf_h:.1f} and "
-                f"{away} {gf_a:.1f} a game "
-                f"over their last 5.{both}"
-            )
-
-        return (
-            f"{home} concede {ga_h:.1f} and "
-            f"{away} {ga_a:.1f} a game "
-            f"over their last 5.{both}"
-        )
-
-    if kind == "corners":
-        return (
-            f"{home} score {gf_h:.1f} and "
-            f"{away} {gf_a:.1f} a game "
-            f"over their last 5, supporting an "
-            f"attacking-game angle."
-        )
-
-    return None
+    )
 
 
-def reason_for(c, facts, home, away):
-    """Create a short reason using football evidence."""
+def _football_win_probability(
+    facts,
+    side,
+):
     if not facts:
-        return (
-            "There was not enough football data available "
-            "to give this pick a proper evidence-based reason."
+        return None
+
+    recent = facts.get("recent") or {}
+    venue = facts.get("venue") or {}
+    prediction = facts.get("prediction") or {}
+    h2h = facts.get("h2h") or {}
+    lambdas = facts.get("lambda") or {}
+
+    if side == "home":
+        form = _form_win_rate(
+            recent.get("home")
         )
 
-    kind = c["kind"]
-
-    if kind in (
-        "up",
-        "either_half",
-        "win",
-        "handicap",
-    ):
-        text = _win_like(
-            c,
-            facts,
-            home,
-            away,
+        venue_rate = _venue_win_rate(
+            venue.get("home")
         )
 
-    elif kind == "dc":
-        text = _dc_like(
-            c,
-            facts,
-            home,
-            away,
+        api_rate = prediction.get(
+            "home"
         )
+
+        poisson = _poisson_home_win(
+            lambdas.get("home"),
+            lambdas.get("away"),
+        )
+
+        h2h_played = h2h.get(
+            "played",
+            0,
+        )
+
+        h2h_rate = None
+
+        if h2h_played:
+            h2h_rate = (
+                h2h.get("home_wins", 0)
+                / h2h_played
+            )
 
     else:
-        text = _goals_like(
-            c,
-            facts,
-            home,
-            away,
+        form = _form_win_rate(
+            recent.get("away")
         )
 
-    return (
-        text
-        or "Recent form and match data support this selection."
+        venue_rate = _venue_win_rate(
+            venue.get("away")
+        )
+
+        api_rate = prediction.get(
+            "away"
+        )
+
+        poisson = _poisson_away_win(
+            lambdas.get("home"),
+            lambdas.get("away"),
+        )
+
+        h2h_played = h2h.get(
+            "played",
+            0,
+        )
+
+        h2h_rate = None
+
+        if h2h_played:
+            h2h_rate = (
+                h2h.get("away_wins", 0)
+                / h2h_played
+            )
+
+    # Football data only.
+    #
+    # API prediction:
+    #   35%
+    #
+    # Recent form:
+    #   25%
+    #
+    # Venue:
+    #   20%
+    #
+    # Poisson:
+    #   15%
+    #
+    # H2H:
+    #   5%
+    #
+    # H2H is intentionally small because old H2H should not
+    # dominate current team strength.
+    return _blend(
+        [
+            api_rate,
+            form,
+            venue_rate,
+            poisson,
+            h2h_rate,
+        ],
+        [
+            0.35,
+            0.25,
+            0.20,
+            0.15,
+            0.05,
+        ],
     )
 
 
-# ------------------------------------------------------------
-# TICKETS THE USER PASTES
-# ------------------------------------------------------------
+# ============================================================
+# CANDIDATE PROBABILITY
+# ============================================================
 
-def event_for(provider, event_id):
+def _extract_line(candidate):
+    text = _candidate_text(candidate)
+
+    matches = re.findall(
+        r"(\d+(?:\.\d+)?)",
+        text,
+    )
+
+    if not matches:
+        return None
+
     try:
-        events = provider._load_events()
+        return float(matches[-1])
     except Exception:
         return None
 
-    for event in events:
-        if event.get("eventId") == event_id:
-            return event
 
-    return None
+def _positive_handicap_probability(
+    facts,
+    candidate,
+):
+    """
+    Approximate positive Asian handicap probability
+    from the football score distribution.
+
+    We do NOT use SportyBet implied probability.
+    """
+
+    lambdas = facts.get("lambda") or {}
+
+    hl = lambdas.get("home")
+    al = lambdas.get("away")
+
+    if hl is None or al is None:
+        return None
+
+    text = _candidate_text(candidate)
+
+    line = _extract_line(candidate)
+
+    if line is None:
+        return None
+
+    # Determine team.
+    home_pick = (
+        "home" in text
+        or facts.get("home", "").lower()
+        in text
+    )
+
+    away_pick = (
+        "away" in text
+        or facts.get("away", "").lower()
+        in text
+    )
+
+    if not home_pick and not away_pick:
+        return None
+
+    probability = 0.0
+
+    for hg in range(0, 11):
+        for ag in range(0, 11):
+
+            score = (
+                _poisson_pmf(hg, hl)
+                * _poisson_pmf(ag, al)
+            )
+
+            if home_pick:
+                margin = hg - ag
+            else:
+                margin = ag - hg
+
+            # Positive handicap >= +0.5.
+            if line >= 0.5:
+                if margin + line > 0:
+                    probability += score
+
+            else:
+                # +0 / 0 is effectively a push/win line.
+                if margin + line > 0:
+                    probability += score
+                elif margin + line == 0:
+                    probability += score * 0.5
+
+    return _clamp(probability)
+
+
+def adjusted_p(candidate, facts):
+    """
+    Calculate probability from football evidence.
+
+    IMPORTANT:
+    candidate['p'] is intentionally NOT used as the starting
+    probability.
+
+    SportyBet odds are therefore not allowed to manufacture
+    football confidence.
+    """
+
+    if not candidate or not facts:
+        return SURE_P_NODATA
+
+    text = _candidate_text(candidate)
+
+    # --------------------------------------------------------
+    # Forbidden markets
+    # --------------------------------------------------------
+
+    if _dc_like(candidate):
+        return 0.0
+
+    if _is_under(candidate):
+        return 0.0
+
+    if _is_yellow_card(candidate):
+        return 0.0
+
+    if _is_negative_handicap(candidate):
+        return 0.0
+
+    # --------------------------------------------------------
+    # 1X2 / 1UP / 2UP
+    # --------------------------------------------------------
+
+    if _win_like(candidate):
+
+        home_prob = _football_win_probability(
+            facts,
+            "home",
+        )
+
+        away_prob = _football_win_probability(
+            facts,
+            "away",
+        )
+
+        if (
+            home_prob is None
+            and away_prob is None
+        ):
+            return SURE_P_NODATA
+
+        if (
+            "away" in text
+            and away_prob is not None
+        ):
+            probability = away_prob
+
+        elif (
+            "home" in text
+            and home_prob is not None
+        ):
+            probability = home_prob
+
+        else:
+            probability = max(
+                home_prob or 0,
+                away_prob or 0,
+            )
+
+        # 1UP is treated as a strong win-type selection.
+        if "1up" in text:
+            probability *= 0.96
+
+        # 2UP requires a stronger margin.
+        if "2up" in text:
+            probability *= 0.88
+
+        # Either-half win is less demanding than full match,
+        # but still football-modelled.
+        if "either half" in text:
+            probability = min(
+                0.95,
+                probability + 0.10,
+            )
+
+        return _clamp(
+            probability,
+            0.0,
+            0.97,
+        )
+
+    # --------------------------------------------------------
+    # Goals / BTTS
+    # --------------------------------------------------------
+
+    if _goals_like(candidate):
+
+        lambdas = facts.get("lambda") or {}
+
+        hl = lambdas.get("home")
+        al = lambdas.get("away")
+
+        if hl is None or al is None:
+            return SURE_P_NODATA
+
+        if (
+            "btts" in text
+            or "both teams" in text
+        ):
+            probability = _poisson_btts(
+                hl,
+                al,
+            )
+
+            return (
+                _clamp(probability)
+                if probability is not None
+                else SURE_P_NODATA
+            )
+
+        if "over" in text:
+
+            line = _extract_line(candidate)
+
+            if line is None:
+                return SURE_P_NODATA
+
+            probability = _poisson_over(
+                hl,
+                al,
+                line,
+            )
+
+            return (
+                _clamp(probability)
+                if probability is not None
+                else SURE_P_NODATA
+            )
+
+        # Team goals.
+        if (
+            "team goals" in text
+            or "home goals" in text
+            or "away goals" in text
+        ):
+            line = _extract_line(candidate)
+
+            if line is None:
+                return SURE_P_NODATA
+
+            if (
+                "away" in text
+                and "home" not in text
+            ):
+                probability = (
+                    _poisson_away_team_over(
+                        al,
+                        line,
+                    )
+                )
+            else:
+                probability = (
+                    _poisson_home_team_over(
+                        hl,
+                        line,
+                    )
+                )
+
+            return (
+                _clamp(probability)
+                if probability is not None
+                else SURE_P_NODATA
+            )
+
+    # --------------------------------------------------------
+    # Positive handicap
+    # --------------------------------------------------------
+
+    if "handicap" in text:
+        probability = _positive_handicap_probability(
+            facts,
+            candidate,
+        )
+
+        if probability is not None:
+            return probability
+
+    # --------------------------------------------------------
+    # Corners
+    # --------------------------------------------------------
+
+    if "corner" in text:
+        # We deliberately do NOT pretend goals are corner data.
+        #
+        # Unless corner statistics have been fetched and placed
+        # in facts['corners'], this market receives no evidence.
+        corners = facts.get("corners")
+
+        if not corners:
+            return SURE_P_NODATA
+
+        probability = corners.get(
+            "probability"
+        )
+
+        if probability is not None:
+            return _clamp(probability)
+
+        return SURE_P_NODATA
+
+    return SURE_P_NODATA
+
+
+# ============================================================
+# MARKET REASON
+# ============================================================
+
+def reason_for(
+    candidate,
+    facts,
+    home=None,
+    away=None,
+):
+    if not facts:
+        return (
+            "No football data was available for this match."
+        )
+
+    home = (
+        home
+        or facts.get("home")
+        or "Home"
+    )
+
+    away = (
+        away
+        or facts.get("away")
+        or "Away"
+    )
+
+    text = _candidate_text(candidate)
+
+    recent = facts.get("recent") or {}
+    venue = facts.get("venue") or {}
+    lambdas = facts.get("lambda") or {}
+
+    h_recent = recent.get("home") or {}
+    a_recent = recent.get("away") or {}
+
+    h_venue = venue.get("home") or {}
+    a_venue = venue.get("away") or {}
+
+    if "corner" in text:
+        return (
+            "Corner data was not used unless actual corner "
+            "statistics were available."
+        )
+
+    if (
+        "btts" in text
+        or "both teams" in text
+    ):
+        return (
+            f"{home} and {away} have a football-modelled "
+            f"BTTS probability based on expected-goal "
+            f"rates of {lambdas.get('home')} and "
+            f"{lambdas.get('away')}."
+        )
+
+    if "over" in text:
+        return (
+            f"The football model estimates expected goals "
+            f"of {lambdas.get('home')} for {home} and "
+            f"{lambdas.get('away')} for {away}, supporting "
+            f"the selected Over market."
+        )
+
+    if (
+        "1up" in text
+        or "2up" in text
+        or "win" in text
+    ):
+        return (
+            f"{home}: {h_recent.get('wins', 0)} wins in "
+            f"the latest {h_recent.get('played', 0)} "
+            f"available matches, with a home record of "
+            f"{h_venue.get('wins', 0)} wins from "
+            f"{h_venue.get('played', 0)}. "
+            f"{away}: {a_recent.get('wins', 0)} wins in "
+            f"the latest {a_recent.get('played', 0)} "
+            f"available matches, with an away record of "
+            f"{a_venue.get('wins', 0)} wins from "
+            f"{a_venue.get('played', 0)}."
+        )
+
+    return facts_digest(facts)
+
+
+# ============================================================
+# PASTED TICKET HELPERS
+# ============================================================
+
+def event_for(leg):
+    if not isinstance(leg, dict):
+        return None
+
+    return (
+        leg.get("event")
+        or leg.get("fixture")
+        or leg.get("match")
+        or leg
+    )
 
 
 def classify_leg(leg):
-    """Classify a pasted SportyBet selection."""
-    mid, spec, oid = leg["key"]
-
-    mname = str(
-        leg.get("market_name") or ""
-    ).lower()
-
-    oname = str(
-        leg.get("outcome_name") or ""
-    ).lower()
-
-    out = {
-        "label": sp.leg_label(leg),
-        "side": None,
-        "line": None,
-    }
-
-    if mid == sp.M_1X2:
-        out["kind"] = "win"
-
-        out["side"] = {
-            "1": "home",
-            "3": "away",
-        }.get(oid)
-
-    elif mid == sp.M_DC:
-        out["kind"] = "dc"
-
-        out["side"] = {
-            "9": "home",
-            "11": "away",
-        }.get(oid)
-
-    elif mid == sp.M_TOTAL:
-        out["line"] = sp._float(
-            spec.replace("total=", "")
-        )
-
-        out["kind"] = (
-            "over"
-            if oid == sp.OUT_TOTAL["over"]
-            else "under"
-        )
-
-    elif mid == sp.M_BTTS:
-        out["kind"] = "btts"
-
-    elif "either half" in mname:
-        out["kind"] = "either_half"
-
-        out["side"] = (
-            "away"
-            if "away" in oname
-            else "home"
-        )
-
-    elif (
-        "1x2" in mname
-        and "up" in mname
-    ):
-        out["kind"] = "up"
-
-        out["side"] = (
-            "away"
-            if (
-                oname.startswith("away")
-                or oid == "3"
-            )
-            else "home"
-        )
-
-    elif "corner" in mname:
-        out["kind"] = "corners"
-
-    elif "handicap" in mname:
-        out["kind"] = "handicap"
-
-        out["side"] = (
-            "away"
-            if (
-                oname.startswith("away")
-                or oid == "2"
-            )
-            else "home"
-        )
-
-    elif "draw no bet" in mname:
-        out["kind"] = "dnb"
-
-        out["side"] = (
-            "away"
-            if (
-                oname.startswith("away")
-                or oid == "5"
-            )
-            else "home"
-        )
-
-    else:
-        out["kind"] = "other"
-
-    return out
-
-
-def why(provider, code, index):
-    """Return the reason for one pick in a pasted code."""
-    legs = provider.load_code(code)
-
-    if not (
-        0 <= index < len(legs)
-    ):
-        raise sp.SportyBetError(
-            "That pick is no longer on the ticket."
-        )
-
-    leg = legs[index]
-
-    event = event_for(
-        provider,
-        leg["event_id"],
-    )
-
-    facts = None
-
-    if event is not None:
-        facts = get_facts(
-            find_fixture(event)
-        )
-
-    c = classify_leg(leg)
-
-    return {
-        "reason": reason_for(
-            c,
-            facts,
-            leg["home"],
-            leg["away"],
-        ),
-        "has_data": bool(facts),
-    }
-
-
-# ------------------------------------------------------------
-# RANK PICKS FOR AN EXISTING MATCH
-# ------------------------------------------------------------
-
-def _rank(provider, event, use_data):
-    """Rank all available markets for one match."""
-    import smart_ticket
-
-    try:
-        markets = provider._event_markets_cached(
-            event["eventId"]
-        )
-    except Exception:
-        markets = None
-
-    markets = (
-        markets
-        or event.get("markets")
-        or []
-    )
-
-    facts = (
-        get_facts(find_fixture(event))
-        if use_data
-        else None
-    )
-
-    ranked = []
-
-    for c in smart_ticket.event_candidates(
-        event,
-        markets,
-    ):
-        c["p"] = adjusted_p(
-            c,
-            facts,
-        )
-
-        c["has_data"] = bool(facts)
-
-        if c["odd"] >= 1.08:
-            ranked.append(c)
-
-    ranked.sort(
-        key=lambda c: (
-            c["p"]
-            + 0.1
-            * min(
-                c["odd"] - 1,
-                0.4,
-            )
-        ),
-        reverse=True,
-    )
-
-    return ranked, facts
-
-
-def safest_for_leg(provider, leg):
-    """Find a stronger evidence-based selection for the same match."""
-    event = event_for(
-        provider,
-        leg["event_id"],
-    )
-
-    if event is None:
-        return None
-
-    ranked, facts = _rank(
-        provider,
-        event,
-        True,
-    )
-
-    if not ranked or not facts:
-        return None
-
-    best = ranked[0]
-
-    current = (
-        min(
-            0.95 / (leg.get("odd") or 1.0),
-            0.97,
-        )
-        if (leg.get("odd") or 0) > 1
-        else 0.97
-    )
-
-    if (
-        best["key"] == leg["key"]
-        or best["p"] <= current
-    ):
-        return None
-
-    return (
-        best["key"],
-        best["odd"],
-        best["label"],
-        reason_for(
-            best,
-            facts,
-            leg["home"],
-            leg["away"],
-        ),
-    )
-
-
-# ------------------------------------------------------------
-# REBUILD A TICKET SAFER
-# ------------------------------------------------------------
-
-def rebuild_safer(provider, code):
     """
-    Replace each match with its strongest evidence-based market.
+    Legacy classifier retained for compatibility.
 
-    Matches without football data are not treated as 'sure' picks.
+    Active ticket generation should still reject:
+        - DNB
+        - Under
+        - Double chance
+        - Yellow cards
+        - Negative handicaps
     """
-    legs = provider.load_code(code)
 
-    started = time.time()
-
-    studied = 0
-    new_legs = []
-    dropped = []
-
-    for leg in legs:
-        event = event_for(
-            provider,
-            leg["event_id"],
-        )
-
-        match = (
-            f"{leg['home']} vs "
-            f"{leg['away']}"
-        )
-
-        if event is None:
-            dropped.append({
-                "match": match,
-                "why": (
-                    "this match is no longer "
-                    "on SportyBet's list"
-                ),
-            })
-            continue
-
-        use_data = (
-            studied < ENRICH_MAX
-            and (
-                time.time() - started
-                < ENRICH_SECONDS
-            )
-        )
-
-        ranked, facts = _rank(
-            provider,
-            event,
-            use_data,
-        )
-
-        if use_data:
-            studied += 1
-
-        # No football facts = do not call the pick sure.
-        if not facts:
-            dropped.append({
-                "match": match,
-                "why": (
-                    "there was not enough football "
-                    "data to support a safer pick"
-                ),
-            })
-            continue
-
-        best = (
-            ranked[0]
-            if ranked
-            else None
-        )
-
-        if (
-            best is None
-            or best["p"] < SURE_P_DATA
-        ):
-            dropped.append({
-                "match": match,
-                "why": (
-                    "no evidence-based pick "
-                    "was strong enough"
-                ),
-            })
-            continue
-
-        new_legs.append({
-            "event_id": event["eventId"],
-            "home": leg["home"],
-            "away": leg["away"],
-            "key": best["key"],
-            "odd": best["odd"],
-            "label_override": best["label"],
-            "reason": reason_for(
-                best,
-                facts,
-                leg["home"],
-                leg["away"],
-            ),
-        })
-
-    if not new_legs:
-        raise sp.SportyBetError(
-            "None of those matches had enough "
-            "football evidence for a safer ticket."
-        )
-
-    new_code = provider._save_code(
-        [
-            (
-                l["event_id"],
-                l["key"],
-            )
-            for l in new_legs
-        ]
+    text = _candidate_text(
+        leg if isinstance(leg, dict) else {}
     )
 
-    result = sp.summarize_legs(
-        new_legs
+    if "draw no bet" in text or "dnb" in text:
+        return "dnb"
+
+    if "double chance" in text:
+        return "double_chance"
+
+    if "under" in text:
+        return "under"
+
+    if "yellow card" in text:
+        return "yellow_cards"
+
+    if "corner" in text:
+        return "corners"
+
+    if "btts" in text:
+        return "btts"
+
+    if "handicap" in text:
+        return "handicap"
+
+    if "1up" in text:
+        return "1up"
+
+    if "2up" in text:
+        return "2up"
+
+    if "over" in text:
+        return "over"
+
+    if "win" in text:
+        return "win"
+
+    return "other"
+
+
+def why(leg, facts=None):
+    if not facts:
+        return (
+            "No football evidence available."
+        )
+
+    home = facts.get("home")
+    away = facts.get("away")
+
+    return reason_for(
+        leg,
+        facts,
+        home,
+        away,
     )
 
-    result.update({
-        "code": new_code,
-        "changed": True,
-        "dropped": dropped,
-        "studied": studied,
-    })
+
+# ============================================================
+# RANKING
+# ============================================================
+
+def _rank(candidate, facts):
+    probability = adjusted_p(
+        candidate,
+        facts,
+    )
+
+    if probability <= 0:
+        return -1
+
+    # Small evidence bonus.
+    recent = facts.get("recent") or {}
+
+    played = (
+        (recent.get("home") or {}).get(
+            "played",
+            0,
+        )
+        +
+        (recent.get("away") or {}).get(
+            "played",
+            0,
+        )
+    )
+
+    evidence_bonus = min(
+        0.04,
+        played / 250.0,
+    )
+
+    return min(
+        0.99,
+        probability + evidence_bonus,
+    )
+
+
+def safest_for_leg(
+    leg,
+    facts=None,
+):
+    if not facts:
+        return None
+
+    probability = adjusted_p(
+        leg,
+        facts,
+    )
+
+    if probability <= 0:
+        return None
+
+    result = dict(leg)
+
+    result["football_probability"] = (
+        probability
+    )
+
+    result["reason"] = reason_for(
+        result,
+        facts,
+        facts.get("home"),
+        facts.get("away"),
+    )
 
     return result
 
 
-# ------------------------------------------------------------
+def rebuild_safer(
+    legs,
+    facts_by_event=None,
+):
+    """
+    Rebuild a ticket using football evidence.
+
+    No-data selections are not substituted with bookmaker
+    confidence.
+    """
+
+    facts_by_event = facts_by_event or {}
+
+    output = []
+
+    for leg in legs or []:
+        event = event_for(leg)
+
+        event_key = (
+            str(
+                event.get("id")
+                or event.get("eventId")
+                or event.get("fixture_id")
+                or ""
+            )
+            if isinstance(event, dict)
+            else ""
+        )
+
+        facts = facts_by_event.get(
+            event_key
+        )
+
+        if not facts:
+            continue
+
+        candidate = safest_for_leg(
+            leg,
+            facts,
+        )
+
+        if not candidate:
+            continue
+
+        output.append(candidate)
+
+    output.sort(
+        key=lambda item: item.get(
+            "football_probability",
+            0,
+        ),
+        reverse=True,
+    )
+
+    return output
+
+
+# ============================================================
 # CACHE CONTROL
-# ------------------------------------------------------------
+# ============================================================
 
 def clear_cache():
-    """Clear football-data caches."""
+    """
+    Clear in-memory cache.
+
+    Persistent entries are intentionally NOT wiped by default.
+
+    This means restarting the app does not destroy your saved
+    football knowledge.
+    """
+
     _facts_cache.clear()
     _fixture_index.clear()
+    _prediction_cache.clear()
 
+
+def clear_persistent_cache():
+    """
+    Explicitly clear persistent cache.
+
+    This is NOT called automatically.
+    """
+
+    try:
+        connection = _sqlite_connect()
+
+        connection.execute(
+            "DELETE FROM football_cache"
+        )
+
+        connection.commit()
+        connection.close()
+
+    except Exception:
+        pass
+
+    # We cannot efficiently FLUSH the entire Redis database
+    # because that could destroy unrelated application data.
+    #
+    # Versioning is therefore the safe Redis invalidation method.
+    #
+    # Increase FOOTBALL_CACHE_VERSION when you intentionally
+    # want to invalidate the football cache.
+
+
+# ============================================================
+# DIAGNOSTICS
+# ============================================================
 
 def diag_summary():
-    """Small internal diagnostic helper."""
+    """
+    Internal diagnostics only.
+
+    Do not expose this directly in Telegram/frontend responses.
+    """
+
     return {
-        "facts_cached": len(_facts_cache),
-        "fixture_dates_cached": len(_fixture_index),
-        "enrich_max": ENRICH_MAX,
-        "enrich_seconds": ENRICH_SECONDS,
+        "cache_version": CACHE_VERSION,
+        "redis_enabled": _redis_enabled(),
+        "memory_entries": len(_facts_cache),
+        "fixture_entries": len(_fixture_index),
+        "prediction_entries": len(_prediction_cache),
+        "persistent_store": (
+            "upstash"
+            if _redis_enabled()
+            else "sqlite"
+        ),
+        "facts_ttl": FACTS_CACHE_SECONDS,
+        "fixture_ttl": FIXTURE_CACHE_SECONDS,
+        "prediction_ttl": PREDICTION_CACHE_SECONDS,
     }

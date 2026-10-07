@@ -15,7 +15,6 @@ Environment:
 """
 
 import base64
-import html
 import importlib
 import json
 import os
@@ -35,6 +34,8 @@ TOOL_LIMIT = 30
 
 LAUNCHER_MODULE = os.getenv("LAUNCHER_MODULE", "launcher")
 
+E_FAIL = "\u274C"   # cross mark
+
 
 # ===============================================================
 # IMPORTANT IMPORT ORDER
@@ -50,20 +51,12 @@ SPORTYBET_PROVIDER_MODULE = None
 SPORTYBET_PROVIDER_ERROR = None
 
 try:
-    SPORTYBET_PROVIDER_MODULE = importlib.import_module(
-        "sportybet_provider"
-    )
-    print("â sportybet_provider.py loaded successfully")
+    SPORTYBET_PROVIDER_MODULE = importlib.import_module("sportybet_provider")
+    print("OK: sportybet_provider.py loaded successfully")
 
 except Exception as exc:
-    SPORTYBET_PROVIDER_ERROR = (
-        f"{type(exc).__name__}: {exc}"
-    )
-
-    print(
-        "â sportybet_provider.py failed to load:",
-        SPORTYBET_PROVIDER_ERROR,
-    )
+    SPORTYBET_PROVIDER_ERROR = f"{type(exc).__name__}: {exc}"
+    print("FAILED: sportybet_provider.py failed to load:", SPORTYBET_PROVIDER_ERROR)
 
 
 # ===============================================================
@@ -72,22 +65,16 @@ except Exception as exc:
 
 try:
     bot = importlib.import_module("main")
-    print("â main.py loaded successfully")
+    print("OK: main.py loaded successfully")
 
 except Exception as exc:
-    print(
-        "â main.py failed to load:",
-        f"{type(exc).__name__}: {exc}",
-    )
+    print("FAILED: main.py failed to load:", f"{type(exc).__name__}: {exc}")
     raise
 
 
 # ===============================================================
 # LOAD SMART TICKET BUILDER
 # ===============================================================
-#
-# This is VERY important.
-#
 # smart_ticket.py replaces main.prediction_ticket_flow with the
 # real SportyTips ticket-building logic.
 # ===============================================================
@@ -96,21 +83,12 @@ SMART_TICKET_MODULE = None
 SMART_TICKET_ERROR = None
 
 try:
-    SMART_TICKET_MODULE = importlib.import_module(
-        "smart_ticket"
-    )
-
-    print("â smart_ticket.py loaded successfully")
+    SMART_TICKET_MODULE = importlib.import_module("smart_ticket")
+    print("OK: smart_ticket.py loaded successfully")
 
 except Exception as exc:
-    SMART_TICKET_ERROR = (
-        f"{type(exc).__name__}: {exc}"
-    )
-
-    print(
-        "â smart_ticket.py failed to load:",
-        SMART_TICKET_ERROR,
-    )
+    SMART_TICKET_ERROR = f"{type(exc).__name__}: {exc}"
+    print("FAILED: smart_ticket.py failed to load:", SMART_TICKET_ERROR)
 
 
 # ===============================================================
@@ -119,11 +97,11 @@ except Exception as exc:
 
 try:
     launcher = importlib.import_module(LAUNCHER_MODULE)
-    print(f"â {LAUNCHER_MODULE}.py loaded successfully")
+    print(f"OK: {LAUNCHER_MODULE}.py loaded successfully")
 
 except Exception as exc:
     print(
-        f"â {LAUNCHER_MODULE}.py failed to load:",
+        f"FAILED: {LAUNCHER_MODULE}.py failed to load:",
         f"{type(exc).__name__}: {exc}",
     )
     raise
@@ -183,17 +161,10 @@ def web_send_message(chat_id, text):
         if not HIDE_LINES.search(line)
     ]
 
-    cleaned = re.sub(
-        r"\n{3,}",
-        "\n\n",
-        "\n".join(kept),
-    ).strip()
+    cleaned = re.sub(r"\n{3,}", "\n\n", "\n".join(kept)).strip()
 
     if not cleaned:
-        cleaned = (
-            "I couldn't get that right now. "
-            "Please try again in a minute."
-        )
+        cleaned = "I couldn't get that right now. Please try again in a minute."
 
     cleaned = (
         cleaned
@@ -202,12 +173,7 @@ def web_send_message(chat_id, text):
         .replace("&quot;", '"')
     )
 
-    _emit(
-        {
-            "type": "text",
-            "html": _rebrand(cleaned),
-        }
-    )
+    _emit({"type": "text", "html": _rebrand(cleaned)})
 
 
 def web_send_photo(chat_id, png, caption=""):
@@ -226,13 +192,7 @@ def web_send_photo(chat_id, png, caption=""):
 
 bot.send_message = web_send_message
 
-bot.telegram_request = (
-    lambda method, params=None:
-    {
-        "ok": True,
-        "result": [],
-    }
-)
+bot.telegram_request = lambda method, params=None: {"ok": True, "result": []}
 
 launcher.send_photo = web_send_photo
 
@@ -255,18 +215,13 @@ _hits = {}
 def too_fast(key, limit=RATE_LIMIT):
     now = time.time()
 
-    recent = [
-        t
-        for t in _hits.get(key, [])
-        if now - t < RATE_WINDOW
-    ]
+    recent = [t for t in _hits.get(key, []) if now - t < RATE_WINDOW]
 
     if len(recent) >= limit:
         _hits[key] = recent
         return True
 
     recent.append(now)
-
     _hits[key] = recent
 
     return False
@@ -274,12 +229,7 @@ def too_fast(key, limit=RATE_LIMIT):
 
 def client_ip():
     return (
-        request.headers.get(
-            "X-Forwarded-For",
-            "",
-        )
-        .split(",")[0]
-        .strip()
+        request.headers.get("X-Forwarded-For", "").split(",")[0].strip()
         or request.remote_addr
         or "?"
     )
@@ -295,18 +245,19 @@ def run_turn(session, text, q):
     try:
 
         with RUN_LOCK:
-            bot.handle_text(
-                session,
-                text,
-            )
+            bot.handle_text(session, text)
 
     except Exception as exc:
 
         print(f"Web turn failed: {type(exc).__name__}: {exc}")
+
         q.put(
             {
                 "type": "text",
-                "html": "â I could not complete that request right now. Please try again in a moment.",
+                "html": (
+                    f"{E_FAIL} I could not complete that request right now. "
+                    "Please try again in a moment."
+                ),
             }
         )
 
@@ -472,29 +423,18 @@ CHAT_EXTRAS = r"""
 @app.get("/")
 def home_page():
 
-    path = os.path.join(
-        BASE_DIR,
-        "home.html",
-    )
+    path = os.path.join(BASE_DIR, "home.html")
 
     if not os.path.exists(path):
         return redirect("/chat")
 
-    with open(
-        path,
-        encoding="utf-8",
-    ) as fh:
-
-        page = _rebrand(
-            fh.read()
-        )
+    with open(path, encoding="utf-8") as fh:
+        page = _rebrand(fh.read())
 
     return Response(
         page,
         mimetype="text/html",
-        headers={
-            "Cache-Control": "no-cache"
-        },
+        headers={"Cache-Control": "no-cache"},
     )
 
 
@@ -504,7 +444,6 @@ def home_page():
 
 @app.get("/index.html")
 def chat_page_alias():
-
     return redirect("/chat")
 
 
@@ -515,45 +454,23 @@ def chat_page_alias():
 @app.get("/chat")
 def chat_page():
 
-    path = os.path.join(
-        BASE_DIR,
-        "index.html",
-    )
+    path = os.path.join(BASE_DIR, "index.html")
 
     if not os.path.exists(path):
+        return "index.html is missing next to app.py.", 404
 
-        return (
-            "index.html is missing next to app.py.",
-            404,
-        )
-
-    with open(
-        path,
-        encoding="utf-8",
-    ) as fh:
-
-        page = _rebrand(
-            fh.read()
-        )
+    with open(path, encoding="utf-8") as fh:
+        page = _rebrand(fh.read())
 
     if "</body>" in page:
-
-        page = page.replace(
-            "</body>",
-            CHAT_EXTRAS + "</body>",
-            1,
-        )
-
+        page = page.replace("</body>", CHAT_EXTRAS + "</body>", 1)
     else:
-
         page += CHAT_EXTRAS
 
     return Response(
         page,
         mimetype="text/html",
-        headers={
-            "Cache-Control": "no-cache"
-        },
+        headers={"Cache-Control": "no-cache"},
     )
 
 
@@ -564,14 +481,7 @@ def chat_page():
 @app.get("/health")
 def health():
 
-    provider_loaded = (
-        getattr(
-            bot,
-            "SPORTYBET_PROVIDER",
-            None,
-        )
-        is not None
-    )
+    provider_loaded = getattr(bot, "SPORTYBET_PROVIDER", None) is not None
 
     return jsonify(
         status="ok",
@@ -591,23 +501,16 @@ def _stream_response(q):
         while True:
 
             try:
-
-                item = q.get(
-                    timeout=15
-                )
+                item = q.get(timeout=15)
 
             except queue.Empty:
-
                 yield "\n"
                 continue
 
             if item is None:
                 break
 
-            yield (
-                json.dumps(item)
-                + "\n"
-            )
+            yield json.dumps(item) + "\n"
 
     return Response(
         stream(),
@@ -626,53 +529,22 @@ def _stream_response(q):
 @app.post("/api/chat")
 def chat():
 
-    data = (
-        request.get_json(
-            silent=True
-        )
-        or {}
-    )
+    data = request.get_json(silent=True) or {}
 
-    text = str(
-        data.get(
-            "message",
-            "",
-        )
-    ).strip()[:500]
-
-    session = str(
-        data.get(
-            "session",
-            "",
-        )
-    )[:64]
+    text = str(data.get("message", "")).strip()[:500]
+    session = str(data.get("session", ""))[:64]
 
     if not text or not session:
+        return jsonify(error="Empty message."), 400
 
-        return jsonify(
-            error="Empty message."
-        ), 400
-
-    if too_fast(
-        client_ip()
-    ):
-
-        return jsonify(
-            error=(
-                "Slow down. "
-                "Try again in a minute."
-            )
-        ), 429
+    if too_fast(client_ip()):
+        return jsonify(error="Slow down. Try again in a minute."), 429
 
     q = queue.Queue()
 
     threading.Thread(
         target=run_turn,
-        args=(
-            session,
-            text,
-            q,
-        ),
+        args=(session, text, q),
         daemon=True,
     ).start()
 
@@ -686,70 +558,27 @@ def chat():
 @app.post("/api/straight_win")
 def api_straight_win():
 
-    data = (
-        request.get_json(
-            silent=True
-        )
-        or {}
-    )
+    data = request.get_json(silent=True) or {}
 
-    window = str(
-        data.get(
-            "window",
-            "today",
-        )
-    ).lower()
+    window = str(data.get("window", "today")).lower()
+    session = str(data.get("session", ""))[:64]
 
-    session = str(
-        data.get(
-            "session",
-            "",
-        )
-    )[:64]
-
-    if window not in (
-        "today",
-        "long",
-    ):
-
-        return jsonify(
-            error="Unknown window."
-        ), 400
+    if window not in ("today", "long"):
+        return jsonify(error="Unknown window."), 400
 
     if not session:
+        return jsonify(error="Missing session."), 400
 
-        return jsonify(
-            error="Missing session."
-        ), 400
+    if too_fast(client_ip()):
+        return jsonify(error="Slow down. Try again in a minute."), 429
 
-    if too_fast(
-        client_ip()
-    ):
-
-        return jsonify(
-            error=(
-                "Slow down. "
-                "Try again in a minute."
-            )
-        ), 429
-
-    if window == "long":
-
-        text = "straight win long ticket"
-
-    else:
-
-        text = "straight win today"
+    text = "straight win long ticket" if window == "long" else "straight win today"
 
     q = queue.Queue()
 
     threading.Thread(
         target=run_turn,
-        args=(
-            session,
-            text,
-            q,
-        ),
+        args=(session, text, q),
         daemon=True,
     ).start()
 
@@ -760,79 +589,39 @@ def api_straight_win():
 # SPORTYBET CODE TOOLS
 # ===============================================================
 
-CODE_OK = re.compile(
-    r"^[A-Z0-9]{5,12}$"
-)
+CODE_OK = re.compile(r"^[A-Z0-9]{5,12}$")
 
 
 def _ticket_tool(work):
 
-    data = (
-        request.get_json(
-            silent=True
-        )
-        or {}
-    )
+    data = request.get_json(silent=True) or {}
 
-    code = str(
-        data.get(
-            "code",
-            "",
-        )
-    ).strip().upper()
+    code = str(data.get("code", "")).strip().upper()
 
     if not CODE_OK.match(code):
+        return jsonify(error="That does not look like a SportyBet code."), 400
 
-        return jsonify(
-            error=(
-                "That does not look "
-                "like a SportyBet code."
-            )
-        ), 400
+    if too_fast("tool:" + client_ip(), TOOL_LIMIT):
+        return jsonify(error="Slow down. Try again in a minute."), 429
 
-    if too_fast(
-        "tool:" + client_ip(),
-        TOOL_LIMIT,
-    ):
-
-        return jsonify(
-            error=(
-                "Slow down. "
-                "Try again in a minute."
-            )
-        ), 429
-
-    provider = getattr(
-        bot,
-        "SPORTYBET_PROVIDER",
-        None,
-    )
+    provider = getattr(bot, "SPORTYBET_PROVIDER", None)
 
     if provider is None:
-
         return jsonify(
-            error=(
-                "SportyBet mode is off. "
-                "Set USE_SPORTYBET to 1 "
-                "on the server."
-            )
+            error="SportyBet mode is off. Set USE_SPORTYBET to 1 on the server."
         ), 503
 
     try:
-
-        return jsonify(
-            work(
-                provider,
-                code,
-                data,
-            )
-        )
+        return jsonify(work(provider, code, data))
 
     except Exception as exc:
 
-        print(
-            f"Ticket tool error: {exc}"
-        )
+        # Messages written for the user (for example "nothing could be
+        # made safer") are shown as they are.
+        if exc.__class__.__name__ == "SaferError":
+            return jsonify(error=str(exc)), 422
+
+        print(f"Ticket tool error: {type(exc).__name__}: {exc}")
 
         return jsonify(
             error="I could not read SportyBet right now. Please try again in a moment."
@@ -855,10 +644,7 @@ def _ints(value):
 @app.post("/api/check")
 def api_check():
 
-    return _ticket_tool(
-        lambda p, code, data:
-        p.check_code(code)
-    )
+    return _ticket_tool(lambda p, code, data: p.check_code(code))
 
 
 # ===============================================================
@@ -869,15 +655,10 @@ def api_check():
 def api_edit():
 
     return _ticket_tool(
-        lambda p, code, data:
-        p.edit_code(
+        lambda p, code, data: p.edit_code(
             code,
-            remove=_ints(
-                data.get("remove")
-            ),
-            swap=_ints(
-                data.get("swap")
-            ),
+            remove=_ints(data.get("remove")),
+            swap=_ints(data.get("swap")),
             picker=None,
         )
     )
@@ -886,14 +667,55 @@ def api_edit():
 # ===============================================================
 # MAKE SAFER
 # ===============================================================
+# Every pick is swapped for a more likely pick on the SAME match,
+# using SportyBet's own odds. A pick that cannot be improved is
+# removed. The new ticket gets a new SportyBet code.
 
 @app.post("/api/safer")
 def api_safer():
 
-    return _ticket_tool(
-        lambda p, code, data:
-        p.make_safer(code)
-    )
+    def work(provider, code, data):
+
+        if SMART_TICKET_MODULE is None:
+            raise RuntimeError("smart_ticket.py is not loaded")
+
+        return SMART_TICKET_MODULE.safer_rebuild(provider, code)
+
+    return _ticket_tool(work)
+
+
+# ===============================================================
+# WHY THIS PICK
+# ===============================================================
+
+@app.post("/api/why")
+def api_why():
+
+    def work(provider, code, data):
+
+        legs = provider.load_code(code)
+
+        try:
+            index = int(data.get("index"))
+            leg = legs[index]
+        except (TypeError, ValueError, IndexError):
+            raise RuntimeError("bad pick number")
+
+        odd = leg.get("odd") or 0.0
+
+        if odd > 1:
+            chance = round(min(0.95 / odd, 0.97) * 100)
+            reason = (
+                f"SportyBet's odds of {odd:.2f} put this pick at about "
+                f"{chance}%. Higher odds mean SportyBet thinks it is less "
+                "likely to win."
+            )
+        else:
+            reason = "SportyBet has no live odds for this pick right now."
+
+        return {"reason": reason}
+
+    return _ticket_tool(work)
 
 
 # ===============================================================
@@ -902,31 +724,14 @@ def api_safer():
 
 if __name__ == "__main__":
 
-    if getattr(
-        bot,
-        "SPORTYBET_PROVIDER",
-        None,
-    ) is None:
-
-        print(
-            "â ï¸ WARNING: SportyBet provider "
-            "is not active."
-        )
+    if getattr(bot, "SPORTYBET_PROVIDER", None) is None:
+        print("WARNING: SportyBet provider is not active.")
 
     if SMART_TICKET_MODULE is None:
-
-        print(
-            "â ï¸ WARNING: smart_ticket.py "
-            "is not loaded."
-        )
+        print("WARNING: smart_ticket.py is not loaded.")
 
     app.run(
         host="0.0.0.0",
-        port=int(
-            os.getenv(
-                "PORT",
-                "8000",
-            )
-        ),
+        port=int(os.getenv("PORT", "8000")),
         threaded=True,
     )

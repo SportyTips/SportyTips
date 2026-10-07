@@ -2008,6 +2008,14 @@ def handle_text(chat_id, text):
             send_message(chat_id, f"{E_FAIL} Error:\n{escape(str(exc))}")
         return
 
+    # ---- Top leagues: handled directly so the AI cannot drop the filter ----
+    if not command and re.search(r"\btop\s*-?\s*leagues?\b", lowered):
+        try:
+            prediction_ticket_flow(chat_id, lowered)
+        except Exception as exc:
+            send_message(chat_id, f"{E_FAIL} Error:\n{escape(str(exc))}")
+        return
+
     # ---- normal chat: let the AI understand it ----
     ai_problem = None
     if not command and ANTHROPIC_API_KEY:

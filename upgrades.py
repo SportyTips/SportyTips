@@ -5,10 +5,13 @@
    - bot is less sure                               -> 1UP (safer, lower odds)
    - SportyBet does not offer it for that match     -> normal Home/Away pick
 2) The AI chat talks like a real person.
+3) TOP LEAGUES: when the request says "top leagues", only matches from the
+   14 top competitions are used (see TOP_LEAGUE_RULES below).
 
 Put this file next to main.py and import it in app.py AFTER the launcher.
 """
 
+import re
 import threading
 
 import main as bot
@@ -118,3 +121,103 @@ try:
     import smart_ticket  # noqa: F401  (patches bot.prediction_ticket_flow)
 except ImportError as exc:
     print(f"smart_ticket.py not found, using the old ticket builder: {exc}")
+    smart_ticket = None
+
+
+# ------------------------------------------------------------
+# 4) TOP LEAGUES (14 competitions)
+# ------------------------------------------------------------
+# Each rule is (country word, league-name pattern).
+# The country word must appear in SportyBet's country name for that match.
+# An empty country word is used for the European cups.
+#
+# To add or remove a league, edit this list. Then update the number on the
+# home card (the "14 top competitions" text is changed in app.py).
+
+TOP_LEAGUE_RULES = [
+    ("england", r"^(english )?premier league$"),
+    ("italy", r"^serie a$"),
+    ("spain", r"^la ?liga( ea sports)?$"),
+    ("germany", r"^bundesliga$"),
+    ("france", r"^ligue 1( .*)?$"),
+    ("portugal", r"^(liga portugal( betclic)?|primeira liga)$"),
+    ("netherlands", r"^eredivisie$"),
+    ("belgium", r"^(jupiler )?pro league$|^first division a$"),
+    ("turkey", r"^(trendyol )?s[uü]per lig$"),
+    ("greece", r"^super ?league( 1)?$"),
+    ("norway", r"^eliteserien$"),
+    ("", r"^(uefa )?champions league$"),
+    ("", r"^(uefa )?europa league$"),
+    ("", r"^(uefa )?(europa )?conference league$"),
+]
+
+TOP_LEAGUES_RE = re.compile(r"\btop\s*-?\s*leagues?\b", re.I)
+
+_TOP_COMPILED = [(country, re.compile(pattern)) for country, pattern in TOP_LEAGUE_RULES]
+
+_NOT_TOP = re.compile(r"women|\(w\)|qualif|play ?offs?|youth|reserve|academy|\bu-?\d{2}\b")
+
+
+def _clean(text):
+    text = str(text or "").lower().replace("-", " ").replace(".", " ")
+    return re.sub(r"\s+", " ", text).strip()
+
+
+def is_top_league(event):
+    sport = event.get("sport") or {}
+    category = sport.get("category") or {}
+    tournament = category.get("tournament") or {}
+
+    country = _clean(category.get("name"))
+    name = _clean(tournament.get("name"))
+
+    if not name or _NOT_TOP.search(name):
+        return False
+
+    for need, pattern in _TOP_COMPILED:
+        if need and need not in country:
+            continue
+        if pattern.search(name):
+            return True
+
+    return False
+
+
+if smart_ticket is not None:
+    import sportybet_provider as sp
+
+    _orig_get_upcoming = sp.SportyBetProvider.get_upcoming
+
+    def get_upcoming(self, start, end):
+        events = _orig_get_upcoming(self, start, end)
+
+        if not getattr(CTX, "top_leagues", False):
+            return events
+
+        kept = [e for e in events if is_top_league(e)]
+        print(f"Top leagues: kept {len(kept)} of {len(events)} matches")
+
+        if not kept and events:
+            # Help find the right names if SportyBet words them differently.
+            seen = set()
+            for e in events:
+                cat = ((e.get("sport") or {}).get("category") or {})
+                seen.add(f"{cat.get('name')} / {(cat.get('tournament') or {}).get('name')}")
+                if len(seen) >= 40:
+                    break
+            print("Top leagues: nothing matched. Leagues seen:", sorted(seen))
+
+        return kept
+
+    sp.SportyBetProvider.get_upcoming = get_upcoming
+
+    _orig_ticket_flow = bot.prediction_ticket_flow
+
+    def prediction_ticket_flow(chat_id, text, *args, **kwargs):
+        CTX.top_leagues = bool(TOP_LEAGUES_RE.search(text or ""))
+        try:
+            return _orig_ticket_flow(chat_id, text, *args, **kwargs)
+        finally:
+            CTX.top_leagues = False
+
+    bot.prediction_ticket_flow = prediction_ticket_flow

@@ -146,7 +146,9 @@ CACHE_LIMIT = 120           # how many matches are remembered in memory
 # Straight win button (1UP / 2UP only)
 STRAIGHT_LEGS = 10          # how many games to aim for
 STRAIGHT_MIN_ODD = 1.30     # every pick must pay at least this much (no tiny odds)
-STRAIGHT_MIN_P = 0.40       # the pick itself must have at least this chance after the checks
+STRAIGHT_MIN_P = 0.30       # the pick itself must have at least this chance after the checks
+STRAIGHT_DETAIL = 90        # for Straight win: how many matches get their 1UP / 2UP prices read
+STRAIGHT_MAX_STRENGTH = 0.85  # teams stronger than this pay too little, so they are not read
 SURE_HOME_P = 0.55          # a home team needs at least 55% chance to win
 SURE_AWAY_P = 0.55          # an away team needs at least 55% chance to win
 UP2_MIN_P = 0.60            # 55% to 59%  -> 1UP.   60% and above -> 2UP (bigger odds)
@@ -567,6 +569,57 @@ if smart_ticket is not None:
 
         bot.send_message(chat_id, "\n".join(lines))
 
+    # ---- Straight win: read the 1UP / 2UP prices of the RIGHT matches ----
+    # The 1UP / 2UP prices only exist in each match's full list of markets, and only
+    # a limited number of matches can be read. Straight win needs teams with a 55% to
+    # 85% chance to win (the strongest teams pay too little), spread across the days.
+    _orig_detail_order = st._detail_order
+
+    def _detail_order(events):
+        if not getattr(CTX, "straight", False):
+            return _orig_detail_order(events)
+
+        band = []
+
+        for event in events:
+            try:
+                strength = st.favourite_strength(event)
+            except Exception:
+                continue
+
+            if min(SURE_HOME_P, SURE_AWAY_P) <= strength <= STRAIGHT_MAX_STRENGTH:
+                band.append((strength, event))
+
+        band.sort(key=lambda item: -item[0])
+
+        if len(band) <= STRAIGHT_DETAIL:
+            return [event for _, event in band]
+
+        # Spread evenly over the whole band so every strength level is covered.
+        step = len(band) / STRAIGHT_DETAIL
+        return [band[int(i * step)][1] for i in range(STRAIGHT_DETAIL)]
+
+    st._detail_order = _detail_order
+
+    _orig_gather = st.gather
+
+    def gather(*args, **kwargs):
+        result = _orig_gather(*args, **kwargs)
+
+        if getattr(CTX, "straight", False):
+            try:
+                groups, events, details, studied = result
+                print(
+                    f"Straight win: events={events} read_in_detail={details} "
+                    f"studied={studied} matches_with_picks={len(groups)}"
+                )
+            except Exception:
+                pass
+
+        return result
+
+    st.gather = gather
+
     # ---- Entry points ----
     _orig_ticket_flow = bot.prediction_ticket_flow
 
@@ -574,6 +627,7 @@ if smart_ticket is not None:
         text = text or ""
         CTX.football_note = None
         CTX.top_leagues = bool(TOP_LEAGUES_RE.search(text))
+        CTX.straight = bool(STRAIGHT_RE.search(text))
 
         try:
             if (
@@ -595,6 +649,7 @@ if smart_ticket is not None:
             return _orig_ticket_flow(chat_id, text, *args, **kwargs)
         finally:
             CTX.top_leagues = False
+            CTX.straight = False
 
     bot.prediction_ticket_flow = prediction_ticket_flow
 

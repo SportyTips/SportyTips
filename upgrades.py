@@ -5,14 +5,21 @@
    - bot is less sure                               -> 1UP (safer, lower odds)
    - SportyBet does not offer it for that match     -> normal Home/Away pick
 2) The AI chat talks like a real person.
-3) TOP LEAGUES: when the request says "top leagues", only matches from the
-   14 top competitions are used (see TOP_LEAGUE_RULES below).
+3) TOP LEAGUES: the card opens a window that asks for the odds, then builds a
+   predicted ticket from the 14 top competitions (league games Fri to Sun, European
+   cup games in midweek). "Top leagues games this week" lists every game instead.
+4) STRAIGHT WIN BUTTON: only 1UP and 2UP picks, only strong favourites
+   ("sure games"), soonest games first, searching up to a week ahead.
+5) "weekend" now means Friday to Sunday.
+6) Under every ticket the site says whether real football stats were used.
 
 Put this file next to main.py and import it in app.py AFTER the launcher.
 """
 
 import re
 import threading
+from datetime import datetime, timedelta, timezone
+from html import escape
 
 import main as bot
 
@@ -90,7 +97,7 @@ NEW ABILITIES (these override anything above that says the bot cannot do them)
   for a number of games and/or total odds. For those, put the words 2up, 1up, plain win or double chance, plus
   home or away, in "request". Every pick is at least 1.30 odds.
 - It studies each team's last 5 games and head-to-head record, for as many matches as the API plan allows.
-- It can look at up to 3 days. A 100 odds ticket needs around 15 to 25 picks, so tell the user honestly
+- It can look at up to 7 days. A 100 odds ticket needs around 15 to 25 picks, so tell the user honestly
   that big odds win rarely even with strong picks.
 - Every pick gets a short reason under it. Team news is checked when it can be found.
 """
@@ -125,14 +132,29 @@ except ImportError as exc:
 
 
 # ------------------------------------------------------------
+# SETTINGS YOU CAN CHANGE
+# ------------------------------------------------------------
+SEARCH_DAYS = 7             # how far ahead the bot may look (days)
+EVENT_PAGES = 25            # how many pages of SportyBet matches to read (100 matches per page)
+
+# Straight win button
+STRAIGHT_LEGS = 10          # how many sure games to aim for
+STRAIGHT_MIN_P = 0.55       # a pick must have at least this chance after the checks
+SURE_HOME_P = 0.56          # home team must be at least this strong to be called "sure"
+SURE_AWAY_P = 0.62          # away team must be stronger still
+UP2_MIN_P = 0.70            # very strong teams get 2UP (better odds), the rest get 1UP
+SOONER_BONUS = 0.012        # small push towards games that kick off sooner
+
+# Top leagues button
+TOP_LEAGUE_PICKS = 8        # picks on the ticket when the person does not say a number
+
+
+# ------------------------------------------------------------
 # 4) TOP LEAGUES (14 competitions)
 # ------------------------------------------------------------
 # Each rule is (country word, league-name pattern).
 # The country word must appear in SportyBet's country name for that match.
 # An empty country word is used for the European cups.
-#
-# To add or remove a league, edit this list. Then update the number on the
-# home card (the "14 top competitions" text is changed in app.py).
 
 TOP_LEAGUE_RULES = [
     ("england", r"^(english )?premier league$"),
@@ -183,9 +205,27 @@ def is_top_league(event):
     return False
 
 
+# ------------------------------------------------------------
+# 5) Windows, straight win, weekend, football note
+# ------------------------------------------------------------
+WINDOW_RE = re.compile(r"\b(today|tonight|tomorrow|weekend|week|\d+\s*days?)\b", re.I)
+NUMBER_RE = re.compile(r"\d+(?:\.\d+)?\s*(?:odds?|picks?|games?|matches|selections?|tips?|legs?)\b", re.I)
+STRAIGHT_RE = re.compile(r"\bstraight\s*-?\s*(?:win|winning|wins)\b", re.I)
+WEEKEND_RE = re.compile(r"\bweekend\b", re.I)
+DAYS_RE = re.compile(r"\d+\s*days?\b", re.I)
+STRAIGHT_BUTTON_RE = re.compile(r"^straight\s*-?\s*wins?(\s+tickets?)?$", re.I)
+
+
 if smart_ticket is not None:
     import sportybet_provider as sp
 
+    st = smart_ticket
+
+    # The bot may now look a full week ahead and read more SportyBet pages.
+    bot.MAX_DAYS_AHEAD = max(getattr(bot, "MAX_DAYS_AHEAD", 2), SEARCH_DAYS)
+    sp.MAX_EVENT_PAGES = max(getattr(sp, "MAX_EVENT_PAGES", 15), EVENT_PAGES)
+
+    # ---- Top leagues: keep only the 14 competitions (before the matches are studied) ----
     _orig_get_upcoming = sp.SportyBetProvider.get_upcoming
 
     def get_upcoming(self, start, end):
@@ -211,13 +251,293 @@ if smart_ticket is not None:
 
     sp.SportyBetProvider.get_upcoming = get_upcoming
 
+    # ---- Windows: weekend = Friday to Sunday, straight win = up to a week ----
+    _orig_parse_request = bot.parse_request
+
+    def parse_request(text):
+        req = _orig_parse_request(text)
+        low = str(text or "").lower()
+        now = datetime.now(timezone.utc)
+
+        if WEEKEND_RE.search(low) and not DAYS_RE.search(low):
+            local_now = now.astimezone(bot.LOCAL_TZ)
+            midnight = local_now.replace(hour=0, minute=0, second=0, microsecond=0)
+            weekday = local_now.weekday()          # Monday = 0 ... Sunday = 6
+            earliest = now + timedelta(hours=getattr(bot, "MIN_HOURS_BEFORE_KICKOFF", 1))
+
+            if weekday <= 4:                       # Monday to Friday: next Friday to Sunday
+                friday = midnight + timedelta(days=4 - weekday)
+                start, end = max(earliest, friday), friday + timedelta(days=3)
+            elif weekday == 5:                     # Saturday: Saturday and Sunday
+                start, end = max(earliest, midnight), midnight + timedelta(days=2)
+            else:                                  # Sunday: today only
+                start, end = max(earliest, midnight), midnight + timedelta(days=1)
+
+            req["start"], req["end"] = start, end
+            req["label"] = "this weekend (Fri to Sun)"
+
+        elif STRAIGHT_RE.search(low) and not WINDOW_RE.search(low):
+            req["end"] = req["start"] + timedelta(days=SEARCH_DAYS)
+            req["label"] = f"next {SEARCH_DAYS} days"
+
+        return req
+
+    bot.parse_request = parse_request
+
+    # ---- Straight win: ONLY 1UP / 2UP, ONLY strong favourites ----
+    def straight_up_candidates(event, markets):
+        h = sp.find_odds(markets, (sp.M_1X2, "", sp.OUT_1X2["home"]))
+        d = sp.find_odds(markets, (sp.M_1X2, "", sp.OUT_1X2["draw"]))
+        a = sp.find_odds(markets, (sp.M_1X2, "", sp.OUT_1X2["away"]))
+
+        if not (h and d and a):
+            return []
+
+        inv = [1 / h, 1 / d, 1 / a]
+        total = sum(inv)
+
+        if not total:
+            return []
+
+        chances = {"home": inv[0] / total, "away": inv[2] / total}
+
+        ups = [c for c in st.event_candidates(event, markets) if c.get("kind") == "up"]
+
+        out = []
+
+        for side, need in (("home", SURE_HOME_P), ("away", SURE_AWAY_P)):
+            strength = chances[side]
+
+            if strength < need:
+                continue
+
+            mine = [c for c in ups if c.get("side") == side]
+            up1 = next((c for c in mine if c.get("up_level") == 1), None)
+            up2 = next((c for c in mine if c.get("up_level") == 2), None)
+
+            pick = up2 if (up2 and strength >= UP2_MIN_P) else up1
+
+            if pick:
+                pick = dict(pick)
+                pick["market_side_p"] = strength
+                pick["side"] = side
+                out.append(pick)
+
+        return out
+
+    def choose_straight(groups, target, count):
+        now = datetime.now(timezone.utc)
+
+        best = []
+
+        for group in groups:
+            usable = [c for c in group if c.get("p", 0) > 0]
+
+            if usable:
+                best.append(max(usable, key=lambda c: c.get("p", 0)))
+
+        def score(candidate):
+            days = max(0.0, (candidate["kickoff"] - now).total_seconds() / 86400)
+            return candidate.get("p", 0) - SOONER_BONUS * days
+
+        best.sort(key=score, reverse=True)
+
+        if not best:
+            return [], False
+
+        if count:
+            count = min(int(count), st.MAX_LEGS)
+            return best[:count], len(best) >= count
+
+        if target:
+            chosen, total = [], 1.0
+
+            for candidate in best[:st.MAX_LEGS]:
+                chosen.append(candidate)
+                total *= candidate["odd"]
+
+                if total >= target:
+                    return chosen, True
+
+            return chosen, False
+
+        return best[:st.STRAIGHT_DEFAULT_LEGS], True
+
+    st.straight_candidates = straight_up_candidates
+    st.choose_straight = choose_straight
+    st.STRAIGHT_DEFAULT_LEGS = STRAIGHT_LEGS
+    st.STRAIGHT_MIN_P = STRAIGHT_MIN_P
+
+    # ---- Remember how many matches really got football stats (shown under the ticket) ----
+    _orig_build_ticket = st.build_ticket
+
+    def build_ticket(*args, **kwargs):
+        built = _orig_build_ticket(*args, **kwargs)
+        try:
+            CTX.football_note = (
+                built.get("studied") or 0,
+                built.get("events") or 0,
+                len(built.get("chosen") or []),
+            )
+        except Exception:
+            pass
+        return built
+
+    st.build_ticket = build_ticket
+
+    # ---- Top leagues: list every game of the 14 competitions ----
+    ASKS_FOR_TICKET_RE = re.compile(
+        r"\b(safe|safer|safest|risky|ticket|code|pick|picks|odd|odds|acca|accumulator|straight|banker|bankers)\b",
+        re.I,
+    )
+
+    LIST_RE = re.compile(r"\b(games|fixtures|matches|list|show|schedule)\b", re.I)
+
+    def _top_rank(event):
+        sport = event.get("sport") or {}
+        category = sport.get("category") or {}
+        tournament = category.get("tournament") or {}
+        country = _clean(category.get("name"))
+        name = _clean(tournament.get("name"))
+
+        for index, (need, pattern) in enumerate(_TOP_COMPILED):
+            if need and need not in country:
+                continue
+            if pattern.search(name):
+                return index
+
+        return 99
+
+    def top_leagues_list(chat_id, text):
+        provider = getattr(bot, "SPORTYBET_PROVIDER", None)
+
+        if provider is None:
+            bot.send_message(chat_id, "\u274C SportyBet mode is off on this server.")
+            return
+
+        if not WINDOW_RE.search(text):
+            text += " this week"
+
+        req = bot.parse_request(text)
+
+        try:
+            events = provider.get_upcoming(req["start"], req["end"])
+        except Exception as exc:
+            print(f"Top leagues list failed: {exc}")
+            bot.send_message(
+                chat_id,
+                "\u274C I couldn't read SportyBet right now. Please try again in a minute.",
+            )
+            return
+
+        rows = []
+
+        for event in events:
+            ms = event.get("estimateStartTime")
+
+            if not ms:
+                continue
+
+            kickoff = datetime.fromtimestamp(ms / 1000, tz=timezone.utc).astimezone(bot.LOCAL_TZ)
+
+            category = ((event.get("sport") or {}).get("category") or {})
+            tournament = category.get("tournament") or {}
+            country = str(category.get("name") or "")
+            name = str(tournament.get("name") or "League")
+
+            if not country or re.search(r"international|europe|uefa", country, re.I):
+                label = name
+            else:
+                label = f"{name} ({country})"
+
+            rows.append((
+                kickoff.date(),
+                _top_rank(event),
+                label,
+                kickoff,
+                str(event.get("homeTeamName") or "Home"),
+                str(event.get("awayTeamName") or "Away"),
+            ))
+
+        if not rows:
+            bot.send_message(
+                chat_id,
+                "\u26BD <b>TOP LEAGUES</b>\n\n"
+                f"I couldn't find top league games for {escape(req['label'])}. "
+                "Try again a bit later.",
+            )
+            return
+
+        rows.sort(key=lambda r: (r[0], r[1], r[3]))
+
+        lines = [
+            "\u26BD <b>TOP LEAGUES</b>",
+            f"\U0001F4C5 {escape(str(req['label']).capitalize())} - times in {bot.LOCAL_TZ_NAME}",
+            f"\U0001F4CA {len(rows)} match" + ("es" if len(rows) != 1 else ""),
+        ]
+
+        current_day = None
+        current_league = None
+        number = 0
+
+        for day, rank, label, kickoff, home, away in rows:
+            if day != current_day:
+                current_day = day
+                current_league = None
+                lines.append("")
+                lines.append(f"\U0001F4C6 <b>{escape(kickoff.strftime('%A, %d %b'))}</b>")
+
+            if label != current_league:
+                current_league = label
+                lines.append("")
+                lines.append(f"\U0001F3C6 <b>{escape(label)}</b>")
+
+            number += 1
+            lines.append(f"{number}. {kickoff.strftime('%H:%M')} - {escape(home)} vs {escape(away)}")
+
+        bot.send_message(chat_id, "\n".join(lines))
+
+    # ---- Entry points ----
     _orig_ticket_flow = bot.prediction_ticket_flow
 
     def prediction_ticket_flow(chat_id, text, *args, **kwargs):
-        CTX.top_leagues = bool(TOP_LEAGUES_RE.search(text or ""))
+        text = text or ""
+        CTX.football_note = None
+        CTX.top_leagues = bool(TOP_LEAGUES_RE.search(text))
+
         try:
+            if (
+                CTX.top_leagues
+                and LIST_RE.search(text)
+                and not NUMBER_RE.search(text)
+                and not ASKS_FOR_TICKET_RE.search(text)
+            ):
+                # "Top leagues games this week": just list every game.
+                return top_leagues_list(chat_id, text)
+
+            if CTX.top_leagues:
+                # They asked for picks or odds: build a ticket from the top leagues.
+                if not WINDOW_RE.search(text):
+                    text += " this week"
+                if not NUMBER_RE.search(text):
+                    text += f" {TOP_LEAGUE_PICKS} picks"
+
             return _orig_ticket_flow(chat_id, text, *args, **kwargs)
         finally:
             CTX.top_leagues = False
 
     bot.prediction_ticket_flow = prediction_ticket_flow
+
+    _orig_handle_text = bot.handle_text
+
+    def handle_text(chat_id, text):
+        message = str(text or "").strip()
+
+        # The Straight win button goes straight to the ticket builder, so the AI
+        # can never change what it asks for.
+        if STRAIGHT_BUTTON_RE.match(message):
+            return bot.prediction_ticket_flow(chat_id, "straight win")
+
+        return _orig_handle_text(chat_id, text)
+
+    bot.handle_text = handle_text

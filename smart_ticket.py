@@ -6,7 +6,6 @@ import os
 import re
 import threading
 import time
-import unicodedata
 from concurrent.futures import ThreadPoolExecutor, as_completed
 from concurrent.futures import TimeoutError as FutureTimeout
 from datetime import datetime, timedelta, timezone
@@ -21,25 +20,25 @@ import sportybet_provider as sp
 # never be garbled by a wrong encoding again)
 # ============================================================
 
-E_TICKET = "\U0001F3AB"      # ticket
-E_TIPS = "\U0001F3AF"        # target (pick / tip line)
-E_CAL = "\U0001F4C5"         # calendar
-E_CLOCK = "\U0001F552"       # clock
-E_LEAGUE = "\U0001F3C6"      # trophy
-E_BALL = "\u26BD"            # football
-E_MONEY = "\U0001F4B0"       # money bag
-E_CHAT = "\U0001F4AC"        # speech bubble
-E_CHART = "\U0001F4CA"       # bar chart
-E_WARN = "\u26A0\uFE0F"      # warning
-E_INFO = "\u2139\uFE0F"      # info
-E_SWAP = "\U0001F504"        # swap arrows
-E_MIX = "\U0001F9E9"         # puzzle piece
-E_CODE = "\U0001F4F2"        # phone with arrow
-E_SCI = "\U0001F52C"         # microscope
-E_LOCK = "\U0001F512"        # lock
-E_FAIL = "\u274C"            # cross mark
-DOT = "\u2022"               # bullet
-LINE = "\u2501" * 12         # heavy line
+E_TICKET = "\U0001F3AB"  # ticket
+E_TIPS = "\U0001F3AF"  # target (pick / tip line)
+E_CAL = "\U0001F4C5"  # calendar
+E_CLOCK = "\U0001F552"  # clock
+E_LEAGUE = "\U0001F3C6"  # trophy
+E_BALL = "\u26BD"  # football
+E_MONEY = "\U0001F4B0"  # money bag
+E_CHAT = "\U0001F4AC"  # speech bubble
+E_CHART = "\U0001F4CA"  # bar chart
+E_WARN = "\u26A0\uFE0F"  # warning
+E_INFO = "\u2139\uFE0F"  # info
+E_SWAP = "\U0001F504"  # swap arrows
+E_MIX = "\U0001F9E9"  # puzzle piece
+E_CODE = "\U0001F4F2"  # phone with arrow
+E_SCI = "\U0001F52C"  # microscope
+E_LOCK = "\U0001F512"  # lock
+E_FAIL = "\u274C"  # cross mark
+DOT = "\u2022"  # bullet
+LINE = "\u2501" * 12  # heavy line
 
 
 # ============================================================
@@ -222,62 +221,6 @@ STRAIGHT_RE = re.compile(
     r"\bstraight\s*-?\s*(?:win|winning|wins)\b",
     re.I,
 )
-
-
-# ============================================================
-# TOP LEAGUES
-# ============================================================
-
-TOP_RE = re.compile(r"\btop\s*-?\s*leagues?\b", re.I)
-
-# (name keywords, country it must belong to, country required if SportyBet sends none)
-TOP_LEAGUES = [
-    (("premier league",), "england", True),
-    (("serie a",), "italy", True),
-    (("la liga", "laliga"), "spain", False),
-    (("bundesliga",), "germany", True),
-    (("ligue 1",), "france", False),
-    (("liga portugal", "primeira liga"), "portugal", False),
-    (("eredivisie",), "netherlands", False),
-    (("pro league", "first division a"), "belgium", True),
-    (("super lig",), "turkey", False),
-    (("super league",), "greece", True),
-    (("champions league",), None, False),
-    (("europa league",), None, False),
-    (("conference league",), None, False),
-]
-
-TOP_EXCLUDE_RE = re.compile(
-    r"\b(2|3|ii)\b|2\.|2nd|women|youth|reserve|\bu\d{2}\b"
-    r"|\bafc\b|\bcaf\b|concacaf|conmebol|segunda|serie b|championship"
-    r"|challenger|cup\b",
-    re.I,
-)
-
-_ctx = threading.local()
-
-
-def _plain(text):
-    text = unicodedata.normalize("NFKD", str(text or ""))
-    return "".join(c for c in text if not unicodedata.combining(c)).lower()
-
-
-def _is_top_league(league):
-    name = _plain(league.get("name"))
-    country = _plain(league.get("country"))
-
-    if TOP_EXCLUDE_RE.search(name):
-        return False
-
-    for words, want, need_country in TOP_LEAGUES:
-        if any(w in name for w in words):
-            if want is None:
-                return True
-            if country:
-                return want in country
-            return not need_country
-
-    return False
 
 
 # ============================================================
@@ -523,74 +466,74 @@ def event_candidates(event, markets):
             pd = inv[1] / total
             pa = inv[2] / total
 
-            if (
-                ph is not None
-                and ph >= RULE_HOME_WIN_P
-                and HOME_WIN_ODD_MIN <= h <= HOME_WIN_ODD_MAX
-            ):
+    if (
+        ph is not None
+        and ph >= RULE_HOME_WIN_P
+        and HOME_WIN_ODD_MIN <= h <= HOME_WIN_ODD_MAX
+    ):
+        add(
+            "win",
+            f"{home} to win",
+            h,
+            ph,
+            (sp.M_1X2, "", sp.OUT_1X2["home"]),
+            side="home",
+            market_side_p=ph,
+            bypass=True,
+        )
+
+    for fav_side, fav_w, fav_odd in (
+        ("home", ph, h),
+        ("away", pa, a),
+    ):
+        if (
+            fav_w is not None
+            and fav_w >= RULE_HOME_WIN_P
+            and fav_odd < HOME_WIN_ODD_MIN
+        ):
+            goal_pick = _team_over(
+                markets,
+                home,
+                away,
+                fav_side,
+                1.5,
+            )
+
+            if goal_pick:
                 add(
-                    "win",
-                    f"{home} to win",
-                    h,
-                    ph,
-                    (sp.M_1X2, "", sp.OUT_1X2["home"]),
-                    side="home",
-                    market_side_p=ph,
+                    "team_goals",
+                    goal_pick["label"],
+                    goal_pick["odd"],
+                    goal_pick["p"],
+                    goal_pick["key"],
+                    side=fav_side,
+                    line=1.5,
+                    market_side_p=fav_w,
                     bypass=True,
                 )
 
-            for fav_side, fav_w, fav_odd in (
-                ("home", ph, h),
-                ("away", pa, a),
-            ):
-                if (
-                    fav_w is not None
-                    and fav_w >= RULE_HOME_WIN_P
-                    and fav_odd < HOME_WIN_ODD_MIN
-                ):
-                    goal_pick = _team_over(
-                        markets,
-                        home,
-                        away,
-                        fav_side,
-                        1.5,
-                    )
+    # Double chance intentionally disabled.
+    if ALLOW_DOUBLE_CHANCE:
+        k1 = (sp.M_DC, "", sp.OUT_DC["1x"])
+        k2 = (sp.M_DC, "", sp.OUT_DC["x2"])
 
-                    if goal_pick:
-                        add(
-                            "team_goals",
-                            goal_pick["label"],
-                            goal_pick["odd"],
-                            goal_pick["p"],
-                            goal_pick["key"],
-                            side=fav_side,
-                            line=1.5,
-                            market_side_p=fav_w,
-                            bypass=True,
-                        )
+        add(
+            "dc",
+            f"{home} or Draw",
+            sp.find_odds(markets, k1),
+            (ph + pd if ph is not None else None),
+            k1,
+            side="home",
+        )
 
-        # Double chance intentionally disabled.
-        if ALLOW_DOUBLE_CHANCE:
-            k1 = (sp.M_DC, "", sp.OUT_DC["1x"])
-            k2 = (sp.M_DC, "", sp.OUT_DC["x2"])
-
-            add(
-                "dc",
-                f"{home} or Draw",
-                sp.find_odds(markets, k1),
-                (ph + pd if ph is not None else None),
-                k1,
-                side="home",
-            )
-
-            add(
-                "dc",
-                f"Draw or {away}",
-                sp.find_odds(markets, k2),
-                (pd + pa if pa is not None else None),
-                k2,
-                side="away",
-            )
+        add(
+            "dc",
+            f"Draw or {away}",
+            sp.find_odds(markets, k2),
+            (pd + pa if pa is not None else None),
+            k2,
+            side="away",
+        )
 
     # --------------------------------------------------------
     # TOTAL GOALS
@@ -1753,11 +1696,6 @@ def gather(
         if SKIP_LEAGUES and SKIP_LEAGUE_RE.search(league_name):
             continue
 
-        if getattr(_ctx, "top", False) and not _is_top_league(
-            fixture.get("league", {}) or {}
-        ):
-            continue
-
         if not _event_ok(event, league_name):
             continue
 
@@ -2633,12 +2571,12 @@ def _time_text(candidate, today):
 def _confidence(p):
 
     if p >= 0.80:
-        return "\U0001F7E2"   # green circle
+        return "\U0001F7E2"  # green circle
 
     if p >= 0.70:
-        return "\U0001F7E1"   # yellow circle
+        return "\U0001F7E1"  # yellow circle
 
-    return "\U0001F7E0"       # orange circle
+    return "\U0001F7E0"  # orange circle
 
 
 def _excess(chosen, relax=0):
@@ -2727,7 +2665,10 @@ def _build_once(
     detailed = 0
     studied = 0
 
-    while extra_days <= 4:
+    # "tonight" (9pm to 5am) sets exact_window: never borrow games from other days.
+    max_extra = 0 if req.get("exact_window") else 4
+
+    while extra_days <= max_extra:
 
         end = req["end"] + timedelta(days=extra_days)
 
@@ -2914,8 +2855,6 @@ def _flow_main(
     risk = req.get("risk") or "normal"
 
     straight = bool(STRAIGHT_RE.search(text or ""))
-
-    _ctx.top = bool(TOP_RE.search(text or ""))
 
     if (
         straight
@@ -3192,9 +3131,6 @@ def _flow_main(
 
     else:
         title = f"{len(chosen)} PICKS"
-
-    if getattr(_ctx, "top", False):
-        title = f"TOP LEAGUES {DOT} {title}"
 
     lines = [
         f"{E_TICKET} <b>SPORTYTIPS {DOT} {html.escape(title)}</b>",
@@ -3557,172 +3493,6 @@ def flow(
         count_override,
         **kwargs,
     )
-
-
-# ============================================================
-# MAKE A TICKET SAFER (used by the website)
-# ============================================================
-# Loads a SportyBet code, then for every pick looks at the other
-# markets SportyBet offers on the SAME match. A pick is swapped
-# only when SportyBet's own odds make the new pick clearly more
-# likely. A pick that cannot be improved is removed.
-
-SAFER_MIN_ODD = 1.10     # ignore picks with tiny odds
-SAFER_MIN_P = 0.60       # new pick must be at least this likely
-SAFER_MARGIN = 0.03      # and at least this much better than the old one
-
-
-class SaferError(Exception):
-    """A message that is safe to show to the user as it is."""
-
-
-def _implied(odd):
-    if not odd or odd <= 1:
-        return 0.0
-    return min(0.95 / odd, 0.97)
-
-
-def _old_label(leg):
-    key = leg["key"]
-    known = {
-        sp.M_DC, sp.M_TOTAL, sp.M_BTTS, sp.M_HOME_TEAM_GOALS,
-        sp.M_AWAY_TEAM_GOALS, sp.M_STREAK_3, sp.M_CORNERS,
-        sp.M_CORNERS_1H, sp.M_DNB,
-    }
-
-    if key[0] in known:
-        return sp.key_to_label(key, leg["home"], leg["away"])
-
-    name = str(leg.get("outcome_name") or "").strip()
-    market = str(leg.get("market_name") or "").strip()
-
-    if name and market:
-        return f"{name} ({market})"
-
-    return name or market or "Pick"
-
-
-def safer_rebuild(provider, code):
-    legs = provider.load_code(code)
-
-    def fetch(leg):
-        try:
-            return provider._event_markets_cached(leg["event_id"])
-        except Exception:
-            return None
-
-    with ThreadPoolExecutor(max_workers=DETAIL_WORKERS) as pool:
-        all_markets = list(pool.map(fetch, legs))
-
-    kept = []
-    dropped = []
-    seen_events = set()
-    old_total = 1.0
-
-    for leg, markets in zip(legs, all_markets):
-
-        match = f"{leg['home']} vs {leg['away']}"
-        old_label = _old_label(leg)
-
-        old_odd = (
-            (sp.find_odds(markets, leg["key"]) if markets else None)
-            or leg.get("odd")
-            or 0.0
-        )
-
-        old_total *= old_odd or 1.0
-
-        if leg["event_id"] in seen_events:
-            dropped.append({"match": match, "pick": old_label})
-            continue
-
-        old_p = _implied(old_odd)
-        best = None
-
-        if markets:
-
-            event = {
-                "eventId": leg["event_id"],
-                "homeTeamName": leg["home"],
-                "awayTeamName": leg["away"],
-                "markets": markets,
-            }
-
-            try:
-                candidates = event_candidates(event, markets)
-            except Exception:
-                candidates = []
-
-            for c in candidates:
-
-                raw_key = c.get("key")
-
-                if not raw_key or any(part is None for part in raw_key):
-                    continue
-
-                key = tuple(str(part) for part in raw_key)
-
-                if key == tuple(str(part) for part in leg["key"]):
-                    continue
-
-                odd = c.get("odd") or 0.0
-
-                if odd < SAFER_MIN_ODD:
-                    continue
-
-                p = _implied(odd)
-
-                if p < SAFER_MIN_P or p < old_p + SAFER_MARGIN:
-                    continue
-
-                if (
-                    best is None
-                    or p > best[0]
-                    or (p == best[0] and odd > best[1]["odd"])
-                ):
-                    best = (p, c, key)
-
-        if best is None:
-            dropped.append({"match": match, "pick": old_label})
-            continue
-
-        p, c, key = best
-
-        seen_events.add(leg["event_id"])
-
-        kept.append(
-            {
-                "event_id": leg["event_id"],
-                "home": leg["home"],
-                "away": leg["away"],
-                "key": key,
-                "odd": c["odd"],
-                "label_override": c["label"],
-                "reason": (
-                    f"Swapped from {old_label} ({old_odd:.2f}). "
-                    f"SportyBet's odds put this pick at about "
-                    f"{round(p * 100)}%, up from {round(old_p * 100)}%."
-                ),
-            }
-        )
-
-    if not kept:
-        raise SaferError(
-            "I could not find a safer pick on any of those matches, "
-            "so there is nothing to build. Try another code."
-        )
-
-    new_code = provider._save_code(
-        [(l["event_id"], l["key"]) for l in kept]
-    )
-
-    result = sp.summarize_legs(kept)
-    result["code"] = new_code
-    result["changed"] = True
-    result["dropped"] = dropped
-    result["old_total"] = old_total
-
-    return result
 
 
 # ============================================================

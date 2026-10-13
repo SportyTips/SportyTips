@@ -33,6 +33,7 @@ Put this file next to main.py and import it in app.py AFTER the launcher.
 
 import re
 import threading
+import time
 from datetime import datetime, timedelta, timezone
 from html import escape
 
@@ -116,6 +117,10 @@ NEW ABILITIES (these override anything above that says the bot cannot do them)
 - It can look at up to 7 days. A 100 odds ticket needs around 15 to 25 picks, so tell the user honestly
   that big odds win rarely even with strong picks.
 - Every pick gets a short reason under it. Team news is checked when it can be found.
+- TIME WORDS it understands: morning (5am-12pm), afternoon (12pm-5pm), evening (5pm-9pm), tonight or night
+  (9pm-5am), midnight (12am-5am), today and tomorrow. Keep these words EXACTLY in "request", for example
+  "safe 5 odds tomorrow morning". "tomorrow" alone means the whole day: never turn it into morning or night.
+- It can use U20 / U21 / youth games and women's leagues too. Never say it cannot.
 """
 
 _orig_system_prompt = bot.ai_system_prompt
@@ -191,9 +196,24 @@ SH_MIN_ODD = 1.15  # 2nd half picks pay at least this much
 STRONG_MIN_P_TOP = STRONG_MIN_P  # Top leagues / cups: same strength as chat (raise it only if you want stricter)
 DAILY_MIN_P = 0.68  # Daily 2 odds: strong picks only (lower to 0.65 if it finds nothing)
 
-# "Tonight" window: 9pm to 5am
+# Parts of the day (local time). Hours past 24 mean the next morning.
 NIGHT_START_HOUR = 21
 NIGHT_END_HOUR = 5
+DAY_PARTS = {
+    "morning": (5, 12),  # 5am to 12pm
+    "afternoon": (12, 17),  # 12pm to 5pm
+    "evening": (17, 21),  # 5pm to 9pm
+    "night": (NIGHT_START_HOUR, 24 + NIGHT_END_HOUR),  # tonight = 9pm to 5am
+    "midnight": (24, 24 + NIGHT_END_HOUR),  # 12am to 5am
+}
+
+# U20 / U21 / youth and women's leagues are allowed in tickets (friendlies and reserve sides stay out).
+# Set to False to skip them again.
+ALLOW_YOUTH_WOMEN = True
+
+# "Are there any midnight games?" -> the bot answers, then waits for "list" or "build".
+LIST_MAX = 80  # a full list shows at most this many games (top leagues first)
+PENDING_SECONDS = 15 * 60  # how long the bot remembers the question
 
 # European cups (own card): picks when the person gives no number
 CUPS_PICKS = 6
@@ -317,7 +337,10 @@ def is_cup_event(event, wanted):
 # ------------------------------------------------------------
 # 5) Windows, straight win, weekend, football note
 # ------------------------------------------------------------
-WINDOW_RE = re.compile(r"\b(today|tonight|tomorrow|weekend|weekdays?|midweek|week|\d+\s*days?)\b", re.I)
+WINDOW_RE = re.compile(
+    r"\b(today|tonight|tomorrow|morning|afternoon|evening|night|midnight|weekend|weekdays?|midweek|week|\d+\s*days?)\b",
+    re.I,
+)
 WEEKDAYS_RE = re.compile(r"\b(weekdays?|midweek)\b", re.I)
 NUMBER_RE = re.compile(r"\d+(?:\.\d+)?\s*(?:odds?|picks?|games?|matches|selections?|tips?|legs?)\b", re.I)
 # "straight win", "2up win", "1 up win" and similar all mean a Straight win ticket
@@ -326,7 +349,49 @@ QUESTION_START_RE = re.compile(r"^(what|why|how|explain|is|are|does|do|can|tell|
 WEEKEND_RE = re.compile(r"\bweekend\b", re.I)
 DAYS_RE = re.compile(r"\d+\s*days?\b", re.I)
 STRAIGHT_BUTTON_RE = re.compile(r"^straight\s*-?\s*wins?(\s+tickets?)?$", re.I)
-NIGHT_RE = re.compile(r"\b(tonight|midnight|night\s*games?)\b", re.I)
+PART_RE = re.compile(r"\b(morning|afternoon|evening|tonight|night|midnight)\b", re.I)
+TOMORROW_RE = re.compile(r"\btomorrow\b", re.I)
+TODAY_RE = re.compile(r"\b(today|this|tonight)\b", re.I)
+PHRASE_RE = re.compile(r"\b(tomorrow|today|tonight|morning|afternoon|evening|night|midnight)\b", re.I)
+GAMES_WORD_RE = re.compile(r"\b(games?|matches|match|fixtures?)\b", re.I)
+BUILD_WORDS_RE = re.compile(
+    r"\b(odds?|tickets?|build|picks?|safe|safer|safest|risky|code|acca|accumulator|predict\w*|banker|make|give)\b",
+    re.I,
+)
+AVAIL_ASK_RE = re.compile(r"^(are|is|any|do|does|got|have|how many|what|which)\b|\bany\b|\?\s*$", re.I)
+LIST_ASK_RE = re.compile(r"\b(list|show|fixtures?|schedule)\b", re.I)
+LIST_REPLY_RE = re.compile(r"\b(list|show|full|all|fixtures?)\b", re.I)
+BUILD_REPLY_RE = re.compile(r"\b(build|make|ticket|odds?|picks?|safe|predict\w*|give|acca)\b", re.I)
+
+
+def _day_parts(low):
+    """Which parts of the day were named: morning, afternoon, evening, night, midnight."""
+    found = []
+    for word in PART_RE.findall(low):
+        key = "night" if word in ("tonight", "night") else word
+        if key not in found:
+            found.append(key)
+    if "night" in found and "midnight" in found:
+        found.remove("midnight")  # night (9pm to 5am) already covers midnight
+    return found
+
+
+def _h12(hour):
+    h = int(hour) % 24
+    return f"{h % 12 or 12}{'am' if h < 12 else 'pm'}"
+
+
+def _has_window(low):
+    return bool(PART_RE.search(low) or TOMORROW_RE.search(low) or re.search(r"\btoday\b", low))
+
+
+def _window_phrase(low):
+    words = []
+    for w in PHRASE_RE.findall(low):
+        w = w.lower()
+        if w not in words:
+            words.append(w)
+    return " ".join(words)
 SAFE_WORD_RE = re.compile(r"\b(safe|safer|safest|risky)\b", re.I)
 
 
@@ -335,6 +400,11 @@ if smart_ticket is not None:
 
     st = smart_ticket
     st.STRAIGHT_RE = STRAIGHT_RE  # the ticket builder understands the same words
+
+    if ALLOW_YOUTH_WOMEN:
+        # Let U20 / U21 / youth and women's games through. Friendlies and reserve / academy sides stay out.
+        st.SKIP_LEAGUE_RE = re.compile(r"friendl", re.I)
+        st._UNRELIABLE_RE = re.compile(r"friendl|reserve|academy|development", re.I)
 
     # The bot may now look a full week ahead and read more SportyBet pages.
     bot.MAX_DAYS_AHEAD = max(getattr(bot, "MAX_DAYS_AHEAD", 2), SEARCH_DAYS)
@@ -457,7 +527,13 @@ if smart_ticket is not None:
 
     sp.SportyBetProvider.get_upcoming = get_upcoming
 
-    # ---- Windows: weekend = Friday to Sunday, straight win = up to a week, tonight = 9pm to 5am ----
+    def _buffer_hours():
+        """Games starting within this many hours are skipped. Zero when only checking what exists."""
+        if getattr(CTX, "availability", False):
+            return 0
+        return getattr(bot, "MIN_HOURS_BEFORE_KICKOFF", 1)
+
+    # ---- Windows: parts of the day, tomorrow = full day, weekend = Fri to Sun, straight win = a week ----
     _orig_parse_request = bot.parse_request
 
     def parse_request(text):
@@ -465,21 +541,56 @@ if smart_ticket is not None:
         low = str(text or "").lower()
         now = datetime.now(timezone.utc)
 
-        if NIGHT_RE.search(low) and not DAYS_RE.search(low):
-            # Tonight / midnight / night games = 9pm to 5am. Never borrows other days.
+        parts = _day_parts(low)
+
+        if parts and not DAYS_RE.search(low):
+            # morning / afternoon / evening / tonight / midnight: only that part of the day.
             local_now = now.astimezone(bot.LOCAL_TZ)
             midnight = local_now.replace(hour=0, minute=0, second=0, microsecond=0)
-            earliest = now + timedelta(hours=getattr(bot, "MIN_HOURS_BEFORE_KICKOFF", 1))
+            earliest = now + timedelta(hours=_buffer_hours())
 
-            if local_now.hour < NIGHT_END_HOUR:  # already after midnight
-                night_start = midnight - timedelta(days=1) + timedelta(hours=NIGHT_START_HOUR)
-                night_end = midnight + timedelta(hours=NIGHT_END_HOUR)
-            else:
-                night_start = midnight + timedelta(hours=NIGHT_START_HOUR)
-                night_end = midnight + timedelta(days=1, hours=NIGHT_END_HOUR)
+            first = min(DAY_PARTS[p][0] for p in parts)
+            last = max(DAY_PARTS[p][1] for p in parts)
 
-            req["start"], req["end"] = max(earliest, night_start), night_end
-            req["label"] = "tonight (9pm to 5am)"
+            tomorrow = bool(TOMORROW_RE.search(low))
+            today_word = bool(TODAY_RE.search(low))
+
+            day = 1 if tomorrow else 0
+
+            if not tomorrow and first >= NIGHT_START_HOUR and local_now.hour < NIGHT_END_HOUR:
+                day = -1  # already after midnight: use the night that began yesterday
+
+            start = midnight + timedelta(days=day, hours=first)
+            end = midnight + timedelta(days=day, hours=last)
+
+            if not tomorrow and not today_word and end <= earliest:
+                # That part of today is over (for example "morning" at 8pm): use tomorrow's.
+                start += timedelta(days=1)
+                end += timedelta(days=1)
+
+            req["start"], req["end"] = min(max(earliest, start), end), end
+
+            names = [("tonight" if p == "night" and not tomorrow else p) for p in parts]
+            req["label"] = (
+                ("tomorrow " if tomorrow else "")
+                + " & ".join(names)
+                + f" ({_h12(first)} to {_h12(last)})"
+            )
+            req["exact_window"] = True
+
+        elif (
+            TOMORROW_RE.search(low)
+            and not DAYS_RE.search(low)
+            and not WEEKEND_RE.search(low)
+            and not WEEKDAYS_RE.search(low)
+        ):
+            # "tomorrow" alone = the whole day (12am to 12am).
+            local_now = now.astimezone(bot.LOCAL_TZ)
+            midnight = local_now.replace(hour=0, minute=0, second=0, microsecond=0)
+            start = midnight + timedelta(days=1)
+
+            req["start"], req["end"] = start, start + timedelta(days=1)
+            req["label"] = "tomorrow (full day)"
             req["exact_window"] = True
 
         elif WEEKDAYS_RE.search(low) and not DAYS_RE.search(low):
@@ -1537,5 +1648,213 @@ if smart_ticket is not None:
             return bot.prediction_ticket_flow(chat_id, message.lower())
 
         return _orig_handle_text(chat_id, text)
+
+    bot.handle_text = handle_text
+
+    # ============================================================
+    # PASTE THIS AT THE VERY END OF YOUR UPGRADE FILE
+    # (after "bot.handle_text = handle_text").
+    # Keep the 4-space indent: it lives inside "if smart_ticket is not None:".
+    # ============================================================
+
+    # ---- "Are there any midnight games?" -> answer, then wait for "list" or "build" ----
+    PENDING = {}  # chat_id -> (window words, time asked)
+    PENDING_LOCK = threading.Lock()
+
+    LOOK_RE = re.compile(r"\b(list|show|look|check|see|through|fixtures?|schedule)\b", re.I)
+    LOOK_START_RE = re.compile(r"^(list|show|look|check|see|give me|display)\b", re.I)
+
+    def _kick(event):
+        ms = event.get("estimateStartTime")
+        if not ms:
+            return None
+        return datetime.fromtimestamp(ms / 1000, tz=timezone.utc)
+
+    def _games_for(text):
+        """Returns (request, [(kickoff_utc, event), ...]) for the window named in text."""
+        provider = getattr(bot, "SPORTYBET_PROVIDER", None)
+
+        if provider is None:
+            return None, []
+
+        CTX.availability = True  # only checking what exists: no 1-hour buffer
+        try:
+            req = bot.parse_request(text)
+        finally:
+            CTX.availability = False
+
+        rows = []
+
+        for event in provider.get_upcoming(req["start"], req["end"]):
+            kickoff = _kick(event)
+            if kickoff and req["start"] <= kickoff <= req["end"]:
+                rows.append((kickoff, event))
+
+        rows.sort(key=lambda r: r[0])
+        return req, rows
+
+    def _fmt(kickoff):
+        return kickoff.astimezone(bot.LOCAL_TZ).strftime("%a %H:%M")
+
+    def availability_reply(chat_id, message):
+        low = message.lower()
+
+        try:
+            req, rows = _games_for(low)
+        except Exception as exc:
+            print(f"Availability check failed: {exc}")
+            bot.send_message(chat_id, "\u274C I couldn't read SportyBet right now. Try again in a minute.")
+            return
+
+        if req is None:
+            bot.send_message(chat_id, "\u274C SportyBet mode is off on this server.")
+            return
+
+        label = escape(str(req["label"]))
+
+        if not rows:
+            bot.send_message(chat_id, f"No, I can't see any games for {label} right now.")
+            return
+
+        n = len(rows)
+        count = "is 1 game" if n == 1 else f"are {n} games"
+
+        bot.send_message(
+            chat_id,
+            f"Yes, there {count} for {label}, "
+            f"from <b>{_fmt(rows[0][0])}</b> to <b>{_fmt(rows[-1][0])}</b> ({bot.LOCAL_TZ_NAME}).\n\n"
+            "Want me to show the full list, or build a ticket from them?",
+        )
+
+        with PENDING_LOCK:
+            PENDING[chat_id] = (_window_phrase(low) or "today", time.time())
+
+    def list_all_games(chat_id, text):
+        try:
+            req, rows = _games_for(text.lower())
+        except Exception as exc:
+            print(f"Game list failed: {exc}")
+            bot.send_message(chat_id, "\u274C I couldn't read SportyBet right now. Try again in a minute.")
+            return
+
+        if req is None:
+            bot.send_message(chat_id, "\u274C SportyBet mode is off on this server.")
+            return
+
+        if not rows:
+            bot.send_message(chat_id, f"I can't see any games for {escape(str(req['label']))}.")
+            return
+
+        total = len(rows)
+
+        if total > LIST_MAX:
+            rows = sorted(rows, key=lambda r: (_top_rank(r[1]), r[0]))[:LIST_MAX]
+            rows.sort(key=lambda r: r[0])
+
+        lines = [
+            f"\u26BD <b>GAMES - {escape(str(req['label']).upper())}</b>",
+            f"\U0001F4CA {total} match" + ("es" if total != 1 else "") + f" - times in {bot.LOCAL_TZ_NAME}",
+        ]
+
+        if total > LIST_MAX:
+            lines.append(f"(showing {LIST_MAX}, top leagues first)")
+
+        current_day = None
+
+        for number, (kickoff, event) in enumerate(rows, 1):
+            local = kickoff.astimezone(bot.LOCAL_TZ)
+
+            if local.date() != current_day:
+                current_day = local.date()
+                lines += ["", f"\U0001F4C6 <b>{escape(local.strftime('%A, %d %b'))}</b>"]
+
+            category = ((event.get("sport") or {}).get("category") or {})
+            league = str((category.get("tournament") or {}).get("name") or "")
+
+            lines.append(
+                f"{number}. {local.strftime('%H:%M')} - "
+                f"{escape(str(event.get('homeTeamName') or 'Home'))} vs "
+                f"{escape(str(event.get('awayTeamName') or 'Away'))} <i>({escape(league)})</i>"
+            )
+
+        bot.send_message(chat_id, "\n".join(lines))
+
+    _prev_handle_text = bot.handle_text
+
+    def handle_text(chat_id, text):
+        message = str(text or "").strip()
+        low = message.lower()
+        words = low.split()
+
+        if message and not message.startswith("/"):
+
+            # 1) Answer to "list or build?"
+            with PENDING_LOCK:
+                pend = PENDING.get(chat_id)
+
+                if pend and time.time() - pend[1] > PENDING_SECONDS:
+                    PENDING.pop(chat_id, None)
+                    pend = None
+
+            if pend and len(words) <= 10 and not _has_window(low):
+                phrase = pend[0]
+
+                if BUILD_REPLY_RE.search(low):
+                    with PENDING_LOCK:
+                        PENDING.pop(chat_id, None)
+
+                    request = f"{phrase} {low}"
+
+                    if not SAFE_WORD_RE.search(request):
+                        request += " safe"
+                    if not NUMBER_RE.search(request):
+                        request += " 5 picks"
+
+                    return bot.prediction_ticket_flow(chat_id, request)
+
+                if LIST_REPLY_RE.search(low):
+                    with PENDING_LOCK:
+                        PENDING.pop(chat_id, None)
+
+                    return list_all_games(chat_id, phrase)
+
+            plain = not (
+                TOP_LEAGUES_RE.search(low)
+                or CUPS_RE.search(low)
+                or CORNERS_RE.search(low)
+                or STRAIGHT_RE.search(low)
+            )
+
+            # 2) "Are there any midnight games?"
+            if (
+                plain and _has_window(low) and GAMES_WORD_RE.search(low)
+                and AVAIL_ASK_RE.search(low) and not LOOK_START_RE.match(low)
+                and len(words) <= 12
+                and not BUILD_WORDS_RE.search(low) and not NUMBER_RE.search(low)
+            ):
+                return availability_reply(chat_id, message)
+
+            # 3) "show tomorrow morning games" / "look through tomorrow games"
+            if (
+                plain and _has_window(low) and GAMES_WORD_RE.search(low)
+                and LOOK_RE.search(low) and len(words) <= 10
+                and not BUILD_WORDS_RE.search(low) and not NUMBER_RE.search(low)
+            ):
+                return list_all_games(chat_id, low)
+
+            # 4) "build a safe 5 odds tomorrow morning" goes straight to the ticket builder
+            if (
+                _has_window(low) and BUILD_WORDS_RE.search(low)
+                and "?" not in message and not QUESTION_START_RE.match(low)
+                and len(words) <= 14
+            ):
+                request = low
+
+                if not NUMBER_RE.search(request):
+                    request += " 5 picks"
+
+                return bot.prediction_ticket_flow(chat_id, request)
+
+        return _prev_handle_text(chat_id, text)
 
     bot.handle_text = handle_text

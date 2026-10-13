@@ -1,29 +1,32 @@
 """Upgrades for SamuelBet AI. Does NOT edit main.py.
 
 1) Straight wins use SportyBet's "1X2 - 1UP" or "1X2 - 2UP" market:
-   - bot is quite sure (chance >= UP_2UP_MIN_PROB)  -> 2UP (better odds)
-   - bot is less sure                               -> 1UP (safer, lower odds)
-   - SportyBet does not offer it for that match     -> normal Home/Away pick
+- bot is quite sure (chance >= UP_2UP_MIN_PROB) -> 2UP (better odds)
+- bot is less sure -> 1UP (safer, lower odds)
+- SportyBet does not offer it for that match -> normal Home/Away pick
 2) The AI chat talks like a real person.
 3) TOP LEAGUES: the card opens a window that asks for the odds, then builds a
-   predicted ticket from the 14 top leagues. "Top leagues games this week" lists every
-   game instead. The Champions / Europa / Conference League are NOT in Top leagues: they
-   have their own card ("European cups") where each cup can be chosen alone.
+predicted ticket from the 14 top leagues. "Top leagues games this week" lists every
+game instead. The Champions / Europa / Conference League are NOT in Top leagues: they
+have their own card ("European cups") where each cup can be chosen alone.
 4) STRAIGHT WIN BUTTON: top leagues only. Strong teams (55%+ chance to win): 1UP price
-   1.20 to 1.32, 2UP price 1.30 to 1.50, never higher. Soonest games first, up to a week.
-   Everywhere: no direct win (only 1UP / 2UP), no BTTS, no Over 2 / 2.5 goals, corners at 7.5,
-   and in tight games (no clear favourite) only corners are used.
-   If the odds asked for cannot be reached, the ticket is topped up with corners (where they
-   apply) and "Home or Away" (12) picks where a draw is unlikely.
+1.20 to 1.32, 2UP price 1.30 to 1.50, never higher. Soonest games first, up to a week.
+Everywhere: no direct win (only 1UP / 2UP), no BTTS, no Over 2 / 2.5 goals, corners at 7.5,
+and in tight games (no clear favourite) only corners are used.
+If the odds asked for cannot be reached, the ticket is topped up with corners (where they
+apply) and "Home or Away" (12) picks where a draw is unlikely.
 5) "weekend" now means Friday to Sunday.
 5a) MIXED TICKETS (all except Straight win and Corners): ONLY these picks - 1UP, 2UP, win
-   either half, Home / Away to score 0.5, corners (Over 7.5 + team corners), Home or Away (12),
-   2nd half Home or Away (12), 2nd half Over 0.5, Over 1.5 goals - and every pick must be strong
-   (chance of at least STRONG_MIN_P).
+either half, Home / Away to score 0.5, corners (Over 7.5 + team corners), Home or Away (12),
+2nd half Home or Away (12), 2nd half Over 0.5, Over 1.5 goals - and every pick must be strong
+(chance of at least STRONG_MIN_P).
 5b) CORNERS BUTTON: a ticket of corner picks from the 14 top leagues only. It uses
-   total corners AND each team's corners (Home Over / Away Over). Normal tickets now also
-   include individual team goals (Home / Away to score 0.5 or 1.5).
+total corners AND each team's corners (Home Over / Away Over). Normal tickets now also
+include individual team goals (Home / Away to score 0.5 or 1.5).
 6) Under every ticket the site says whether real football stats were used.
+7) TOP LEAGUES / CUPS are now built "safe" (same as when you ask in the chat) and need
+STRONG_MIN_P_TOP. DAILY 2 ODDS needs DAILY_MIN_P (strong picks only).
+8) "tonight" / "midnight" / "night games" = 9pm to 5am only, and never borrows tomorrow's games.
 
 Put this file next to main.py and import it in app.py AFTER the launcher.
 """
@@ -35,10 +38,10 @@ from html import escape
 
 import main as bot
 
-CTX = threading.local()     # app.py sets CTX.pidgin for each chat turn
+CTX = threading.local()  # app.py sets CTX.pidgin for each chat turn
 
 USE_UP_MARKETS = True
-UP_2UP_MIN_PROB = 0.70      # lower this to use 2UP more often, raise it for more 1UP
+UP_2UP_MIN_PROB = 0.70  # lower this to use 2UP more often, raise it for more 1UP
 
 # ------------------------------------------------------------
 # 1) 1UP / 2UP
@@ -138,7 +141,7 @@ bot.ai_system_prompt = ai_system_prompt
 # 3) Smart ticket builder (big odds, mixed markets, reasons)
 # ------------------------------------------------------------
 try:
-    import smart_ticket  # noqa: F401  (patches bot.prediction_ticket_flow)
+    import smart_ticket  # noqa: F401 (patches bot.prediction_ticket_flow)
 except ImportError as exc:
     print(f"smart_ticket.py not found, using the old ticket builder: {exc}")
     smart_ticket = None
@@ -147,66 +150,75 @@ except ImportError as exc:
 # ------------------------------------------------------------
 # SETTINGS YOU CAN CHANGE
 # ------------------------------------------------------------
-SEARCH_DAYS = 7             # how far ahead the bot may look (days)
-EVENT_PAGES = 20            # how many pages of SportyBet matches to read (100 matches per page)
+SEARCH_DAYS = 7  # how far ahead the bot may look (days)
+EVENT_PAGES = 20  # how many pages of SportyBet matches to read (100 matches per page)
 
 # Memory safety (Render free plan has 512 MB)
-MAX_DETAIL = 70             # how many matches get their full list of markets read
-DETAIL_WORKERS = 6          # how many are read at the same time
-CACHE_LIMIT = 120           # how many matches are remembered in memory
+MAX_DETAIL = 70  # how many matches get their full list of markets read
+DETAIL_WORKERS = 6  # how many are read at the same time
+CACHE_LIMIT = 120  # how many matches are remembered in memory
 
 # Straight win button (1UP / 2UP, strong teams from the top leagues)
-STRAIGHT_LEGS = 10          # how many games to aim for
-STRAIGHT_MIN_P = 0.30       # the pick itself must have at least this chance after the checks
-STRAIGHT_DETAIL = 90        # for Straight win: how many matches get their 1UP / 2UP prices read
-STRAIGHT_STRONG_P = 0.55    # a team needs at least this chance to win (from SportyBet's prices)
+STRAIGHT_LEGS = 10  # how many games to aim for
+STRAIGHT_MIN_P = 0.30  # the pick itself must have at least this chance after the checks
+STRAIGHT_DETAIL = 90  # for Straight win: how many matches get their 1UP / 2UP prices read
+STRAIGHT_STRONG_P = 0.55  # a team needs at least this chance to win (from SportyBet's prices)
 STRAIGHT_MAX_STRENGTH = 0.88  # teams stronger than this pay too little, so they are not read
-STRAIGHT_2UP_FROM_P = 0.60  # 55% to 59% -> 1UP.  60% and above -> 2UP (when its price fits)
-STRAIGHT_1UP_MIN = 1.20     # 1UP pays at least this ...
-STRAIGHT_1UP_MAX = 1.32     # ... and NEVER more than this
-STRAIGHT_2UP_MIN = 1.30     # 2UP pays at least this ...
-STRAIGHT_2UP_MAX = 1.50     # ... and NEVER more than this
+STRAIGHT_2UP_FROM_P = 0.60  # 55% to 59% -> 1UP. 60% and above -> 2UP (when its price fits)
+STRAIGHT_1UP_MIN = 1.20  # 1UP pays at least this ...
+STRAIGHT_1UP_MAX = 1.32  # ... and NEVER more than this
+STRAIGHT_2UP_MIN = 1.30  # 2UP pays at least this ...
+STRAIGHT_2UP_MAX = 1.50  # ... and NEVER more than this
 # If the target cannot be reached (e.g. 100 odds), the ticket is topped up with corners
 # (Over 7.5 and team corners) and "Home or Away" (12) picks where a draw is unlikely.
-DOUBLE12_MAX_DRAW = 0.27    # 12 is only used when the draw chance is at most this
+DOUBLE12_MAX_DRAW = 0.27  # 12 is only used when the draw chance is at most this
 DOUBLE12_MIN_ODD = 1.15
 DOUBLE12_MAX_ODD = 1.45
-SOONER_BONUS = 0.012        # small push towards games that kick off sooner
+SOONER_BONUS = 0.012  # small push towards games that kick off sooner
 
 # Replacements for handicap: "sure" picks that SportyBet prices clearly
-FH_GOALS_MIN_ODD = 1.30     # "Over 0.5 goals (1st half)" must pay at least this much
-DOUBLE12_SURE_DRAW = 0.24   # in normal tickets "Home or Away" (12) is used only when a draw is this unlikely
+FH_GOALS_MIN_ODD = 1.30  # "Over 0.5 goals (1st half)" must pay at least this much
+DOUBLE12_SURE_DRAW = 0.24  # in normal tickets "Home or Away" (12) is used only when a draw is this unlikely
 
 # MIXED TICKETS (every ticket except Straight win and Corners): only these pick types, and only strong ones.
-#   1UP, 2UP, win either half, Home / Away to score 0.5, corners (Over 7.5 and team corners),
-#   Home or Away (12), 2nd half Home or Away (12), 2nd half Over 0.5 goals, Over 1.5 goals.
-STRONG_MIN_P = 0.66         # a pick needs at least this chance (from SportyBet's prices / football stats)
-SH_MIN_ODD = 1.15           # 2nd half picks pay at least this much
+# 1UP, 2UP, win either half, Home / Away to score 0.5, corners (Over 7.5 and team corners),
+# Home or Away (12), 2nd half Home or Away (12), 2nd half Over 0.5 goals, Over 1.5 goals.
+STRONG_MIN_P = 0.66  # a pick needs at least this chance (from SportyBet's prices / football stats)
+SH_MIN_ODD = 1.15  # 2nd half picks pay at least this much
+
+# Stricter strength for the Top leagues / European cups buttons, and for Daily 2 odds.
+# (Without football data a pick's chance is about 0.95 / odds, so 0.70 means odds up to about 1.35.)
+STRONG_MIN_P_TOP = STRONG_MIN_P  # Top leagues / cups: same strength as chat (raise it only if you want stricter)
+DAILY_MIN_P = 0.68  # Daily 2 odds: strong picks only (lower to 0.65 if it finds nothing)
+
+# "Tonight" window: 9pm to 5am
+NIGHT_START_HOUR = 21
+NIGHT_END_HOUR = 5
 
 # European cups (own card): picks when the person gives no number
 CUPS_PICKS = 6
 
 # Tight games (for example home 2.06, away 3.23): no win picks, corners only
-TIGHT_MAX_P = 0.50          # neither team has more than this chance to win ...
-TIGHT_MIN_P = 0.22          # ... and both have at least this chance
+TIGHT_MAX_P = 0.50  # neither team has more than this chance to win ...
+TIGHT_MIN_P = 0.22  # ... and both have at least this chance
 
 # Top leagues button
-TOP_LEAGUE_PICKS = 8        # picks on the ticket when the person does not say a number
+TOP_LEAGUE_PICKS = 8  # picks on the ticket when the person does not say a number
 
 # Corners button (top leagues only): total corners AND each team's corners
-CORNERS_LINE = 7.5          # total corners are always "Over 7.5 corners"
+CORNERS_LINE = 7.5  # total corners are always "Over 7.5 corners"
 CORNERS_TOTAL_MIN_ODD = 1.15  # Over 7.5 corners usually pays a little less than other picks
-CORNERS_MIN_ODD = 1.30      # team corner picks pay at least this much
-CORNERS_MAX_ODD = 2.30      # and at most this much
-CORNERS_MIN_P = 0.60        # chance (from SportyBet's prices) a corner pick must have
-CORNERS_PER_MATCH = 3       # how many corner choices each match offers the ticket builder
-CORNERS_DETAIL = 100        # how many top-league matches get their corner prices read
+CORNERS_MIN_ODD = 1.30  # team corner picks pay at least this much
+CORNERS_MAX_ODD = 2.30  # and at most this much
+CORNERS_MIN_P = 0.60  # chance (from SportyBet's prices) a corner pick must have
+CORNERS_PER_MATCH = 3  # how many corner choices each match offers the ticket builder
+CORNERS_DETAIL = 100  # how many top-league matches get their corner prices read
 CORNERS_MAX_PER_LEAGUE = 5  # corners tickets may use more matches from one league
 
 # Individual team goals ("Home to score 0.5") are added to normal tickets
-TEAM_GOALS_MIN_ODD = 1.25   # "Home / Away to score 0.5" must pay at least this (1.25 and above)
-TEAM_GOALS_BONUS = 0.10     # how strongly the ticket builder prefers them (0 = no push)
-TEAM_GOALS_SHARE = 0.35     # at most this share of a ticket may be team-goal picks
+TEAM_GOALS_MIN_ODD = 1.25  # "Home / Away to score 0.5" must pay at least this (1.25 and above)
+TEAM_GOALS_BONUS = 0.10  # how strongly the ticket builder prefers them (0 = no push)
+TEAM_GOALS_SHARE = 0.35  # at most this share of a ticket may be team-goal picks
 
 
 # ------------------------------------------------------------
@@ -256,6 +268,7 @@ def cups_from_text(text):
     if re.search(r"europa(?!\s+conference)", low):
         chosen.add("europa")
     return chosen or {"champions", "europa", "conference"}
+
 
 TOP_LEAGUES_RE = re.compile(r"\btop\s*-?\s*leagues?\b", re.I)
 
@@ -313,13 +326,15 @@ QUESTION_START_RE = re.compile(r"^(what|why|how|explain|is|are|does|do|can|tell|
 WEEKEND_RE = re.compile(r"\bweekend\b", re.I)
 DAYS_RE = re.compile(r"\d+\s*days?\b", re.I)
 STRAIGHT_BUTTON_RE = re.compile(r"^straight\s*-?\s*wins?(\s+tickets?)?$", re.I)
+NIGHT_RE = re.compile(r"\b(tonight|midnight|night\s*games?)\b", re.I)
+SAFE_WORD_RE = re.compile(r"\b(safe|safer|safest|risky)\b", re.I)
 
 
 if smart_ticket is not None:
     import sportybet_provider as sp
 
     st = smart_ticket
-    st.STRAIGHT_RE = STRAIGHT_RE   # the ticket builder understands the same words
+    st.STRAIGHT_RE = STRAIGHT_RE  # the ticket builder understands the same words
 
     # The bot may now look a full week ahead and read more SportyBet pages.
     bot.MAX_DAYS_AHEAD = max(getattr(bot, "MAX_DAYS_AHEAD", 2), SEARCH_DAYS)
@@ -352,7 +367,7 @@ if smart_ticket is not None:
 
         def study(*args, **kwargs):
             if getattr(CTX, "corners", False):
-                return 0   # no corner statistics exist in the football data, so use the prices
+                return 0  # no corner statistics exist in the football data, so use the prices
             try:
                 result = _orig_study(*args, **kwargs)
 
@@ -442,7 +457,7 @@ if smart_ticket is not None:
 
     sp.SportyBetProvider.get_upcoming = get_upcoming
 
-    # ---- Windows: weekend = Friday to Sunday, straight win = up to a week ----
+    # ---- Windows: weekend = Friday to Sunday, straight win = up to a week, tonight = 9pm to 5am ----
     _orig_parse_request = bot.parse_request
 
     def parse_request(text):
@@ -450,7 +465,24 @@ if smart_ticket is not None:
         low = str(text or "").lower()
         now = datetime.now(timezone.utc)
 
-        if WEEKDAYS_RE.search(low) and not DAYS_RE.search(low):
+        if NIGHT_RE.search(low) and not DAYS_RE.search(low):
+            # Tonight / midnight / night games = 9pm to 5am. Never borrows other days.
+            local_now = now.astimezone(bot.LOCAL_TZ)
+            midnight = local_now.replace(hour=0, minute=0, second=0, microsecond=0)
+            earliest = now + timedelta(hours=getattr(bot, "MIN_HOURS_BEFORE_KICKOFF", 1))
+
+            if local_now.hour < NIGHT_END_HOUR:  # already after midnight
+                night_start = midnight - timedelta(days=1) + timedelta(hours=NIGHT_START_HOUR)
+                night_end = midnight + timedelta(hours=NIGHT_END_HOUR)
+            else:
+                night_start = midnight + timedelta(hours=NIGHT_START_HOUR)
+                night_end = midnight + timedelta(days=1, hours=NIGHT_END_HOUR)
+
+            req["start"], req["end"] = max(earliest, night_start), night_end
+            req["label"] = "tonight (9pm to 5am)"
+            req["exact_window"] = True
+
+        elif WEEKDAYS_RE.search(low) and not DAYS_RE.search(low):
             # Weekdays = Monday to Thursday (midweek games, European cups).
             local_now = now.astimezone(bot.LOCAL_TZ)
             midnight = local_now.replace(hour=0, minute=0, second=0, microsecond=0)
@@ -470,15 +502,15 @@ if smart_ticket is not None:
         elif WEEKEND_RE.search(low) and not DAYS_RE.search(low):
             local_now = now.astimezone(bot.LOCAL_TZ)
             midnight = local_now.replace(hour=0, minute=0, second=0, microsecond=0)
-            weekday = local_now.weekday()          # Monday = 0 ... Sunday = 6
+            weekday = local_now.weekday()  # Monday = 0 ... Sunday = 6
             earliest = now + timedelta(hours=getattr(bot, "MIN_HOURS_BEFORE_KICKOFF", 1))
 
-            if weekday <= 4:                       # Monday to Friday: next Friday to Sunday
+            if weekday <= 4:  # Monday to Friday: next Friday to Sunday
                 friday = midnight + timedelta(days=4 - weekday)
                 start, end = max(earliest, friday), friday + timedelta(days=3)
-            elif weekday == 5:                     # Saturday: Saturday and Sunday
+            elif weekday == 5:  # Saturday: Saturday and Sunday
                 start, end = max(earliest, midnight), midnight + timedelta(days=2)
-            else:                                  # Sunday: today only
+            else:  # Sunday: today only
                 start, end = max(earliest, midnight), midnight + timedelta(days=1)
 
             req["start"], req["end"] = start, end
@@ -493,8 +525,8 @@ if smart_ticket is not None:
     bot.parse_request = parse_request
 
     # ---- Straight win: strong top-league teams, 1UP or 2UP only, with price limits ----
-    #   55% to 59% chance to win -> 1UP  (price 1.20 to 1.32, never above 1.32)
-    #   60% or more              -> 2UP  (price 1.30 to 1.50, never above 1.50)
+    # 55% to 59% chance to win -> 1UP (price 1.20 to 1.32, never above 1.32)
+    # 60% or more -> 2UP (price 1.30 to 1.50, never above 1.50)
     def straight_up_candidates(event, markets):
         h = sp.find_odds(markets, (sp.M_1X2, "", sp.OUT_1X2["home"]))
         d = sp.find_odds(markets, (sp.M_1X2, "", sp.OUT_1X2["draw"]))
@@ -841,9 +873,16 @@ if smart_ticket is not None:
         # Mixed tickets and Daily 2 odds: strong picks only.
         if mode_normal or kwargs.get("daily"):
             try:
+                if kwargs.get("daily"):
+                    min_p = DAILY_MIN_P
+                elif getattr(CTX, "top_leagues", False) or getattr(CTX, "cups", None):
+                    min_p = STRONG_MIN_P_TOP
+                else:
+                    min_p = STRONG_MIN_P
+
                 groups = []
                 for group in result[0]:
-                    kept = [c for c in group if c.get("p", 0) >= STRONG_MIN_P]
+                    kept = [c for c in group if c.get("p", 0) >= min_p]
                     if kept:
                         groups.append(kept)
 
@@ -853,7 +892,7 @@ if smart_ticket is not None:
                         counts[c.get("kind")] = counts.get(c.get("kind"), 0) + 1
 
                 print(
-                    f"Mix picks available (strong only, p>={STRONG_MIN_P:g}): {counts} "
+                    f"Mix picks available (strong only, p>={min_p:g}): {counts} "
                     f"| 2nd-half markets seen: {sorted(getattr(CTX, 'half_names', set()))[:8]}"
                 )
                 CTX.half_names = set()
@@ -975,7 +1014,7 @@ if smart_ticket is not None:
                 any_team = True
 
             if kind == "total" and abs(line - CORNERS_LINE) > 1e-9:
-                continue   # total corners are only ever Over 7.5
+                continue  # total corners are only ever Over 7.5
 
             floor = CORNERS_TOTAL_MIN_ODD if kind == "total" else CORNERS_MIN_ODD
 
@@ -1030,7 +1069,7 @@ if smart_ticket is not None:
             line = _num(spec.replace("total=", ""))
 
             if line != 0.5:
-                continue   # only "Home to score 0.5" / "Away to score 0.5"
+                continue  # only "Home to score 0.5" / "Away to score 0.5"
 
             over, under, over_id = _over_under(market)
 
@@ -1301,14 +1340,14 @@ if smart_ticket is not None:
     _NOT_WANTED_LABEL = re.compile(r"both teams|over (?:[2-9]|[1-9]\d)(?:\.\d)? goals", re.I)
 
     _ALLOWED_KINDS = {
-        "up",           # 1UP / 2UP
+        "up",  # 1UP / 2UP
         "either_half",  # win either half
-        "team_goals",   # Home / Away to score 0.5
-        "corners",      # Over 7.5 corners and team corners
-        "dc12",         # Home or Away (12)
-        "over15",       # Over 1.5 goals
-        "sh_goals",     # 2nd half Over 0.5 goals
-        "sh_12",        # 2nd half Home or Away (12)
+        "team_goals",  # Home / Away to score 0.5
+        "corners",  # Over 7.5 corners and team corners
+        "dc12",  # Home or Away (12)
+        "over15",  # Over 1.5 goals
+        "sh_goals",  # 2nd half Over 0.5 goals
+        "sh_12",  # 2nd half Home or Away (12)
     }
     _BAD_LABEL = re.compile(r"handicap|both teams|\bunder \d|\bcards?\b", re.I)
 
@@ -1317,13 +1356,13 @@ if smart_ticket is not None:
         low = str(label or "").lower()
 
         if k not in _ALLOWED_KINDS:
-            return False   # no direct win, BTTS, handicap, Over 2 / 2.5, Under, double chance, ...
+            return False  # no direct win, BTTS, handicap, Over 2 / 2.5, Under, double chance, ...
 
         if _BAD_LABEL.search(low):
             return False
 
         if k == "team_goals" and "over 0.5" not in low:
-            return False   # only "to score 0.5"
+            return False  # only "to score 0.5"
 
         return True
 
@@ -1333,7 +1372,7 @@ if smart_ticket is not None:
 
     def _passes_rules(candidate, ctx, relax=0):
         if getattr(CTX, "corners", False):
-            return True   # corners are chosen by their own prices, not the goal rules
+            return True  # corners are chosen by their own prices, not the goal rules
 
         # Corner picks built from their own prices (not the goal rules).
         if candidate.get("kind") == "corners" and candidate.get("corner_kind"):
@@ -1396,11 +1435,11 @@ if smart_ticket is not None:
         cups = cups_from_text(text) if CUPS_RE.search(text) else None
 
         if wants_corners and not cups and not TOP_LEAGUES_RE.search(text):
-            text = "top leagues " + text   # corners always come from the top leagues only
+            text = "top leagues " + text  # corners always come from the top leagues only
 
         CTX.football_note = None
         CTX.straight = bool(STRAIGHT_RE.search(text))
-        CTX.cups = cups                                   # European cups: only the chosen cups
+        CTX.cups = cups  # European cups: only the chosen cups
         CTX.top_leagues = (bool(TOP_LEAGUES_RE.search(text)) or CTX.straight) and not cups
         CTX.corners = wants_corners
 
@@ -1425,6 +1464,10 @@ if smart_ticket is not None:
                 return top_leagues_list(chat_id, text)
 
             if (CTX.top_leagues or CTX.cups) and not CTX.straight:
+                # Top leagues / cups tickets are built "safe", the same as when you ask in the chat.
+                if not CTX.corners and not SAFE_WORD_RE.search(text):
+                    text += " safe"
+
                 # They asked for picks or odds: build a ticket from the top leagues / chosen cups.
                 if not WINDOW_RE.search(text):
                     text += " this week"

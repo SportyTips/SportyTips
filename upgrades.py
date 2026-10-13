@@ -16,6 +16,10 @@
    If the odds asked for cannot be reached, the ticket is topped up with corners (where they
    apply) and "Home or Away" (12) picks where a draw is unlikely.
 5) "weekend" now means Friday to Sunday.
+5a) MIXED TICKETS (all except Straight win and Corners): ONLY these picks - 1UP, 2UP, win
+   either half, Home / Away to score 0.5, corners (Over 7.5 + team corners), Home or Away (12),
+   2nd half Home or Away (12), 2nd half Over 0.5, Over 1.5 goals - and every pick must be strong
+   (chance of at least STRONG_MIN_P).
 5b) CORNERS BUTTON: a ticket of corner picks from the 14 top leagues only. It uses
    total corners AND each team's corners (Home Over / Away Over). Normal tickets now also
    include individual team goals (Home / Away to score 0.5 or 1.5).
@@ -99,8 +103,9 @@ HOW TO SOUND (this overrides the STYLE rules above and the "ONE short line" rule
 
 NEW ABILITIES (these override anything above that says the bot cannot do them)
 - With SportyBet on, the bot builds tickets from SportyBet's own matches. It can reach big targets
-  (50 odds, 100 odds) and mixes 1UP/2UP wins, win either half, corners, team goals and goal lines.
-  It does NOT use handicap, BTTS or direct wins. Never say it cannot do corners.
+  (50 odds, 100 odds) and mixes only these strong picks: 1UP, 2UP, win either half, Home or Away to score 0.5, corners
+  (Over 7.5 and team corners), Home or Away (12), 2nd half Home or Away (12), 2nd half Over 0.5 and
+  Over 1.5 goals. It does NOT use handicap, BTTS, Over 2.5 or direct wins. Never say it cannot do corners.
 - It also builds straight-win tickets: "2UP win", "1UP win", "plain win" or "double chance", for home, away or both,
   for a number of games and/or total odds. For those, put the words 2up, 1up, plain win or double chance, plus
   home or away, in "request". Every pick is at least 1.30 odds.
@@ -172,6 +177,12 @@ SOONER_BONUS = 0.012        # small push towards games that kick off sooner
 FH_GOALS_MIN_ODD = 1.30     # "Over 0.5 goals (1st half)" must pay at least this much
 DOUBLE12_SURE_DRAW = 0.24   # in normal tickets "Home or Away" (12) is used only when a draw is this unlikely
 
+# MIXED TICKETS (every ticket except Straight win and Corners): only these pick types, and only strong ones.
+#   1UP, 2UP, win either half, Home / Away to score 0.5, corners (Over 7.5 and team corners),
+#   Home or Away (12), 2nd half Home or Away (12), 2nd half Over 0.5 goals, Over 1.5 goals.
+STRONG_MIN_P = 0.66         # a pick needs at least this chance (from SportyBet's prices / football stats)
+SH_MIN_ODD = 1.15           # 2nd half picks pay at least this much
+
 # European cups (own card): picks when the person gives no number
 CUPS_PICKS = 6
 
@@ -187,7 +198,7 @@ CORNERS_LINE = 7.5          # total corners are always "Over 7.5 corners"
 CORNERS_TOTAL_MIN_ODD = 1.15  # Over 7.5 corners usually pays a little less than other picks
 CORNERS_MIN_ODD = 1.30      # team corner picks pay at least this much
 CORNERS_MAX_ODD = 2.30      # and at most this much
-CORNERS_MIN_P = 0.55        # chance (from SportyBet's prices) a corner pick must have
+CORNERS_MIN_P = 0.60        # chance (from SportyBet's prices) a corner pick must have
 CORNERS_PER_MATCH = 3       # how many corner choices each match offers the ticket builder
 CORNERS_DETAIL = 100        # how many top-league matches get their corner prices read
 CORNERS_MAX_PER_LEAGUE = 5  # corners tickets may use more matches from one league
@@ -368,11 +379,14 @@ if smart_ticket is not None:
     smart_ticket.KIND_CAP["team_goals"] = max(smart_ticket.KIND_CAP.get("team_goals", 0), TEAM_GOALS_SHARE)
     smart_ticket.KIND_CAP["corners"] = max(smart_ticket.KIND_CAP.get("corners", 0), 0.45)
     smart_ticket.KIND_CAP["dc12"] = 0.25
-    smart_ticket.KIND_CAP["fh_goals"] = 0.25
-    smart_ticket.KIND_BONUS["fh_goals"] = 0.03
+    smart_ticket.KIND_CAP["sh_goals"] = 0.25
+    smart_ticket.KIND_CAP["sh_12"] = 0.25
+    smart_ticket.KIND_BONUS["sh_goals"] = 0.03
+    smart_ticket.KIND_BONUS["sh_12"] = 0.03
     smart_ticket.KIND_BONUS["dc12"] = 0.02
     try:
-        smart_ticket.KIND_NAME["fh_goals"] = "1st half goals"
+        smart_ticket.KIND_NAME["sh_goals"] = "2nd half goals"
+        smart_ticket.KIND_NAME["sh_12"] = "2nd half Home or Away (12)"
         smart_ticket.KIND_NAME["dc12"] = "Home or Away (12)"
     except Exception:
         pass
@@ -799,7 +813,7 @@ if smart_ticket is not None:
         if mode_normal and len(args) >= 5 and isinstance(args[4], (int, float)):
             original_floor = float(args[4])
             args = list(args)
-            args[4] = min(original_floor, TEAM_GOALS_MIN_ODD, STRAIGHT_1UP_MIN, CORNERS_TOTAL_MIN_ODD, DOUBLE12_MIN_ODD)
+            args[4] = min(original_floor, TEAM_GOALS_MIN_ODD, STRAIGHT_1UP_MIN, CORNERS_TOTAL_MIN_ODD, DOUBLE12_MIN_ODD, SH_MIN_ODD)
 
         result = _orig_gather(*args, **kwargs)
 
@@ -814,11 +828,36 @@ if smart_ticket is not None:
                             or (c.get("kind") == "up" and c.get("up_level") == 1 and c.get("odd", 0) >= STRAIGHT_1UP_MIN)
                             or (c.get("kind") == "corners" and c.get("odd", 0) >= CORNERS_TOTAL_MIN_ODD)
                             or (c.get("kind") == "dc12" and c.get("odd", 0) >= DOUBLE12_MIN_ODD)
+                            or (c.get("kind") in ("sh_goals", "sh_12") and c.get("odd", 0) >= SH_MIN_ODD)
                             or c.get("odd", 0) >= original_floor
                         )
                     ]
                     if kept:
                         groups.append(kept)
+                result = (groups,) + tuple(result[1:])
+            except Exception:
+                pass
+
+        # Mixed tickets and Daily 2 odds: strong picks only.
+        if mode_normal or kwargs.get("daily"):
+            try:
+                groups = []
+                for group in result[0]:
+                    kept = [c for c in group if c.get("p", 0) >= STRONG_MIN_P]
+                    if kept:
+                        groups.append(kept)
+
+                counts = {}
+                for group in groups:
+                    for c in group:
+                        counts[c.get("kind")] = counts.get(c.get("kind"), 0) + 1
+
+                print(
+                    f"Mix picks available (strong only, p>={STRONG_MIN_P:g}): {counts} "
+                    f"| 2nd-half markets seen: {sorted(getattr(CTX, 'half_names', set()))[:8]}"
+                )
+                CTX.half_names = set()
+
                 result = (groups,) + tuple(result[1:])
             except Exception:
                 pass
@@ -990,8 +1029,8 @@ if smart_ticket is not None:
 
             line = _num(spec.replace("total=", ""))
 
-            if line not in (0.5, 1.5):
-                continue
+            if line != 0.5:
+                continue   # only "Home to score 0.5" / "Away to score 0.5"
 
             over, under, over_id = _over_under(market)
 
@@ -1069,6 +1108,82 @@ if smart_ticket is not None:
             item["filler"] = True
 
         return [item]
+
+    def second_half_candidates(event, markets, existing):
+        """2nd half Over 0.5 goals, and 2nd half Home or Away (12)."""
+        home = event.get("homeTeamName", "Home")
+        away = event.get("awayTeamName", "Away")
+        have = {c.get("label") for c in existing}
+        out = []
+        goals_done = dc_done = False
+        names = getattr(CTX, "half_names", None)
+
+        if names is None:
+            names = set()
+            CTX.half_names = names
+
+        for market in markets or []:
+            name = f"{market.get('desc') or ''} {market.get('name') or ''}".lower()
+
+            if not ("2nd half" in name or "second half" in name):
+                continue
+
+            if len(names) < 15:
+                names.add(f"{market.get('id')}: {name.strip()}")
+
+            if any(w in name for w in (
+                "corner", "card", "booking", "handicap", "both", "odd", "even",
+                "exact", "range", "1x2", "1st", "first half",
+            )):
+                continue
+
+            spec = market.get("specifier") or ""
+
+            if spec.startswith("total=") and "total" in name and not any(w in name for w in ("home", "away", "team")):
+                if goals_done or _num(spec.replace("total=", "")) != 0.5:
+                    continue
+
+                over, under, over_id = _over_under(market)
+
+                if over and over >= SH_MIN_ODD:
+                    label = "Over 0.5 goals (2nd half)"
+                    goals_done = True
+
+                    if label not in have:
+                        out.append({
+                            "kind": "sh_goals",
+                            "label": label,
+                            "odd": over,
+                            "p": _pair_p(over, under),
+                            "key": (str(market.get("id")), spec, over_id),
+                            "line": 0.5,
+                        })
+
+            elif "double chance" in name and not dc_done:
+                for outcome in market.get("outcomes", []):
+                    if outcome.get("isActive") is False:
+                        continue
+
+                    label_o = str(outcome.get("desc") or outcome.get("name") or "").strip().lower()
+                    oid = str(outcome.get("id"))
+                    odd = _num(outcome.get("odds"))
+                    is_12 = oid == sp.OUT_DC["12"] or "home or away" in label_o or label_o in ("12", "1 or 2")
+
+                    if is_12 and odd and odd >= SH_MIN_ODD:
+                        label = f"{home} or {away} (2nd half 12)"
+                        dc_done = True
+
+                        if label not in have:
+                            out.append({
+                                "kind": "sh_12",
+                                "label": label,
+                                "odd": odd,
+                                "p": min(0.95 / odd, 0.97),
+                                "key": (str(market.get("id")), spec, oid),
+                            })
+                        break
+
+        return out
 
     def first_half_candidates(event, markets, existing):
         """Over 0.5 goals in the first half (a replacement for the handicap picks)."""
@@ -1160,7 +1275,8 @@ if smart_ticket is not None:
                 return corners_candidates(event, markets)
 
             base = base + team_goal_candidates(event, markets, base)
-            base = base + first_half_candidates(event, markets, base)
+            base = base + second_half_candidates(event, markets, base)
+            base = base + corners_candidates(event, markets)
             base = base + _double12(event, markets, DOUBLE12_SURE_DRAW, False)
 
             if getattr(CTX, "fallback", False) and not getattr(CTX, "straight", False):
@@ -1184,16 +1300,32 @@ if smart_ticket is not None:
     _orig_allowed = st._candidate_is_allowed
     _NOT_WANTED_LABEL = re.compile(r"both teams|over (?:[2-9]|[1-9]\d)(?:\.\d)? goals", re.I)
 
+    _ALLOWED_KINDS = {
+        "up",           # 1UP / 2UP
+        "either_half",  # win either half
+        "team_goals",   # Home / Away to score 0.5
+        "corners",      # Over 7.5 corners and team corners
+        "dc12",         # Home or Away (12)
+        "over15",       # Over 1.5 goals
+        "sh_goals",     # 2nd half Over 0.5 goals
+        "sh_12",        # 2nd half Home or Away (12)
+    }
+    _BAD_LABEL = re.compile(r"handicap|both teams|\bunder \d|\bcards?\b", re.I)
+
     def _candidate_is_allowed(kind, label=""):
-        if str(kind or "").lower() == "dc12":
-            return True   # "Home or Away" (12) is only created where a draw is unlikely
-        if str(kind or "").lower() in {"win", "btts", "over", "handicap"}:
+        k = str(kind or "").lower()
+        low = str(label or "").lower()
+
+        if k not in _ALLOWED_KINDS:
+            return False   # no direct win, BTTS, handicap, Over 2 / 2.5, Under, double chance, ...
+
+        if _BAD_LABEL.search(low):
             return False
-        if "handicap" in str(label or "").lower():
-            return False
-        if _NOT_WANTED_LABEL.search(str(label or "")):
-            return False
-        return _orig_allowed(kind, label)
+
+        if k == "team_goals" and "over 0.5" not in low:
+            return False   # only "to score 0.5"
+
+        return True
 
     st._candidate_is_allowed = _candidate_is_allowed
 
@@ -1239,9 +1371,13 @@ if smart_ticket is not None:
             team = candidate["home"] if candidate["corner_kind"] == "home" else candidate["away"]
             return f"SportyBet's prices give {team} about {chance}% to win {needed} or more corners."
 
-        if candidate.get("kind") == "fh_goals":
+        if candidate.get("kind") == "sh_goals":
             chance = round(candidate.get("p", 0) * 100)
-            return f"SportyBet's prices give at least one goal before half time about {chance}% chance."
+            return f"SportyBet's prices give at least one goal after half time about {chance}% chance."
+
+        if candidate.get("kind") == "sh_12":
+            chance = round(candidate.get("p", 0) * 100)
+            return f"Either team wins the 2nd half in about {chance}% of cases: a drawn 2nd half looks unlikely."
 
         if candidate.get("kind") == "dc12":
             chance = round(candidate.get("p", 0) * 100)

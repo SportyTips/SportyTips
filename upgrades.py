@@ -1652,10 +1652,22 @@ if smart_ticket is not None:
     bot.handle_text = handle_text
 
     # ============================================================
-    # PASTE THIS AT THE VERY END OF YOUR UPGRADE FILE
-    # (after "bot.handle_text = handle_text").
-    # Keep the 4-space indent: it lives inside "if smart_ticket is not None:".
+    # REPLACE the whole previous block with this one.
+    # It goes at the very end of your upgrade file, after
+    # "bot.handle_text = handle_text", with the same 4-space indent.
+    #
+    # ALSO change this setting near the top of the file:
+    #     EVENT_PAGES = 60      (it was 20)
     # ============================================================
+
+    # Turn this on to let the ticket builder use every SportyBet market it knows
+    # (direct win, BTTS, Over goals, handicap, draw no bet ...), still strong picks only.
+    # Off = only the mixed-ticket picks from your list (1UP, 2UP, either half, corners ...).
+    ALLOW_ALL_MARKETS = False
+
+    if ALLOW_ALL_MARKETS:
+        _ALLOWED_KINDS.update({"win", "btts", "over", "handicap", "dnb", "dc", "streak"})
+        _BAD_LABEL = re.compile(r"\bunder \d|\bcards?\b", re.I)
 
     # ---- "Are there any midnight games?" -> answer, then wait for "list" or "build" ----
     PENDING = {}  # chat_id -> (window words, time asked)
@@ -1663,6 +1675,10 @@ if smart_ticket is not None:
 
     LOOK_RE = re.compile(r"\b(list|show|look|check|see|through|fixtures?|schedule)\b", re.I)
     LOOK_START_RE = re.compile(r"^(list|show|look|check|see|give me|display)\b", re.I)
+    YES_RE = re.compile(
+        r"^(yes|yeah|yea|yep|yup|ya|ok|okay|sure|please|go ahead|do it|go on|abeg|make it)\b",
+        re.I,
+    )
 
     def _kick(event):
         ms = event.get("estimateStartTime")
@@ -1691,6 +1707,19 @@ if smart_ticket is not None:
                 rows.append((kickoff, event))
 
         rows.sort(key=lambda r: r[0])
+
+        # Log what SportyBet really gave us, so a short list can be explained.
+        try:
+            loaded = provider._load_events()
+            times = [k for k in (_kick(e) for e in loaded) if k]
+            print(
+                f"Games window '{req['label']}': {len(rows)} found. "
+                f"SportyBet loaded {len(loaded)} matches in total, "
+                f"from {_fmt(min(times))} to {_fmt(max(times))} ({bot.LOCAL_TZ_NAME})."
+            )
+        except Exception as exc:
+            print(f"Games window log failed: {exc}")
+
         return req, rows
 
     def _fmt(kickoff):
@@ -1723,7 +1752,8 @@ if smart_ticket is not None:
             chat_id,
             f"Yes, there {count} for {label}, "
             f"from <b>{_fmt(rows[0][0])}</b> to <b>{_fmt(rows[-1][0])}</b> ({bot.LOCAL_TZ_NAME}).\n\n"
-            "Want me to show the full list, or build a ticket from them?",
+            "Say <b>list</b> and I'll show them all, or say <b>yes</b> / <b>build</b> "
+            "and I'll build a safe ticket from them (you can add odds, like \"build 2 odds\").",
         )
 
         with PENDING_LOCK:
@@ -1779,6 +1809,16 @@ if smart_ticket is not None:
 
         bot.send_message(chat_id, "\n".join(lines))
 
+    def _build_from_pending(chat_id, phrase, low):
+        request = f"{phrase} {low}"
+
+        if not SAFE_WORD_RE.search(request):
+            request += " safe"
+        if not NUMBER_RE.search(request):
+            request += " 5 picks"
+
+        return bot.prediction_ticket_flow(chat_id, request)
+
     _prev_handle_text = bot.handle_text
 
     def handle_text(chat_id, text):
@@ -1788,7 +1828,7 @@ if smart_ticket is not None:
 
         if message and not message.startswith("/"):
 
-            # 1) Answer to "list or build?"
+            # 1) Answer to "list or build?"  (the question stays open for 15 minutes)
             with PENDING_LOCK:
                 pend = PENDING.get(chat_id)
 
@@ -1799,24 +1839,17 @@ if smart_ticket is not None:
             if pend and len(words) <= 10 and not _has_window(low):
                 phrase = pend[0]
 
-                if BUILD_REPLY_RE.search(low):
-                    with PENDING_LOCK:
-                        PENDING.pop(chat_id, None)
+                if BUILD_REPLY_RE.search(low):  # "build", "build 2 odds from it", "safe", "ticket"
+                    return _build_from_pending(chat_id, phrase, low)
 
-                    request = f"{phrase} {low}"
-
-                    if not SAFE_WORD_RE.search(request):
-                        request += " safe"
-                    if not NUMBER_RE.search(request):
-                        request += " 5 picks"
-
-                    return bot.prediction_ticket_flow(chat_id, request)
-
-                if LIST_REPLY_RE.search(low):
+                if LIST_REPLY_RE.search(low):  # "list", "show", "full list", "all"
                     with PENDING_LOCK:
                         PENDING.pop(chat_id, None)
 
                     return list_all_games(chat_id, phrase)
+
+                if YES_RE.match(low):  # "yes", "yeah", "ok", "go ahead" = build it
+                    return _build_from_pending(chat_id, phrase, "")
 
             plain = not (
                 TOP_LEAGUES_RE.search(low)

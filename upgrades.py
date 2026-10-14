@@ -1938,9 +1938,41 @@ if smart_ticket is not None:
 
         return req, rows
 
-    # ---- 2) Different matches in every ticket ----
-    AVOID_REPEAT = True  # False = tickets may reuse matches again
-    USED_HOURS = 24  # a match used in a ticket is not used again for this many hours
+    # ============================================================
+    # DIFFERENT MATCHES IN EVERY TICKET + NO U19 / U21 (youth) GAMES
+    # ============================================================
+
+    # ---- 1) No youth games (U15 to U23). Women's leagues stay allowed. ----
+    BLOCK_YOUTH = True  # set to False to allow youth games again
+
+    _YOUTH_PART = r"\bu[-\s]?(?:1[5-9]|2[0-3])\b|youth"
+    _YOUTH_RE = re.compile(_YOUTH_PART, re.I)
+
+    if BLOCK_YOUTH:
+        st.SKIP_LEAGUE_RE = re.compile(r"friendl|" + _YOUTH_PART, re.I)
+        st._UNRELIABLE_RE = re.compile(r"friendl|reserve|academy|development|" + _YOUTH_PART, re.I)
+
+    def _is_youth(event):
+        category = ((event.get("sport") or {}).get("category") or {})
+        league = str((category.get("tournament") or {}).get("name") or "")
+        text = f"{league} {event.get('homeTeamName') or ''} {event.get('awayTeamName') or ''}"
+        return bool(_YOUTH_RE.search(text))
+
+    _games_for_with_youth = _games_for
+
+    def _games_for(text):
+        # the "are there any ... games?" answers and lists skip youth games too
+        req, rows = _games_for_with_youth(text)
+
+        if BLOCK_YOUTH:
+            rows = [r for r in rows if not _is_youth(r[1])]
+
+        return req, rows
+
+    # ---- 2) Different matches in every ticket (never starves a big ticket) ----
+    AVOID_REPEAT = True   # False = tickets may reuse matches again
+    USED_HOURS = 1        # a match used in a ticket counts as "used" for this many hours
+    MIN_FRESH = 30        # if fewer unused matches than this, the oldest used ones are added back
 
     _USED = {}  # chat_id -> {event_id: time used}
     _USED_LOCK = threading.Lock()
@@ -1974,6 +2006,9 @@ if smart_ticket is not None:
         if not AVOID_REPEAT or kwargs.get("daily") or getattr(CTX, "is_daily", False):
             return result
 
+        if getattr(CTX, "straight", False):
+            return result  # straight win is never filtered
+
         chat_id = getattr(CTX, "chat_id", None) or _ACTIVE["chat"]
 
         if chat_id is None:
@@ -1985,9 +2020,20 @@ if smart_ticket is not None:
             if not used:
                 return result
 
-            groups = [g for g in result[0] if g and g[0].get("event_id") not in used]
-            print(f"Different matches: {len(result[0]) - len(groups)} used match(es) skipped, {len(groups)} left")
-            return (groups,) + tuple(result[1:])
+            with _USED_LOCK:
+                book = dict(_USED.get(chat_id, {}))
+
+            fresh = [g for g in result[0] if g and g[0].get("event_id") not in used]
+
+            if len(fresh) < MIN_FRESH:
+                old = sorted(
+                    (g for g in result[0] if g and g[0].get("event_id") in used),
+                    key=lambda g: book.get(g[0].get("event_id"), 0),
+                )
+                fresh += old[:MIN_FRESH - len(fresh)]
+
+            print(f"Different matches: {len(fresh)} matches available for this ticket")
+            return (fresh,) + tuple(result[1:])
         except Exception as exc:
             print(f"Different-matches filter failed: {exc}")
             return result
@@ -2020,7 +2066,12 @@ if smart_ticket is not None:
             return _flow_before_repeat(chat_id, text, *args, **kwargs)
         finally:
             try:
-                if AVOID_REPEAT and not CTX.is_daily and CTX.last_ids:
+                if (
+                    AVOID_REPEAT
+                    and not CTX.is_daily
+                    and CTX.last_ids
+                    and not STRAIGHT_RE.search(str(text or ""))
+                ):
                     _remember(chat_id, CTX.last_ids)
             except Exception as exc:
                 print(f"Could not remember used matches: {exc}")

@@ -2220,12 +2220,12 @@ def choose_daily(groups):
 
     pool = best[:25]
 
-    for low, high in ((DAILY_LOW, DAILY_HIGH), (1.70, 2.80)):
+    for low, high in ((2.00, 2.20), (2.00, 2.50)):  # never below 2.00
 
         top = None
         top_chance = 0.0
 
-        for size in (1, 2, 3):
+        for size in (2, 3):
 
             for combo in itertools.combinations(pool, size):
 
@@ -2246,8 +2246,10 @@ def choose_daily(groups):
                     top_chance = chance
 
         if top:
+            print(f"Daily 2 odds: {len(top)} picks chosen (window {low:.2f}-{high:.2f})")
             return list(top), True
 
+    print("Daily 2 odds: no combination of 2.00 or more found")
     return [], False
 
 
@@ -2705,7 +2707,15 @@ def _build_once(
                 return choose_straight(gs, target, count)
 
             if target:
-                return choose_target(gs, target)
+                picks, ok = choose_target(gs, target)
+
+                if not picks and req.get("exact_window"):
+                    # Small night slate: give the best strong picks there are
+                    # (shown with a "could not reach" warning) instead of nothing.
+                    picks, _ = choose_count(gs, MAX_LEGS)
+                    ok = False
+
+                return picks, ok
 
             return choose_count(gs, count)
 
@@ -3342,6 +3352,15 @@ def _daily_get():
 
     if time.time() - created >= DAILY_SECONDS:
         return None
+
+    # An old saved ticket under 2.00 odds (built by the old code) is thrown away.
+    try:
+        match = re.search(r"Total odds:\s*(?:<[^>]+>)?\s*([0-9]+\.[0-9]+)", str(data.get("text")))
+
+        if match and float(match.group(1)) < 2.00:
+            return None
+    except Exception:
+        pass
 
     _daily_cache.clear()
     _daily_cache.update(data)

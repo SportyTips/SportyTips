@@ -1906,40 +1906,9 @@ if smart_ticket is not None:
     bot.handle_text = handle_text
 
     # ============================================================
-    # DIFFERENT MATCHES IN EVERY TICKET + NO U19 / U21 (youth) GAMES
-    # Paste at the very END of upgrades_full.py (same 4-space indent,
-    # inside "if smart_ticket is not None:").
-    # ============================================================
-
-    # ---- 1) No youth games (U15 to U23). Women's leagues stay allowed. ----
-    BLOCK_YOUTH = True  # set to False to allow youth games again
-
-    _YOUTH_PART = r"\bu[-\s]?(?:1[5-9]|2[0-3])\b|youth"
-    _YOUTH_RE = re.compile(_YOUTH_PART, re.I)
-
-    if BLOCK_YOUTH:
-        st.SKIP_LEAGUE_RE = re.compile(r"friendl|" + _YOUTH_PART, re.I)
-        st._UNRELIABLE_RE = re.compile(r"friendl|reserve|academy|development|" + _YOUTH_PART, re.I)
-
-    def _is_youth(event):
-        category = ((event.get("sport") or {}).get("category") or {})
-        league = str((category.get("tournament") or {}).get("name") or "")
-        text = f"{league} {event.get('homeTeamName') or ''} {event.get('awayTeamName') or ''}"
-        return bool(_YOUTH_RE.search(text))
-
-    _games_for_with_youth = _games_for
-
-    def _games_for(text):
-        # the "are there any ... games?" answers and lists skip youth games too
-        req, rows = _games_for_with_youth(text)
-
-        if BLOCK_YOUTH:
-            rows = [r for r in rows if not _is_youth(r[1])]
-
-        return req, rows
-
-    # ============================================================
-    # DIFFERENT MATCHES IN EVERY TICKET + NO U19 / U21 (youth) GAMES
+    # NO U19 / U21 (youth) GAMES + DIFFERENT MATCHES IN EVERY TICKET
+    # (this block must appear ONLY ONCE, at the very end of the file,
+    # inside "if smart_ticket is not None:")
     # ============================================================
 
     # ---- 1) No youth games (U15 to U23). Women's leagues stay allowed. ----

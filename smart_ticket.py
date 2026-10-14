@@ -199,6 +199,16 @@ _UNRELIABLE_RE = re.compile(
 # ============================================================
 
 DAILY_TARGET = 2.0
+DAILY_FROM_HOUR = 9  # Daily 2 odds uses games from 9am ...
+DAILY_TO_HOUR = 20  # ... to 8pm (local time)
+
+
+def _hour_text(hour):
+    h = int(hour) % 24
+    return f"{h % 12 or 12}{'am' if h < 12 else 'pm'}"
+
+
+DAILY_WINDOW_TEXT = f"{_hour_text(DAILY_FROM_HOUR)} to {_hour_text(DAILY_TO_HOUR)}"
 DAILY_LOW = 1.90
 DAILY_HIGH = 2.40
 DAILY_MAX_ODD = 1.90
@@ -2846,6 +2856,29 @@ def _flow_main(
 
         return
 
+    if daily:
+
+        # Daily 2 odds: only games from 9am to 8pm, never games from another day.
+        now_utc = datetime.now(timezone.utc)
+        local_now = now_utc.astimezone(bot.LOCAL_TZ)
+        midnight = local_now.replace(hour=0, minute=0, second=0, microsecond=0)
+        earliest = now_utc + timedelta(hours=getattr(bot, "MIN_HOURS_BEFORE_KICKOFF", 1))
+
+        day_start = midnight + timedelta(hours=DAILY_FROM_HOUR)
+        day_end = midnight + timedelta(hours=DAILY_TO_HOUR)
+        day_name = "today"
+
+        if day_end <= earliest:
+            # Today's window is over: use tomorrow's.
+            day_start += timedelta(days=1)
+            day_end += timedelta(days=1)
+            day_name = "tomorrow"
+
+        req["start"] = max(earliest, day_start)
+        req["end"] = day_end
+        req["label"] = f"{day_name} ({DAILY_WINDOW_TEXT})"
+        req["exact_window"] = True
+
     if search_days and req.get("label") == "next 24 hours":
 
         try:
@@ -3351,6 +3384,10 @@ def _daily_get():
         return None
 
     if time.time() - created >= DAILY_SECONDS:
+        return None
+
+    # A saved ticket built for another time window (old code) is thrown away.
+    if DAILY_WINDOW_TEXT not in str(data.get("text")):
         return None
 
     # An old saved ticket under 2.00 odds (built by the old code) is thrown away.

@@ -250,6 +250,24 @@ TEAM_GOALS_SHARE = 0.35  # at most this share of a ticket may be team-goal picks
 # Off = only the mixed-ticket picks listed above (1UP, 2UP, either half, corners ...).
 ALLOW_ALL_MARKETS = False
 
+# EXTRA MARKETS: combos (GG or Over 2.5, Home / Away or GG, Home / Away or Draw & Over 1.5),
+# "Any team to score 3+ goals in a row", shots, and goal bounds. Full-time markets only.
+# Every pick still has to pass the strong-pick check (STRONG_MIN_P), except goal bounds (BOUNDS_MIN_P).
+EXTRA_KINDS = {"combo", "streak", "shots", "bounds"}
+EXTRA_FLOOR_ODD = 1.15  # lowest price these picks may have (each type also has its own range below)
+COMBO_MIN_ODD = 1.20
+COMBO_MAX_ODD = 1.50
+COMBOS_PER_MATCH = 2  # how many combo choices each match offers the ticket builder
+STREAK_MIN_ODD = 1.15  # "Any team to score 3+ goals in a row" (the "No" answer is the safe one)
+STREAK_MAX_ODD = 1.60
+SHOTS_MIN_ODD = 1.20
+SHOTS_MAX_ODD = 1.60
+SHOTS_PER_MATCH = 2
+BOUNDS_MIN_ODD = 1.50  # one goal range (for example 2-3) rarely pays less than this
+BOUNDS_MAX_ODD = 2.60
+BOUNDS_MIN_P = 0.55  # goal bounds use their own, lower strength check
+BOUNDS_WANTED = None  # None = any range the market offers, or a set such as {"0-1", "2-3", "3-4"}
+
 
 # ------------------------------------------------------------
 # 4) TOP LEAGUES (14 competitions) and EUROPEAN CUPS
@@ -457,7 +475,7 @@ if smart_ticket is not None:
                 try:
                     for group in (args[0] if args else []):
                         for c in group:
-                            if c.get("filler") or c.get("corner_kind"):
+                            if c.get("filler") or c.get("corner_kind") or c.get("extra"):
                                 c["p"] = c.get("market_p", c.get("p", 0))
                 except Exception:
                     pass
@@ -481,10 +499,17 @@ if smart_ticket is not None:
     smart_ticket.KIND_BONUS["sh_goals"] = 0.03
     smart_ticket.KIND_BONUS["sh_12"] = 0.03
     smart_ticket.KIND_BONUS["dc12"] = 0.02
+    for _kind, _cap in ("combo", 0.30), ("streak", 0.25), ("shots", 0.25), ("bounds", 0.10):
+        smart_ticket.KIND_CAP[_kind] = _cap
+        smart_ticket.KIND_BONUS[_kind] = 0.02
     try:
         smart_ticket.KIND_NAME["sh_goals"] = "2nd half goals"
         smart_ticket.KIND_NAME["sh_12"] = "2nd half Home or Away (12)"
         smart_ticket.KIND_NAME["dc12"] = "Home or Away (12)"
+        smart_ticket.KIND_NAME["combo"] = "combo (GG / Over)"
+        smart_ticket.KIND_NAME["streak"] = "3 goals in a row"
+        smart_ticket.KIND_NAME["shots"] = "shots"
+        smart_ticket.KIND_NAME["bounds"] = "goal bounds"
     except Exception:
         pass
 
@@ -981,7 +1006,7 @@ if smart_ticket is not None:
         if mode_normal and len(args) >= 5 and isinstance(args[4], (int, float)):
             original_floor = float(args[4])
             args = list(args)
-            args[4] = min(original_floor, TEAM_GOALS_MIN_ODD, STRAIGHT_1UP_MIN, CORNERS_TOTAL_MIN_ODD, DOUBLE12_MIN_ODD, SH_MIN_ODD)
+            args[4] = min(original_floor, TEAM_GOALS_MIN_ODD, STRAIGHT_1UP_MIN, CORNERS_TOTAL_MIN_ODD, DOUBLE12_MIN_ODD, SH_MIN_ODD, EXTRA_FLOOR_ODD)
 
         result = _orig_gather(*args, **kwargs)
 
@@ -997,6 +1022,7 @@ if smart_ticket is not None:
                             or (c.get("kind") == "corners" and c.get("odd", 0) >= CORNERS_TOTAL_MIN_ODD)
                             or (c.get("kind") == "dc12" and c.get("odd", 0) >= DOUBLE12_MIN_ODD)
                             or (c.get("kind") in ("sh_goals", "sh_12") and c.get("odd", 0) >= SH_MIN_ODD)
+                            or c.get("kind") in EXTRA_KINDS
                             or c.get("odd", 0) >= original_floor
                         )
                     ]
@@ -1018,7 +1044,10 @@ if smart_ticket is not None:
 
                 groups = []
                 for group in result[0]:
-                    kept = [c for c in group if c.get("p", 0) >= min_p]
+                    kept = [
+                        c for c in group
+                        if c.get("p", 0) >= (BOUNDS_MIN_P if c.get("kind") == "bounds" else min_p)
+                    ]
                     if kept:
                         groups.append(kept)
 
@@ -1032,6 +1061,10 @@ if smart_ticket is not None:
                     f"| 2nd-half markets seen: {sorted(getattr(CTX, 'half_names', set()))[:8]}"
                 )
                 CTX.half_names = set()
+
+                if _EXTRA_NAMES:
+                    print("Extra markets seen:", sorted(_EXTRA_NAMES)[:25])
+                    _EXTRA_NAMES.clear()
 
                 result = (groups,) + tuple(result[1:])
             except Exception:
@@ -1429,6 +1462,293 @@ if smart_ticket is not None:
 
         return out
 
+    # ---- Extra markets: combos, "3 goals in a row", shots, goal bounds ----
+    # SportyBet's exact market names are matched by their words. The server log line
+    # "Extra markets seen: ..." shows the real names, so you can fix a pattern if one never appears.
+    _EXTRA_NAMES = set()
+    _HALF_WORDS = ("1st half", "2nd half", "first half", "second half")
+    _GG = r"(?:gg|both teams(?: to score)?|btts)"
+
+    # (rule name, label pattern, needs a clear favourite side, text shown on the ticket)
+    _COMBO_RULES = [
+        (
+            "gg_or_o25",
+            re.compile(rf"\b{_GG}\b.*\bor\b.*over 2\.5|over 2\.5.*\bor\b.*\b{_GG}\b"),
+            False,
+            "GG or Over 2.5",
+        ),
+        (
+            "home_gg",
+            re.compile(rf"^(?:home|1)\s+or\s+{_GG}\b|^{_GG}\s+or\s+(?:home|1)\b"),
+            True,
+            "{home} or GG",
+        ),
+        (
+            "away_gg",
+            re.compile(rf"^(?:away|2)\s+or\s+{_GG}\b|^{_GG}\s+or\s+(?:away|2)\b"),
+            True,
+            "{away} or GG",
+        ),
+        (
+            "home_dc_o15",
+            re.compile(r"^(?:home or draw|1x)\s*(?:&|and)\s*over 1\.5\b"),
+            True,
+            "{home} or Draw & Over 1.5",
+        ),
+        (
+            "away_dc_o15",
+            re.compile(r"^(?:away or draw|x2)\s*(?:&|and)\s*over 1\.5\b"),
+            True,
+            "{away} or Draw & Over 1.5",
+        ),
+    ]
+
+    def _mname(market):
+        return f"{market.get('desc') or ''} {market.get('name') or ''}".lower()
+
+    def _olabel(outcome):
+        return str(outcome.get("desc") or outcome.get("name") or "").strip().lower()
+
+    def _live_outcomes(market):
+        out = []
+        for outcome in market.get("outcomes", []):
+            if outcome.get("isActive") is False:
+                continue
+            odd = _num(outcome.get("odds"))
+            if odd and odd > 1:
+                out.append((outcome, odd))
+        return out
+
+    def _note_extra(market):
+        if len(_EXTRA_NAMES) >= 40:
+            return
+        name = _mname(market)
+        if re.search(r"\bgg\b|both teams|in a row|bound|shot|&", name):
+            labels = ", ".join(_olabel(o) for o, _ in _live_outcomes(market)[:4])
+            _EXTRA_NAMES.add(f"{market.get('id')}: {name.strip()} [{labels}]")
+
+    def _norm_label(outcome, spec, home, away):
+        label = _olabel(outcome).replace("\u2013", "-")
+        h, a = home.lower(), away.lower()
+        if len(h) > 2:
+            label = label.replace(h, "home")
+        if len(a) > 2:
+            label = label.replace(a, "away")
+        line = _num(spec.replace("total=", "")) if spec.startswith("total=") else None
+        if line is not None and re.search(r"\b(over|under)\b(?!\s*\d)", label):
+            label = re.sub(r"\b(over|under)\b", lambda m: f"{m.group(1)} {line:g}", label, count=1)
+        return re.sub(r"\s+", " ", label).strip()
+
+    def combo_candidates(event, markets, tight):
+        home = event.get("homeTeamName", "Home")
+        away = event.get("awayTeamName", "Away")
+        best = {}
+
+        for market in markets or []:
+            if any(w in _mname(market) for w in _HALF_WORDS):
+                continue
+
+            spec = market.get("specifier") or ""
+
+            for outcome, odd in _live_outcomes(market):
+                if not (COMBO_MIN_ODD <= odd <= COMBO_MAX_ODD):
+                    continue
+
+                label = _norm_label(outcome, spec, home, away)
+
+                for rule, pattern, win_based, text in _COMBO_RULES:
+                    if win_based and tight:
+                        continue  # tight games: no win-based picks
+
+                    if not pattern.search(label):
+                        continue
+
+                    chance = min(0.95 / odd, 0.97)
+
+                    if rule not in best or chance > best[rule]["p"]:
+                        best[rule] = {
+                            "kind": "combo",
+                            "label": text.format(home=home, away=away),
+                            "odd": odd,
+                            "p": chance,
+                            "market_p": chance,
+                            "key": (str(market.get("id")), spec, str(outcome.get("id"))),
+                            "extra": True,
+                            "combo": rule,
+                        }
+
+        found = sorted(best.values(), key=lambda c: -c["p"])
+        return found[:COMBOS_PER_MATCH]
+
+    def streak_candidates(event, markets):
+        found = []
+
+        for market in markets or []:
+            name = _mname(market)
+
+            if "in a row" not in name or any(w in name for w in _HALF_WORDS):
+                continue
+
+            if not re.search(r"\b(3|three)\b", name):
+                continue
+
+            live = _live_outcomes(market)
+
+            if len(live) < 2:
+                continue
+
+            total = sum(1 / odd for _, odd in live)
+            spec = market.get("specifier") or ""
+
+            for outcome, odd in live:
+                answer = _olabel(outcome)
+
+                if answer not in ("yes", "no"):
+                    continue
+
+                if not (STREAK_MIN_ODD <= odd <= STREAK_MAX_ODD):
+                    continue
+
+                chance = (1 / odd) / total
+
+                found.append({
+                    "kind": "streak",
+                    "label": f"Any team to score 3+ goals in a row: {answer.capitalize()}",
+                    "odd": odd,
+                    "p": chance,
+                    "market_p": chance,
+                    "key": (str(market.get("id")), spec, str(outcome.get("id"))),
+                    "extra": True,
+                })
+
+        found.sort(key=lambda c: -c["p"])
+        return found[:1]
+
+    def _shots_side(name, home, away):
+        h, a = home.lower(), away.lower()
+        has_home = "home" in name or (len(h) > 3 and h in name)
+        has_away = "away" in name or (len(a) > 3 and a in name)
+        if has_home and has_away:
+            return None
+        if has_home:
+            return "home"
+        if has_away:
+            return "away"
+        return "total"
+
+    def shots_candidates(event, markets):
+        home = event.get("homeTeamName", "Home")
+        away = event.get("awayTeamName", "Away")
+        found = []
+        bad = _BAD_CORNER_WORDS + ("card", "booking", "player")
+
+        for market in markets or []:
+            name = _mname(market)
+
+            if "shot" not in name or any(w in name for w in bad):
+                continue
+
+            spec = market.get("specifier") or ""
+
+            if not spec.startswith("total="):
+                continue
+
+            line = _num(spec.replace("total=", ""))
+
+            if line is None or (line * 2) % 1 != 0:
+                continue
+
+            side = _shots_side(name, home, away)
+
+            if side is None:
+                continue
+
+            over, under, over_id = _over_under(market)
+
+            if not over or not (SHOTS_MIN_ODD <= over <= SHOTS_MAX_ODD):
+                continue
+
+            chance = _pair_p(over, under)
+            noun = "shots on target" if "target" in name else "shots"
+            team = {"home": f"{home} ", "away": f"{away} ", "total": ""}[side]
+
+            found.append({
+                "kind": "shots",
+                "label": f"{team}Over {line:g} {noun}",
+                "odd": over,
+                "p": chance,
+                "market_p": chance,
+                "key": (str(market.get("id")), spec, over_id),
+                "extra": True,
+                "line": line,
+            })
+
+        found.sort(key=lambda c: -c["p"])
+        return found[:SHOTS_PER_MATCH]
+
+    def bounds_candidates(event, markets):
+        found = []
+
+        for market in markets or []:
+            name = _mname(market)
+
+            if "bound" not in name or "corner" in name or any(w in name for w in _HALF_WORDS):
+                continue
+
+            live = _live_outcomes(market)
+
+            if len(live) < 2:
+                continue
+
+            total = sum(1 / odd for _, odd in live)
+            spec = market.get("specifier") or ""
+
+            for outcome, odd in live:
+                rng = re.sub(r"\s+", "", _olabel(outcome)).replace("\u2013", "-").replace("\u2014", "-")
+
+                if BOUNDS_WANTED and rng not in BOUNDS_WANTED:
+                    continue
+
+                if not (BOUNDS_MIN_ODD <= odd <= BOUNDS_MAX_ODD):
+                    continue
+
+                chance = (1 / odd) / total
+
+                if chance < BOUNDS_MIN_P:
+                    continue
+
+                found.append({
+                    "kind": "bounds",
+                    "label": f"Total goals {rng}",
+                    "odd": odd,
+                    "p": chance,
+                    "market_p": chance,
+                    "key": (str(market.get("id")), spec, str(outcome.get("id"))),
+                    "extra": True,
+                })
+
+        found.sort(key=lambda c: -c["p"])
+        return found[:1]
+
+    def extra_candidates(event, markets, tight=False):
+        out = []
+
+        for market in markets or []:
+            _note_extra(market)
+
+        for name, make in (
+            ("combo", lambda: combo_candidates(event, markets, tight)),
+            ("streak", lambda: streak_candidates(event, markets)),
+            ("shots", lambda: shots_candidates(event, markets)),
+            ("bounds", lambda: bounds_candidates(event, markets)),
+        ):
+            try:
+                out += make()
+            except Exception as exc:
+                print(f"Extra markets ({name}) failed: {exc}")
+
+        return out
+
     def _only_line_corners(candidates):
         """Corner picks outside tickets built for corners: only Over 7.5."""
         return [
@@ -1447,12 +1767,13 @@ if smart_ticket is not None:
         try:
             # Tight game: no win picks at all, corners instead.
             if not getattr(CTX, "straight", False) and _is_tight(markets):
-                return corners_candidates(event, markets)
+                return corners_candidates(event, markets) + extra_candidates(event, markets, tight=True)
 
             base = base + team_goal_candidates(event, markets, base)
             base = base + second_half_candidates(event, markets, base)
             base = base + corners_candidates(event, markets)
             base = base + _double12(event, markets, DOUBLE12_SURE_DRAW, False)
+            base = base + extra_candidates(event, markets, tight=False)
 
             if getattr(CTX, "fallback", False) and not getattr(CTX, "straight", False):
                 base = base + fallback_fillers(event, markets)
@@ -1484,6 +1805,10 @@ if smart_ticket is not None:
         "over15",  # Over 1.5 goals
         "sh_goals",  # 2nd half Over 0.5 goals
         "sh_12",  # 2nd half Home or Away (12)
+        "combo",  # GG or Over 2.5, Home / Away or GG, Home / Away or Draw & Over 1.5
+        "streak",  # Any team to score 3+ goals in a row
+        "shots",  # shots / shots on target
+        "bounds",  # goal bounds
     }
     _BAD_LABEL = re.compile(r"handicap|both teams|\bunder \d|\bcards?\b", re.I)
 
@@ -1513,6 +1838,10 @@ if smart_ticket is not None:
     def _passes_rules(candidate, ctx, relax=0):
         if getattr(CTX, "corners", False):
             return True  # corners are chosen by their own prices, not the goal rules
+
+        # Extra markets are chosen by their own prices too.
+        if candidate.get("extra"):
+            return True
 
         # Corner picks built from their own prices (not the goal rules).
         if candidate.get("kind") == "corners" and candidate.get("corner_kind"):
@@ -1561,6 +1890,24 @@ if smart_ticket is not None:
         if candidate.get("kind") == "dc12":
             chance = round(candidate.get("p", 0) * 100)
             return f"Either team wins in about {chance}% of cases: a draw looks unlikely in this match."
+
+        if candidate.get("kind") == "combo":
+            chance = round(candidate.get("p", 0) * 100)
+            return f"Two ways to win in one pick: SportyBet's prices give it about {chance}%."
+
+        if candidate.get("kind") == "streak":
+            chance = round(candidate.get("p", 0) * 100)
+            if str(candidate.get("label", "")).lower().endswith("no"):
+                return f"A run of 3 goals in a row is rare: SportyBet's prices give 'No' about {chance}%."
+            return f"SportyBet's prices give this answer about {chance}%."
+
+        if candidate.get("kind") == "shots":
+            chance = round(candidate.get("p", 0) * 100)
+            return f"SportyBet's shot prices give this about {chance}% chance."
+
+        if candidate.get("kind") == "bounds":
+            chance = round(candidate.get("p", 0) * 100)
+            return f"SportyBet's goal-range prices give this range about {chance}%."
 
         return _orig_reason_for(candidate)
 

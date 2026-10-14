@@ -1892,45 +1892,40 @@ if smart_ticket is not None:
 
     bot.handle_text = handle_text
 
-        # ============================================================
-    # DAILY 2 ODDS = GAMES FROM 9AM TO 8PM
-    # Paste at the very end of your upgrade file, with the same 4-space indent
-    # (inside "if smart_ticket is not None:"), after the other patches.
+       # ============================================================
+    # DAILY 2 ODDS: CLEAR THE OLD SAVED TICKET + LOG THE RESULT
+    # Paste at the very end of your upgrade file (same 4-space indent,
+    # inside "if smart_ticket is not None:"), AFTER daily_2_odds_fix.py.
     #
-    # Why it showed Thursday midnight games: with no time word, the request
-    # defaulted to "next 24 hours", which runs past midnight into tomorrow.
-    # This uses only games from 9am to 8pm (local time) and
-    # never borrows games from another day.
+    # Why you kept seeing 1.90: smart_ticket.py saves the Daily 2 odds ticket
+    # in daily_2odds.json and shows that same saved ticket for 24 hours.
+    # A ticket built by the old code stays until the file is cleared.
     # ============================================================
 
-    DAILY_FROM_HOUR = 9  # Daily 2 odds uses games from 9am ...
-    DAILY_TO_HOUR = 20  # ... to 8pm
+    import os as _os
 
-    _prev_parse_request = bot.parse_request
+    CLEAR_DAILY_ON_START = True  # set to False after the first restart that shows 2.00+
 
-    def parse_request(text):
-        req = _prev_parse_request(text)
-        low = str(text or "").lower()
+    if CLEAR_DAILY_ON_START:
+        try:
+            _os.remove(st._DAILY_FILE)
+        except FileNotFoundError:
+            pass
+        except Exception as exc:
+            print(f"Could not clear the old Daily 2 odds file: {exc}")
 
-        if st.DAILY_RE.search(low) and not _has_window(low) and not DAYS_RE.search(low):
-            now = datetime.now(timezone.utc)
-            local_now = now.astimezone(bot.LOCAL_TZ)
-            midnight = local_now.replace(hour=0, minute=0, second=0, microsecond=0)
-            earliest = now + timedelta(hours=_buffer_hours())
+        st._daily_cache.clear()
 
-            start = midnight + timedelta(hours=DAILY_FROM_HOUR)  # 9am
-            end = midnight + timedelta(hours=DAILY_TO_HOUR)  # 8pm
+    _daily_impl = st.choose_daily
 
-            if end <= earliest:
-                # Today's 9am to 8pm window is over: use tomorrow's.
-                start += timedelta(days=1)
-                end += timedelta(days=1)
+    def choose_daily_logged(groups):
+        picks, ok = _daily_impl(groups)
+        total = 1.0
 
-            req["start"] = max(earliest, start)
-            req["end"] = end
-            req["label"] = f"today ({_h12(DAILY_FROM_HOUR)} to {_h12(DAILY_TO_HOUR)})"
-            req["exact_window"] = True  # never borrow games from other days
+        for c in picks:
+            total *= c.get("odd", 1.0)
 
-        return req
+        print(f"Daily 2 odds: {len(picks)} picks, total {total:.2f}")
+        return picks, ok
 
-    bot.parse_request = parse_request
+    st.choose_daily = choose_daily_logged

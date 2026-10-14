@@ -1892,57 +1892,45 @@ if smart_ticket is not None:
 
     bot.handle_text = handle_text
 
-    # ============================================================
-    # DAILY 2 ODDS FIX
+        # ============================================================
+    # DAILY 2 ODDS = GAMES FROM 9AM TO 8PM
     # Paste at the very end of your upgrade file, with the same 4-space indent
-    # (inside "if smart_ticket is not None:").
+    # (inside "if smart_ticket is not None:"), after the other patches.
     #
-    # Why it gave 1.90: the old code accepted anything from 1.90 to 2.40 and
-    # picked the combination with the best chance, which usually sat at the
-    # bottom (1.90). This version only accepts 2.00 or higher and stays
-    # as close to 2.00 as it can.
+    # Why it showed Thursday midnight games: with no time word, the request
+    # defaulted to "next 24 hours", which runs past midnight into tomorrow.
+    # This uses only games from 9am to 8pm (local time) and
+    # never borrows games from another day.
     # ============================================================
 
-    DAILY_WINDOWS = ((2.00, 2.20), (2.00, 2.50))  # tried in this order, never below 2.00
+    DAILY_FROM_HOUR = 9  # Daily 2 odds uses games from 9am ...
+    DAILY_TO_HOUR = 20  # ... to 8pm
 
-    def choose_daily(groups):
-        import itertools
+    _prev_parse_request = bot.parse_request
 
-        best = []
+    def parse_request(text):
+        req = _prev_parse_request(text)
+        low = str(text or "").lower()
 
-        for group in groups:
-            usable = [c for c in group if c.get("p", 0) > 0]
+        if st.DAILY_RE.search(low) and not _has_window(low) and not DAYS_RE.search(low):
+            now = datetime.now(timezone.utc)
+            local_now = now.astimezone(bot.LOCAL_TZ)
+            midnight = local_now.replace(hour=0, minute=0, second=0, microsecond=0)
+            earliest = now + timedelta(hours=_buffer_hours())
 
-            if usable:
-                best.append(max(usable, key=lambda c: c.get("p", 0)))
+            start = midnight + timedelta(hours=DAILY_FROM_HOUR)  # 9am
+            end = midnight + timedelta(hours=DAILY_TO_HOUR)  # 8pm
 
-        best.sort(key=lambda c: c.get("p", 0), reverse=True)
-        pool = [c for c in best if c.get("p", 0) >= DAILY_MIN_P][:30]  # strong legs only
+            if end <= earliest:
+                # Today's 9am to 8pm window is over: use tomorrow's.
+                start += timedelta(days=1)
+                end += timedelta(days=1)
 
-        for low, high in DAILY_WINDOWS:
-            top = None
-            top_chance = 0.0
+            req["start"] = max(earliest, start)
+            req["end"] = end
+            req["label"] = f"today ({_h12(DAILY_FROM_HOUR)} to {_h12(DAILY_TO_HOUR)})"
+            req["exact_window"] = True  # never borrow games from other days
 
-            for size in (2, 3):
-                for combo in itertools.combinations(pool, size):
-                    total = 1.0
-                    chance = 1.0
+        return req
 
-                    for candidate in combo:
-                        total *= candidate["odd"]
-                        chance *= candidate["p"]
-
-                    if not (low <= total <= high):
-                        continue
-
-                    if chance > top_chance:
-                        top = combo
-                        top_chance = chance
-
-            if top:
-                return list(top), True
-
-        return [], False
-
-    st.choose_daily = choose_daily
-    st.DAILY_LOW = 2.00
+    bot.parse_request = parse_request

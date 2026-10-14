@@ -1904,3 +1904,148 @@ if smart_ticket is not None:
         return _prev_handle_text(chat_id, text)
 
     bot.handle_text = handle_text
+
+    # ============================================================
+    # DIFFERENT MATCHES IN EVERY TICKET + NO U19 / U21 (youth) GAMES
+    # Paste at the very END of upgrades_full.py (same 4-space indent,
+    # inside "if smart_ticket is not None:").
+    # ============================================================
+
+    # ---- 1) No youth games (U15 to U23). Women's leagues stay allowed. ----
+    BLOCK_YOUTH = True  # set to False to allow youth games again
+
+    _YOUTH_PART = r"\bu[-\s]?(?:1[5-9]|2[0-3])\b|youth"
+    _YOUTH_RE = re.compile(_YOUTH_PART, re.I)
+
+    if BLOCK_YOUTH:
+        st.SKIP_LEAGUE_RE = re.compile(r"friendl|" + _YOUTH_PART, re.I)
+        st._UNRELIABLE_RE = re.compile(r"friendl|reserve|academy|development|" + _YOUTH_PART, re.I)
+
+    def _is_youth(event):
+        category = ((event.get("sport") or {}).get("category") or {})
+        league = str((category.get("tournament") or {}).get("name") or "")
+        text = f"{league} {event.get('homeTeamName') or ''} {event.get('awayTeamName') or ''}"
+        return bool(_YOUTH_RE.search(text))
+
+    _games_for_with_youth = _games_for
+
+    def _games_for(text):
+        # the "are there any ... games?" answers and lists skip youth games too
+        req, rows = _games_for_with_youth(text)
+
+        if BLOCK_YOUTH:
+            rows = [r for r in rows if not _is_youth(r[1])]
+
+        return req, rows
+
+    # ---- 2) Different matches in every ticket ----
+    AVOID_REPEAT = True  # False = tickets may reuse matches again
+    USED_HOURS = 24  # a match used in a ticket is not used again for this many hours
+
+    _USED = {}  # chat_id -> {event_id: time used}
+    _USED_LOCK = threading.Lock()
+    _ACTIVE = {"chat": None}
+
+    def _used_ids(chat_id):
+        cutoff = time.time() - USED_HOURS * 3600
+
+        with _USED_LOCK:
+            book = _USED.get(chat_id, {})
+
+            for key in [k for k, t in book.items() if t < cutoff]:
+                book.pop(key, None)
+
+            return set(book)
+
+    def _remember(chat_id, ids):
+        with _USED_LOCK:
+            book = _USED.setdefault(chat_id, {})
+            now = time.time()
+
+            for event_id in ids:
+                if event_id is not None:
+                    book[event_id] = now
+
+    _gather_before_repeat = st.gather
+
+    def gather(*args, **kwargs):
+        result = _gather_before_repeat(*args, **kwargs)
+
+        if not AVOID_REPEAT or kwargs.get("daily") or getattr(CTX, "is_daily", False):
+            return result
+
+        chat_id = getattr(CTX, "chat_id", None) or _ACTIVE["chat"]
+
+        if chat_id is None:
+            return result
+
+        try:
+            used = _used_ids(chat_id)
+
+            if not used:
+                return result
+
+            groups = [g for g in result[0] if g and g[0].get("event_id") not in used]
+            print(f"Different matches: {len(result[0]) - len(groups)} used match(es) skipped, {len(groups)} left")
+            return (groups,) + tuple(result[1:])
+        except Exception as exc:
+            print(f"Different-matches filter failed: {exc}")
+            return result
+
+    st.gather = gather
+
+    _build_before_repeat = st.build_ticket
+
+    def build_ticket(*args, **kwargs):
+        built = _build_before_repeat(*args, **kwargs)
+
+        try:
+            CTX.last_ids = [c.get("event_id") for c in (built.get("chosen") or [])]
+        except Exception:
+            pass
+
+        return built
+
+    st.build_ticket = build_ticket
+
+    _flow_before_repeat = bot.prediction_ticket_flow
+
+    def prediction_ticket_flow(chat_id, text, *args, **kwargs):
+        CTX.chat_id = chat_id
+        _ACTIVE["chat"] = chat_id
+        CTX.last_ids = []
+        CTX.is_daily = bool(st.DAILY_RE.search(str(text or "").lower()))
+
+        try:
+            return _flow_before_repeat(chat_id, text, *args, **kwargs)
+        finally:
+            try:
+                if AVOID_REPEAT and not CTX.is_daily and CTX.last_ids:
+                    _remember(chat_id, CTX.last_ids)
+            except Exception as exc:
+                print(f"Could not remember used matches: {exc}")
+
+            CTX.chat_id = None
+            CTX.is_daily = False
+            _ACTIVE["chat"] = None
+
+    bot.prediction_ticket_flow = prediction_ticket_flow
+
+    # Say "reset tickets" to let every match be used again.
+    RESET_RE = re.compile(r"^(reset|clear|forget)\b.*\b(tickets?|matches|used|picks)\b", re.I)
+
+    _text_before_repeat = bot.handle_text
+
+    def handle_text(chat_id, text):
+        if RESET_RE.match(str(text or "").strip()):
+            with _USED_LOCK:
+                _USED.pop(chat_id, None)
+
+            return bot.send_message(
+                chat_id,
+                "Done. I cleared the matches from your earlier tickets, so any match can be used again.",
+            )
+
+        return _text_before_repeat(chat_id, text)
+
+    bot.handle_text = handle_text

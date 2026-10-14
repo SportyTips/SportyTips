@@ -1891,3 +1891,58 @@ if smart_ticket is not None:
         return _prev_handle_text(chat_id, text)
 
     bot.handle_text = handle_text
+
+    # ============================================================
+    # DAILY 2 ODDS FIX
+    # Paste at the very end of your upgrade file, with the same 4-space indent
+    # (inside "if smart_ticket is not None:").
+    #
+    # Why it gave 1.90: the old code accepted anything from 1.90 to 2.40 and
+    # picked the combination with the best chance, which usually sat at the
+    # bottom (1.90). This version only accepts 2.00 or higher and stays
+    # as close to 2.00 as it can.
+    # ============================================================
+
+    DAILY_WINDOWS = ((2.00, 2.20), (2.00, 2.50))  # tried in this order, never below 2.00
+
+    def choose_daily(groups):
+        import itertools
+
+        best = []
+
+        for group in groups:
+            usable = [c for c in group if c.get("p", 0) > 0]
+
+            if usable:
+                best.append(max(usable, key=lambda c: c.get("p", 0)))
+
+        best.sort(key=lambda c: c.get("p", 0), reverse=True)
+        pool = [c for c in best if c.get("p", 0) >= DAILY_MIN_P][:30]  # strong legs only
+
+        for low, high in DAILY_WINDOWS:
+            top = None
+            top_chance = 0.0
+
+            for size in (2, 3):
+                for combo in itertools.combinations(pool, size):
+                    total = 1.0
+                    chance = 1.0
+
+                    for candidate in combo:
+                        total *= candidate["odd"]
+                        chance *= candidate["p"]
+
+                    if not (low <= total <= high):
+                        continue
+
+                    if chance > top_chance:
+                        top = combo
+                        top_chance = chance
+
+            if top:
+                return list(top), True
+
+        return [], False
+
+    st.choose_daily = choose_daily
+    st.DAILY_LOW = 2.00

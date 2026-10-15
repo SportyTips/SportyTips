@@ -12,10 +12,10 @@ have their own card ("European cups") where each cup can be chosen alone.
 4) STRAIGHT WIN (button and chat): ALL leagues. Only the Top leagues card is limited to the top leagues. Strong teams (55%+ chance to win): 1UP price
 1.20 to 1.32, 2UP price 1.30 to 1.50, never higher. Soonest games first, up to a week.
 Everywhere: no direct win (only 1UP / 2UP), no BTTS, no Over 2 / 2.5 goals.
-If the odds asked for cannot be reached, the ticket is topped up with "Home or Away" (12)
-picks where a draw is unlikely.
+Straight win is ONLY 1UP / 2UP (plus win either half when asked): no "Home or Away" (12) picks.
+If the odds cannot be reached, the ticket simply stops at the picks it found.
 4a) CHAT: "send today's straight win 30 odds" -> today's games first (until 8pm); if the odds
-cannot be reached, tomorrow's games are added. "send today's straight win and win either half"
+cannot be reached, the next day is added, then the next, up to SEARCH_DAYS. Same for "tomorrow". "send today's straight win and win either half"
 adds "win either half" picks next to the 1UP / 2UP picks.
 5) "weekend" now means Friday to Sunday.
 5a) MIXED TICKETS (all except Straight win): ONLY these picks - 1UP, 2UP, win
@@ -652,6 +652,11 @@ if smart_ticket is not None:
 
             req["start"], req["end"] = start, start + timedelta(days=1)
             req["label"] = "tomorrow (full day)"
+
+            if getattr(CTX, "straight_extend", False):
+                # straight win with odds: tomorrow first, then the next days if the odds are not reached
+                req["end"] = start + timedelta(days=SEARCH_DAYS - 1)
+                req["label"] = "tomorrow, then the next days if needed"
             req["exact_window"] = True
 
         elif WEEKDAYS_RE.search(low) and not DAYS_RE.search(low):
@@ -698,8 +703,8 @@ if smart_ticket is not None:
             if getattr(CTX, "straight_extend", False):
                 # "today's straight win 30 odds": look at today AND tomorrow. choose_straight uses
                 # today's games first and only adds tomorrow's if the odds cannot be reached.
-                req["start"], req["end"] = earliest, midnight + timedelta(days=2)
-                req["label"] = "today, then tomorrow if needed"
+                req["start"], req["end"] = earliest, midnight + timedelta(days=SEARCH_DAYS)
+                req["label"] = "today, then the next days if needed"
                 req["exact_window"] = True
             elif end > earliest:
                 req["start"], req["end"] = earliest, end
@@ -770,9 +775,7 @@ if smart_ticket is not None:
             except Exception as exc:
                 print(f"Straight win either-half picks failed: {exc}")
 
-        if getattr(CTX, "fallback", False):
-            out += fallback_fillers(event, markets)
-
+        # Straight win is ONLY 1UP / 2UP (and win either half when asked): no "Home or Away" (12) top-up.
         return out
 
     def choose_straight(groups, target, count):
@@ -794,14 +797,25 @@ if smart_ticket is not None:
             return candidate.get("p", 0) - SOONER_BONUS * days
 
         if getattr(CTX, "straight_extend", False):
-            # Today's games (until 8pm) come first. Tomorrow's games are only used
-            # when today's games cannot reach the odds that were asked for.
-            local_mid = now.astimezone(bot.LOCAL_TZ).replace(hour=0, minute=0, second=0, microsecond=0)
-            today_end = local_mid + timedelta(hours=TODAY_END_HOUR)
+            # Fill the ticket day by day: the first day's games come first, and the next day
+            # is only used when the odds asked for are not reached with the day before.
+            local_now = now.astimezone(bot.LOCAL_TZ)
+            local_today = local_now.date()
+            today_end = local_now.replace(hour=0, minute=0, second=0, microsecond=0) + timedelta(hours=TODAY_END_HOUR)
+
+            def day_key(candidate):
+                local_kick = candidate["kickoff"].astimezone(bot.LOCAL_TZ)
+                day = local_kick.date()
+
+                # "today" means until 8pm: later games count with tomorrow
+                if getattr(CTX, "straight_today", False) and day == local_today and candidate["kickoff"] > today_end:
+                    day = local_today + timedelta(days=1)
+
+                return day
 
             best.sort(key=lambda c: (
                 1 if c.get("filler") else 0,
-                0 if c["kickoff"] <= today_end else 1,
+                day_key(c),
                 -score(c),
             ))
         else:
@@ -857,6 +871,7 @@ if smart_ticket is not None:
                 and not built.get("reached")
                 and not kwargs.get("daily")
                 and not getattr(CTX, "corners", False)
+                and not getattr(CTX, "straight", False)  # straight win never gets 12 picks
             ):
                 CTX.fallback = True
 
@@ -2177,9 +2192,8 @@ if smart_ticket is not None:
         # "send today's straight win and win either half"
         CTX.straight_either = CTX.straight and bool(EITHER_RE.search(text))
         # "send today's straight win 30 odds": today first, tomorrow only if the odds are not reached
-        CTX.straight_extend = (
-            CTX.straight and bool(TODAY_ONLY_RE.search(text)) and bool(ODDS_RE.search(text))
-        )
+        CTX.straight_extend = CTX.straight and bool(ODDS_RE.search(text))
+        CTX.straight_today = CTX.straight and bool(TODAY_ONLY_RE.search(text))
 
         saved = None
 
@@ -2229,6 +2243,7 @@ if smart_ticket is not None:
             CTX.straight = False
             CTX.straight_either = False
             CTX.straight_extend = False
+            CTX.straight_today = False
             CTX.corners = False
             CTX.cups = None
 

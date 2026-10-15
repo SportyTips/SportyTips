@@ -18,9 +18,8 @@ If the odds cannot be reached, the ticket simply stops at the picks it found.
 cannot be reached, the next day is added, then the next, up to SEARCH_DAYS. Same for "tomorrow". "send today's straight win and win either half"
 adds "win either half" picks next to the 1UP / 2UP picks.
 5) "weekend" now means Friday to Sunday.
-5a) MIXED TICKETS (all except Straight win): ONLY these picks - 1UP, 2UP, win
-either half, Home / Away to score 0.5, Home or Away (12), 2nd half Over 0.5,
-Over 1.5 goals - and every pick must be strong (chance of at least STRONG_MIN_P).
+5a) ALL TICKETS use ONLY these picks - 1UP, 2UP and win either half (ONLY_UP_AND_EITHER_HALF = True).
+No goal bounds, no Home or Away (12), no team goals, no corners, no over/under goals.
 5b) NO CORNERS anywhere (NO_CORNERS = True) and NO "3 goals in a row" picks (NO_STREAK = True).
 Normal tickets also include individual team goals (Home / Away to score 0.5 or 1.5).
 6) Under every ticket the site says whether real football stats were used.
@@ -110,9 +109,9 @@ HOW TO SOUND (this overrides the STYLE rules above and the "ONE short line" rule
 
 NEW ABILITIES (these override anything above that says the bot cannot do them)
 - With SportyBet on, the bot builds tickets from SportyBet's own matches. It can reach big targets
-  (50 odds, 100 odds) and mixes only these strong picks: 1UP, 2UP, win either half, Home or Away to score 0.5,
-  Home or Away (12), 2nd half Over 0.5 and Over 1.5 goals. It does NOT use handicap, BTTS, Over 2.5 or
-  direct wins. It does NOT do corners and it does NOT do "3 goals in a row" picks: say so if asked.
+  (50 odds, 100 odds) and uses ONLY these picks: 1UP, 2UP and win either half. It does NOT use goal bounds,
+  corners, Home or Away (12), team goals, over/under goals, BTTS, handicap, direct wins or "3 goals in a row":
+  say so if asked.
 - It also builds straight-win tickets: "2UP win", "1UP win", "plain win" or "double chance", for home, away or both,
   for a number of games and/or total odds. For those, put the words 2up, 1up, plain win or double chance, plus
   home or away, in "request". Every pick is at least 1.30 odds.
@@ -162,6 +161,7 @@ except ImportError as exc:
 # ------------------------------------------------------------
 # SETTINGS YOU CAN CHANGE
 # ------------------------------------------------------------
+ONLY_UP_AND_EITHER_HALF = True  # True = EVERY ticket uses ONLY 1UP, 2UP and win either half (no goal bounds, 12, team goals, corners ...)
 NO_CORNERS = True  # True = corners (total and each team) are never used anywhere
 NO_STREAK = True  # True = "Any team to score 3+ goals in a row" is never used
 
@@ -171,13 +171,13 @@ EVENT_PAGES = 60  # how many pages of SportyBet matches to read (100 matches per
 # Memory safety (Render free plan has 512 MB)
 MAX_DETAIL = 70  # how many matches get their full list of markets read
 DETAIL_WORKERS = 6  # how many are read at the same time
-CACHE_LIMIT = 120  # how many matches are remembered in memory
+CACHE_LIMIT = 160  # how many matches are remembered in memory
 
 # Straight win button (1UP / 2UP, strong teams from the top leagues)
 STRAIGHT_LEGS = 10  # how many games to aim for
 STRAIGHT_MAX_LEGS = 30  # most picks a straight win ticket may have (30 odds needs about 12 to 15)
 STRAIGHT_MIN_P = 0.30  # the pick itself must have at least this chance after the checks
-STRAIGHT_DETAIL = 120  # for Straight win: how many matches get their 1UP / 2UP prices read
+STRAIGHT_DETAIL = 150  # for Straight win: how many matches get their 1UP / 2UP prices read
 STRAIGHT_STRONG_P = 0.55  # a team needs at least this chance to win (from SportyBet's prices)
 STRAIGHT_MAX_STRENGTH = 0.88  # teams stronger than this pay too little, so they are not read
 STRAIGHT_2UP_FROM_P = 0.60  # 55% to 59% -> 1UP. 60% and above -> 2UP (when its price fits)
@@ -872,6 +872,7 @@ if smart_ticket is not None:
                 and not kwargs.get("daily")
                 and not getattr(CTX, "corners", False)
                 and not getattr(CTX, "straight", False)  # straight win never gets 12 picks
+                and not ONLY_UP_AND_EITHER_HALF  # nothing else may be added
             ):
                 CTX.fallback = True
 
@@ -2037,13 +2038,29 @@ if smart_ticket is not None:
         except Exception:
             return base
 
+    if ONLY_UP_AND_EITHER_HALF:
+        _event_candidates_all = event_candidates
+
+        def event_candidates(event, markets):
+            got = _event_candidates_all(event, markets)
+            return [c for c in got if c.get("kind") in ("up", "either_half")]
+
+        # With only two kinds of picks, the ticket builder must not cap them.
+        for _kind in ("up", "either_half"):
+            st.KIND_CAP[_kind] = 1.0
+
     st.event_candidates = event_candidates
 
     if hasattr(st, "daily_candidates"):
         _orig_daily_candidates = st.daily_candidates
 
         def daily_candidates(event, markets):
-            return _only_line_corners(_orig_daily_candidates(event, markets))
+            got = _only_line_corners(_orig_daily_candidates(event, markets))
+
+            if ONLY_UP_AND_EITHER_HALF:
+                got = [c for c in got if c.get("kind") in ("up", "either_half")]
+
+            return got
 
         st.daily_candidates = daily_candidates
 
@@ -2074,6 +2091,9 @@ if smart_ticket is not None:
     if ALLOW_ALL_MARKETS:
         _ALLOWED_KINDS.update({"win", "btts", "over", "handicap", "dnb", "dc"})
         _BAD_LABEL = re.compile(r"\bunder \d|\bcards?\b", re.I)
+
+    if ONLY_UP_AND_EITHER_HALF:
+        _ALLOWED_KINDS = {"up", "either_half"}
 
     def _candidate_is_allowed(kind, label=""):
         k = str(kind or "").lower()
@@ -2185,6 +2205,7 @@ if smart_ticket is not None:
 
         CTX.football_note = None
         CTX.straight = bool(STRAIGHT_RE.search(text))
+        st.MAX_DETAIL_EVENTS = max(MAX_DETAIL, STRAIGHT_DETAIL) if CTX.straight else MAX_DETAIL
         CTX.cups = cups  # European cups: only the chosen cups
         CTX.top_leagues = bool(TOP_LEAGUES_RE.search(text)) and not cups  # straight win uses ALL leagues
         CTX.corners = wants_corners
@@ -2239,6 +2260,7 @@ if smart_ticket is not None:
                     f"Corner markets seen: {sorted(stats.get('names', []))[:12]}"
                 )
 
+            st.MAX_DETAIL_EVENTS = MAX_DETAIL
             CTX.top_leagues = False
             CTX.straight = False
             CTX.straight_either = False

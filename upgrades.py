@@ -639,6 +639,13 @@ if smart_ticket is not None:
             )
             req["exact_window"] = True
 
+            if getattr(CTX, "straight_extend", False):
+                # straight win with odds: this part of the day first, then the next days if the odds are not reached
+                CTX.straight_first_end = end
+                req["end"] = midnight + timedelta(days=SEARCH_DAYS + max(day, 0))
+                req["label"] += ", then the next days if needed"
+                req["exact_window"] = False
+
         elif (
             TOMORROW_RE.search(low)
             and not DAYS_RE.search(low)
@@ -657,6 +664,8 @@ if smart_ticket is not None:
                 # straight win with odds: tomorrow first, then the next days if the odds are not reached
                 req["end"] = start + timedelta(days=SEARCH_DAYS - 1)
                 req["label"] = "tomorrow, then the next days if needed"
+                req["exact_window"] = False
+                CTX.straight_first_end = start + timedelta(days=1)
             req["exact_window"] = True
 
         elif WEEKDAYS_RE.search(low) and not DAYS_RE.search(low):
@@ -705,6 +714,8 @@ if smart_ticket is not None:
                 # today's games first and only adds tomorrow's if the odds cannot be reached.
                 req["start"], req["end"] = earliest, midnight + timedelta(days=SEARCH_DAYS)
                 req["label"] = "today, then the next days if needed"
+                req["exact_window"] = False
+                CTX.straight_first_end = end
                 req["exact_window"] = True
             elif end > earliest:
                 req["start"], req["end"] = earliest, end
@@ -804,14 +815,13 @@ if smart_ticket is not None:
             today_end = local_now.replace(hour=0, minute=0, second=0, microsecond=0) + timedelta(hours=TODAY_END_HOUR)
 
             def day_key(candidate):
-                local_kick = candidate["kickoff"].astimezone(bot.LOCAL_TZ)
-                day = local_kick.date()
+                first_end = getattr(CTX, "straight_first_end", None)
 
-                # "today" means until 8pm: later games count with tomorrow
-                if getattr(CTX, "straight_today", False) and day == local_today and candidate["kickoff"] > today_end:
-                    day = local_today + timedelta(days=1)
+                # the window that was asked for (for example tonight) always comes first
+                if first_end is not None and candidate["kickoff"] <= first_end:
+                    return 0
 
-                return day
+                return candidate["kickoff"].astimezone(bot.LOCAL_TZ).date().toordinal()
 
             best.sort(key=lambda c: (
                 1 if c.get("filler") else 0,
@@ -2215,6 +2225,7 @@ if smart_ticket is not None:
         # "send today's straight win 30 odds": today first, tomorrow only if the odds are not reached
         CTX.straight_extend = CTX.straight and bool(ODDS_RE.search(text))
         CTX.straight_today = CTX.straight and bool(TODAY_ONLY_RE.search(text))
+        CTX.straight_first_end = None
 
         saved = None
 
@@ -2266,6 +2277,7 @@ if smart_ticket is not None:
             CTX.straight_either = False
             CTX.straight_extend = False
             CTX.straight_today = False
+            CTX.straight_first_end = None
             CTX.corners = False
             CTX.cups = None
 

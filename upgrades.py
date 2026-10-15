@@ -17,8 +17,7 @@ If the odds asked for cannot be reached, the ticket is topped up with corners (w
 apply) and "Home or Away" (12) picks where a draw is unlikely.
 5) "weekend" now means Friday to Sunday.
 5a) MIXED TICKETS (all except Straight win and Corners): ONLY these picks - 1UP, 2UP, win
-either half, Home / Away to score 0.5, corners (Over 7.5 + team corners), Home or Away (12),
-2nd half Home or Away (12), 2nd half Over 0.5, Over 1.5 goals - and every pick must be strong
+either half, Home / Away to score 0.5, Over 1.5 goals - and every pick must be strong
 (chance of at least STRONG_MIN_P).
 5b) CORNERS BUTTON: a ticket of corner picks from the 14 top leagues only. It uses
 total corners AND each team's corners (Home Over / Away Over). Normal tickets now also
@@ -110,9 +109,9 @@ HOW TO SOUND (this overrides the STYLE rules above and the "ONE short line" rule
 
 NEW ABILITIES (these override anything above that says the bot cannot do them)
 - With SportyBet on, the bot builds tickets from SportyBet's own matches. It can reach big targets
-  (50 odds, 100 odds) and mixes only these strong picks: 1UP, 2UP, win either half, Home or Away to score 0.5, corners
-  (Over 7.5 and team corners), Home or Away (12), 2nd half Home or Away (12), 2nd half Over 0.5 and
-  Over 1.5 goals. It does NOT use handicap, BTTS, Over 2.5 or direct wins. Never say it cannot do corners.
+  (50 odds, 100 odds) and mixes only these strong picks: 1UP, 2UP, win either half, Home or Away to score 0.5,
+  and Over 1.5 goals. It does NOT use handicap, BTTS, Over 2.5 or direct wins. The Corners button builds
+  corner tickets (Over 7.5 and team corners). Never say it cannot do corners.
 - It also builds straight-win tickets: "2UP win", "1UP win", "plain win" or "double chance", for home, away or both,
   for a number of games and/or total odds. For those, put the words 2up, 1up, plain win or double chance, plus
   home or away, in "request". Every pick is at least 1.30 odds.
@@ -190,8 +189,7 @@ FH_GOALS_MIN_ODD = 1.30  # "Over 0.5 goals (1st half)" must pay at least this mu
 DOUBLE12_SURE_DRAW = 0.24  # in normal tickets "Home or Away" (12) is used only when a draw is this unlikely
 
 # MIXED TICKETS (every ticket except Straight win and Corners): only these pick types, and only strong ones.
-# 1UP, 2UP, win either half, Home / Away to score 0.5, corners (Over 7.5 and team corners),
-# Home or Away (12), 2nd half Home or Away (12), 2nd half Over 0.5 goals, Over 1.5 goals.
+# 1UP, 2UP, win either half, Home / Away to score 0.5, Over 1.5 goals.
 STRONG_MIN_P = 0.66  # a pick needs at least this chance (from SportyBet's prices / football stats)
 SH_MIN_ODD = 1.15  # 2nd half picks pay at least this much
 
@@ -247,7 +245,7 @@ TEAM_GOALS_SHARE = 0.35  # at most this share of a ticket may be team-goal picks
 
 # Turn this on to let the ticket builder use every SportyBet market it knows
 # (direct win, BTTS, Over goals, handicap, draw no bet ...), still strong picks only.
-# Off = only the mixed-ticket picks listed above (1UP, 2UP, either half, corners ...).
+# Off = only the mixed-ticket picks listed above (1UP, 2UP, either half ...).
 ALLOW_ALL_MARKETS = False
 
 # EXTRA MARKETS: combos (GG or Over 2.5, Home / Away or GG, Home / Away or Draw & Over 1.5),
@@ -1977,25 +1975,16 @@ if smart_ticket is not None:
 
         st.daily_candidates = daily_candidates
 
-    # No direct win (only 1UP / 2UP), no BTTS, no Over 2 / 2.5 / 3.5 goals.
+    # Mixed tickets: ONLY 1UP / 2UP, win either half, Home / Away to score 0.5 and Over 1.5 goals.
+    # No direct win, no BTTS, no Over 2 / 2.5 / 3.5 goals. (The Corners button keeps its corner picks.)
     _orig_allowed = st._candidate_is_allowed
     _NOT_WANTED_LABEL = re.compile(r"both teams|over (?:[2-9]|[1-9]\d)(?:\.\d)? goals", re.I)
 
     _ALLOWED_KINDS = {
-        "up",  # 1UP / 2UP
+        "up",           # 1UP / 2UP
         "either_half",  # win either half
-        "team_goals",  # Home / Away to score 0.5
-        "corners",  # Over 7.5 corners and team corners
-        "dc12",  # Home or Away (12)
-        "over15",  # Over 1.5 goals
-        "sh_goals",  # 2nd half Over 0.5 goals
-        "combo",  # Home / Away or GG, Home / Away or Draw & Over 1.5
-        "halves",  # both halves Over / Under 1.5 (yes / no)
-        "fh_ft",  # 1st half Over 0.5 & full-time Over 1.5
-        "draw10",  # draw after 10 minutes
-        "either_half",  # Home / Away team to win either half
-        "streak",  # Any team to score 3+ goals in a row
-        "bounds",  # goal bounds
+        "team_goals",   # Home / Away to score 0.5
+        "over15",       # Over 1.5 goals
     }
     _BAD_LABEL = re.compile(r"handicap|both teams|\bunder \d|\bcards?\b", re.I)
 
@@ -2006,6 +1995,9 @@ if smart_ticket is not None:
     def _candidate_is_allowed(kind, label=""):
         k = str(kind or "").lower()
         low = str(label or "").lower()
+
+        if k == "corners" and getattr(CTX, "corners", False):
+            return True  # Corners button only
 
         if k not in _ALLOWED_KINDS:
             return False  # no direct win, BTTS, handicap, Over 2 / 2.5, Under, double chance, ...
@@ -2374,7 +2366,7 @@ if smart_ticket is not None:
 
         if message and not message.startswith("/"):
 
-            # 1) Answer to "list or build?"  (the question stays open for 15 minutes)
+            # 1) Answer to "list or build?" (the question stays open for 15 minutes)
             with PENDING_LOCK:
                 pend = PENDING.get(chat_id)
 
@@ -2472,9 +2464,9 @@ if smart_ticket is not None:
         return req, rows
 
     # ---- 2) Different matches in every ticket (never starves a big ticket) ----
-    AVOID_REPEAT = True   # False = tickets may reuse matches again
-    USED_HOURS = 1        # a match used in a ticket counts as "used" for this many hours
-    MIN_FRESH = 30        # if fewer unused matches than this, the oldest used ones are added back
+    AVOID_REPEAT = True  # False = tickets may reuse matches again
+    USED_HOURS = 1  # a match used in a ticket counts as "used" for this many hours
+    MIN_FRESH = 30  # if fewer unused matches than this, the oldest used ones are added back
 
     _USED = {}  # chat_id -> {event_id: time used}
     _USED_LOCK = threading.Lock()
@@ -2585,20 +2577,4 @@ if smart_ticket is not None:
     bot.prediction_ticket_flow = prediction_ticket_flow
 
     # Say "reset tickets" to let every match be used again.
-    RESET_RE = re.compile(r"^(reset|clear|forget)\b.*\b(tickets?|matches|used|picks)\b", re.I)
-
-    _text_before_repeat = bot.handle_text
-
-    def handle_text(chat_id, text):
-        if RESET_RE.match(str(text or "").strip()):
-            with _USED_LOCK:
-                _USED.pop(chat_id, None)
-
-            return bot.send_message(
-                chat_id,
-                "Done. I cleared the matches from your earlier tickets, so any match can be used again.",
-            )
-
-        return _text_before_repeat(chat_id, text)
-
-    bot.handle_text = handle_text
+    RESET_RE = re.compile(r"^(reset|clear|forget)\b.*\b(tickets?|matches|used|picks)\b", re

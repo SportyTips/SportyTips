@@ -9,7 +9,7 @@
 predicted ticket from the 14 top leagues. "Top leagues games this week" lists every
 game instead. The Champions / Europa / Conference League are NOT in Top leagues: they
 have their own card ("European cups") where each cup can be chosen alone.
-4) STRAIGHT WIN BUTTON: top leagues only. Strong teams (55%+ chance to win): 1UP price
+4) STRAIGHT WIN (button and chat): ALL leagues. Only the Top leagues card is limited to the top leagues. Strong teams (55%+ chance to win): 1UP price
 1.20 to 1.32, 2UP price 1.30 to 1.50, never higher. Soonest games first, up to a week.
 Everywhere: no direct win (only 1UP / 2UP), no BTTS, no Over 2 / 2.5 goals.
 If the odds asked for cannot be reached, the ticket is topped up with "Home or Away" (12)
@@ -175,8 +175,9 @@ CACHE_LIMIT = 120  # how many matches are remembered in memory
 
 # Straight win button (1UP / 2UP, strong teams from the top leagues)
 STRAIGHT_LEGS = 10  # how many games to aim for
+STRAIGHT_MAX_LEGS = 30  # most picks a straight win ticket may have (30 odds needs about 12 to 15)
 STRAIGHT_MIN_P = 0.30  # the pick itself must have at least this chance after the checks
-STRAIGHT_DETAIL = 90  # for Straight win: how many matches get their 1UP / 2UP prices read
+STRAIGHT_DETAIL = 120  # for Straight win: how many matches get their 1UP / 2UP prices read
 STRAIGHT_STRONG_P = 0.55  # a team needs at least this chance to win (from SportyBet's prices)
 STRAIGHT_MAX_STRENGTH = 0.88  # teams stronger than this pay too little, so they are not read
 STRAIGHT_2UP_FROM_P = 0.60  # 55% to 59% -> 1UP. 60% and above -> 2UP (when its price fits)
@@ -832,6 +833,7 @@ if smart_ticket is not None:
     st.choose_straight = choose_straight
     st.STRAIGHT_DEFAULT_LEGS = STRAIGHT_LEGS
     st.STRAIGHT_MIN_P = STRAIGHT_MIN_P
+    st.MAX_LEGS = max(getattr(st, "MAX_LEGS", 0), STRAIGHT_MAX_LEGS)  # never lower than before
 
     # ---- Remember how many matches really got football stats (shown under the ticket) ----
     _orig_build_ticket = st.build_ticket
@@ -1017,14 +1019,22 @@ if smart_ticket is not None:
 
         band = []
 
+        # "win either half" is priced by its own odds, so weaker favourites can be read too.
+        floor = 0.45 if getattr(CTX, "straight_either", False) else STRAIGHT_STRONG_P
+
         for event in events:
             try:
                 strength = st.favourite_strength(event)
             except Exception:
                 continue
 
-            if STRAIGHT_STRONG_P <= strength <= STRAIGHT_MAX_STRENGTH:
+            if floor <= strength <= STRAIGHT_MAX_STRENGTH:
                 band.append((strength, event))
+
+        if getattr(CTX, "straight_extend", False):
+            # "today's straight win 30 odds": read today's games first, then tomorrow's.
+            band.sort(key=lambda item: item[1].get("estimateStartTime") or 0)
+            return [event for _, event in band[:STRAIGHT_DETAIL]]
 
         band.sort(key=lambda item: -item[0])
 
@@ -2161,7 +2171,7 @@ if smart_ticket is not None:
         CTX.football_note = None
         CTX.straight = bool(STRAIGHT_RE.search(text))
         CTX.cups = cups  # European cups: only the chosen cups
-        CTX.top_leagues = (bool(TOP_LEAGUES_RE.search(text)) or CTX.straight) and not cups
+        CTX.top_leagues = bool(TOP_LEAGUES_RE.search(text)) and not cups  # straight win uses ALL leagues
         CTX.corners = wants_corners
 
         # "send today's straight win and win either half"

@@ -184,6 +184,9 @@ CACHE_LIMIT = 160  # how many matches are remembered in memory
 
 # Straight win button (1UP / 2UP, strong teams from the top leagues)
 STRAIGHT_LEGS = 10  # how many games to aim for
+ONLY_BAND_MIN = 0.50  # normal tickets (1UP / 2UP only): read the matches whose favourite has this chance to win ...
+ONLY_BAND_MAX = 0.80  # ... up to this (stronger favourites pay less than 1.20 for 1UP)
+DETAIL_SECONDS_WIDE = 80  # seconds allowed to read all those matches
 STRAIGHT_MAX_LEGS = 30  # most picks a straight win ticket may have (30 odds needs about 12 to 15)
 STRAIGHT_MIN_P = 0.30  # the pick itself must have at least this chance after the checks
 STRAIGHT_DETAIL = 150  # for Straight win: how many matches get their 1UP / 2UP prices read
@@ -517,6 +520,7 @@ if smart_ticket is not None:
 
     smart_ticket.MAX_DETAIL_EVENTS = MAX_DETAIL
     smart_ticket.DETAIL_WORKERS = DETAIL_WORKERS
+    _DETAIL_SECONDS_DEFAULT = getattr(smart_ticket, "DETAIL_SECONDS", 40)
 
     # Individual team goals show up in more tickets.
     smart_ticket.KIND_BONUS["team_goals"] = max(smart_ticket.KIND_BONUS.get("team_goals", 0), TEAM_GOALS_BONUS)
@@ -1095,6 +1099,27 @@ if smart_ticket is not None:
     # The 1UP / 2UP prices only exist in each match's full list of markets, and only
     # a limited number of matches can be read. Straight win needs teams with a 55% to
     # 85% chance to win (the strongest teams pay too little), spread across the days.
+    def _band_order(events, low, high, limit):
+        """Read the matches that can really have a 1UP / 2UP pick, spread over the whole band."""
+        band = []
+
+        for event in events:
+            try:
+                strength = st.favourite_strength(event)
+            except Exception:
+                continue
+
+            if low <= strength <= high:
+                band.append((strength, event))
+
+        band.sort(key=lambda item: -item[0])
+
+        if len(band) <= limit:
+            return [event for _, event in band]
+
+        step = len(band) / limit
+        return [band[int(i * step)][1] for i in range(limit)]
+
     _orig_detail_order = st._detail_order
 
     def _detail_order(events):
@@ -1105,6 +1130,11 @@ if smart_ticket is not None:
             return ordered[:CORNERS_DETAIL]
 
         if not getattr(CTX, "straight", False):
+            if ONLY_UP_AND_EITHER_HALF and not _daily_now():
+                # 1UP / 2UP prices only exist in each match's full list of markets,
+                # so read the matches that can have them (not just 70 random ones).
+                return _band_order(events, ONLY_BAND_MIN, ONLY_BAND_MAX, STRAIGHT_DETAIL)
+
             return _orig_detail_order(events)
 
         band = []
@@ -2358,7 +2388,11 @@ if smart_ticket is not None:
 
         CTX.football_note = None
         CTX.straight = bool(STRAIGHT_RE.search(text))
-        st.MAX_DETAIL_EVENTS = max(MAX_DETAIL, STRAIGHT_DETAIL) if CTX.straight else MAX_DETAIL
+        _wide = CTX.straight or (
+            ONLY_UP_AND_EITHER_HALF and not st.DAILY_RE.search(str(text or "").lower())
+        )
+        st.MAX_DETAIL_EVENTS = max(MAX_DETAIL, STRAIGHT_DETAIL) if _wide else MAX_DETAIL
+        st.DETAIL_SECONDS = DETAIL_SECONDS_WIDE if _wide else _DETAIL_SECONDS_DEFAULT
         CTX.cups = cups  # European cups: only the chosen cups
         CTX.top_leagues = bool(TOP_LEAGUES_RE.search(text)) and not cups  # straight win uses ALL leagues
         CTX.corners = wants_corners
@@ -2415,6 +2449,7 @@ if smart_ticket is not None:
                 )
 
             st.MAX_DETAIL_EVENTS = MAX_DETAIL
+            st.DETAIL_SECONDS = _DETAIL_SECONDS_DEFAULT
             CTX.top_leagues = False
             CTX.straight = False
             CTX.straight_either = False

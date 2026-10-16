@@ -164,6 +164,8 @@ except ImportError as exc:
 ONLY_UP_AND_EITHER_HALF = True  # True = EVERY ticket uses ONLY 1UP, 2UP and win either half (no goal bounds, 12, team goals, corners ...)
 # DAILY 2 ODDS is the one exception: it may also use these safe picks (home / away to score 0.5, Home or Away (12) ...)
 DAILY_KINDS = {"up", "either_half", "team_goals", "dc12", "over15", "sh_goals"}
+DAILY_MAIN_KINDS = {"up", "team_goals", "either_half"}  # Daily 2 odds uses these first: 1UP / 2UP, Home / Away to score 0.5, win either half
+# "Home or Away" (12) and the other safe picks are only added when the main picks cannot reach 2.00 odds.
 NO_CORNERS = True  # True = corners (total and each team) are never used anywhere
 NO_STREAK = True  # True = "Any team to score 3+ goals in a row" is never used
 
@@ -2279,43 +2281,54 @@ if smart_ticket is not None:
     import itertools as _itertools
 
     def choose_daily(groups):
-        best = []
+        def pool_for(kinds):
+            best = []
 
-        for group in groups:
-            usable = [c for c in group if c.get("p", 0) > 0]
+            for group in groups:
+                usable = [c for c in group if c.get("p", 0) > 0 and (kinds is None or c.get("kind") in kinds)]
 
-            if usable:
-                best.append(max(usable, key=lambda c: c.get("p", 0)))
+                if usable:
+                    best.append(max(usable, key=lambda c: c.get("p", 0)))
 
-        best.sort(key=lambda c: c.get("p", 0), reverse=True)
+            best.sort(key=lambda c: c.get("p", 0), reverse=True)
+            return best[:25]
 
-        pool = best[:25]
+        # Step 1: only 1UP / 2UP, Home / Away to score 0.5 and win either half.
+        # Step 2 (only if step 1 cannot reach 2.00): Home or Away (12) and the other safe picks join,
+        # and the combination with the FEWEST 12 picks wins.
+        for label, kinds in (("main picks", DAILY_MAIN_KINDS), ("main picks + 12", None)):
+            pool = pool_for(kinds)
 
-        for low, high in ((2.00, 2.20), (2.00, 2.50)):  # never below 2.00
-            top = None
-            top_chance = 0.0
+            for low, high in ((2.00, 2.20), (2.00, 2.50)):  # never below 2.00
+                top = None
+                top_key = None
 
-            for size in (2, 3, 4):
-                for combo in _itertools.combinations(pool, size):
-                    total = 1.0
-                    chance = 1.0
+                for size in (2, 3, 4):
+                    for combo in _itertools.combinations(pool, size):
+                        total = 1.0
+                        chance = 1.0
+                        others = 0
 
-                    for candidate in combo:
-                        total *= candidate["odd"]
-                        chance *= candidate["p"]
+                        for candidate in combo:
+                            total *= candidate["odd"]
+                            chance *= candidate["p"]
 
-                    if not (low <= total <= high):
-                        continue
+                            if candidate.get("kind") not in DAILY_MAIN_KINDS:
+                                others += 1
 
-                    if chance > top_chance:
-                        top = combo
-                        top_chance = chance
+                        if not (low <= total <= high):
+                            continue
 
-            if top:
-                print(f"Daily 2 odds: {len(top)} picks chosen (window {low:.2f}-{high:.2f})")
-                return list(top), True
+                        key = (-others, chance)
 
-        print(f"Daily 2 odds: no combination of 2.00 or more found ({len(pool)} matches had picks)")
+                        if top_key is None or key > top_key:
+                            top, top_key = combo, key
+
+                if top:
+                    print(f"Daily 2 odds: {len(top)} picks chosen from {label} (window {low:.2f}-{high:.2f})")
+                    return list(top), True
+
+        print("Daily 2 odds: no combination of 2.00 or more found")
         return [], False
 
     st.choose_daily = choose_daily

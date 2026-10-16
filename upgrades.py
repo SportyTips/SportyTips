@@ -18,7 +18,7 @@ If the odds cannot be reached, the ticket simply stops at the picks it found.
 cannot be reached, the next day is added, then the next, up to SEARCH_DAYS. Same for "tomorrow". "send today's straight win and win either half"
 adds "win either half" picks next to the 1UP / 2UP picks.
 5) "weekend" now means Friday to Sunday.
-5a) ALL TICKETS use ONLY these picks - 1UP, 2UP and win either half (ONLY_UP_AND_EITHER_HALF = True).
+5a) ALL TICKETS use ONLY 1UP and 2UP (win either half is off: NO_EITHER_HALF = True).
 No goal bounds, no Home or Away (12), no team goals, no corners, no over/under goals.
 5b) NO CORNERS anywhere (NO_CORNERS = True) and NO "3 goals in a row" picks (NO_STREAK = True).
 Normal tickets also include individual team goals (Home / Away to score 0.5 or 1.5).
@@ -109,15 +109,15 @@ HOW TO SOUND (this overrides the STYLE rules above and the "ONE short line" rule
 
 NEW ABILITIES (these override anything above that says the bot cannot do them)
 - With SportyBet on, the bot builds tickets from SportyBet's own matches. It can reach big targets
-  (50 odds, 100 odds) and uses ONLY these picks: 1UP, 2UP and win either half. It does NOT use goal bounds,
+  (50 odds, 100 odds) and uses ONLY these picks: 1UP and 2UP. It does NOT use win either half, goal bounds,
   corners, Home or Away (12), team goals, over/under goals, BTTS, handicap, direct wins or "3 goals in a row":
   say so if asked.
 - It also builds straight-win tickets: "2UP win", "1UP win", "plain win" or "double chance", for home, away or both,
   for a number of games and/or total odds. For those, put the words 2up, 1up, plain win or double chance, plus
   home or away, in "request". Every pick is at least 1.30 odds.
 - "Today's straight win 30 odds" uses today's games first and adds tomorrow's only if 30 odds cannot be reached.
-  "Straight win and win either half" mixes 1UP / 2UP picks with "win either half" picks. Keep the words
-  "straight win", "today", the odds number and "either half" EXACTLY in "request".
+  Straight win is only 1UP / 2UP: it does NOT do "win either half". Keep the words
+  "straight win", "today" and the odds number EXACTLY in "request".
 - It studies each team's last 5 games and head-to-head record, for as many matches as the API plan allows.
 - It can look at up to 7 days. A 100 odds ticket needs around 15 to 25 picks, so tell the user honestly
   that big odds win rarely even with strong picks.
@@ -161,11 +161,16 @@ except ImportError as exc:
 # ------------------------------------------------------------
 # SETTINGS YOU CAN CHANGE
 # ------------------------------------------------------------
+NO_EITHER_HALF = True  # True = "win either half" is never used anywhere (tickets, straight win, Daily 2 odds)
+ONLY_KINDS = ("up",) if NO_EITHER_HALF else ("up", "either_half")  # what ONLY_UP_AND_EITHER_HALF allows
 ONLY_UP_AND_EITHER_HALF = True  # True = EVERY ticket uses ONLY 1UP, 2UP and win either half (no goal bounds, 12, team goals, corners ...)
 # DAILY 2 ODDS is the one exception: it may also use these safe picks (home / away to score 0.5, Home or Away (12) ...)
 DAILY_KINDS = {"up", "either_half", "team_goals", "dc12", "over15", "sh_goals"}
 DAILY_MAIN_KINDS = {"up", "team_goals", "either_half"}  # Daily 2 odds uses these first: 1UP / 2UP, Home / Away to score 0.5, win either half
 # "Home or Away" (12) and the other safe picks are only added when the main picks cannot reach 2.00 odds.
+if NO_EITHER_HALF:
+    DAILY_KINDS.discard("either_half")
+    DAILY_MAIN_KINDS.discard("either_half")
 NO_CORNERS = True  # True = corners (total and each team) are never used anywhere
 NO_STREAK = True  # True = "Any team to score 3+ goals in a row" is never used
 
@@ -1994,6 +1999,9 @@ if smart_ticket is not None:
 
     def either_half_candidates(event, markets, existing, tight):
         """Home team / Away team to win either half."""
+        if NO_EITHER_HALF:
+            return []  # win either half is switched off
+
         if tight:
             return []  # tight games: no win-based picks
 
@@ -2117,7 +2125,7 @@ if smart_ticket is not None:
 
         def event_candidates(event, markets):
             got = _event_candidates_all(event, markets)
-            kinds = DAILY_KINDS if _daily_now() else ("up", "either_half")
+            kinds = DAILY_KINDS if _daily_now() else ONLY_KINDS
             return [c for c in got if c.get("kind") in kinds]
 
         # With only two kinds of picks, the ticket builder must not cap them.
@@ -2178,11 +2186,14 @@ if smart_ticket is not None:
         _BAD_LABEL = re.compile(r"\bunder \d|\bcards?\b", re.I)
 
     if ONLY_UP_AND_EITHER_HALF:
-        _ALLOWED_KINDS = {"up", "either_half"}
+        _ALLOWED_KINDS = set(ONLY_KINDS)
 
     def _candidate_is_allowed(kind, label=""):
         k = str(kind or "").lower()
         low = str(label or "").lower()
+
+        if NO_EITHER_HALF and k == "either_half":
+            return False  # win either half is switched off
 
         allowed = (_ALLOWED_KINDS | DAILY_KINDS) if _daily_now() else _ALLOWED_KINDS
 
@@ -2353,7 +2364,7 @@ if smart_ticket is not None:
         CTX.corners = wants_corners
 
         # "send today's straight win and win either half"
-        CTX.straight_either = CTX.straight and bool(EITHER_RE.search(text))
+        CTX.straight_either = CTX.straight and bool(EITHER_RE.search(text)) and not NO_EITHER_HALF
         # "send today's straight win 30 odds": today first, tomorrow only if the odds are not reached
         CTX.straight_extend = CTX.straight and bool(ODDS_RE.search(text))
         CTX.straight_today = CTX.straight and bool(TODAY_ONLY_RE.search(text))

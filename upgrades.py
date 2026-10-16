@@ -2709,6 +2709,7 @@ if smart_ticket is not None:
         CTX.is_daily = bool(st.DAILY_RE.search(str(text or "").lower()))
         CTX.daily_relax = False
         _ACTIVE["daily"] = CTX.is_daily
+        print(f"Ticket request: {str(text or '')!r} | daily={CTX.is_daily}")
 
         try:
             return _flow_before_repeat(chat_id, text, *args, **kwargs)
@@ -2750,3 +2751,11 @@ if smart_ticket is not None:
         return _text_before_repeat(chat_id, text)
 
     bot.handle_text = handle_text
+
+
+print(
+    "OK: upgrades.py loaded "
+    f"(only 1UP/2UP/either-half={ONLY_UP_AND_EITHER_HALF}, no corners={NO_CORNERS}, "
+    f"daily picks={sorted(DAILY_KINDS)}, "
+    f"daily_candidates found={hasattr(smart_ticket, 'daily_candidates') if smart_ticket else None})"
+)

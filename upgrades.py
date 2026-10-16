@@ -207,6 +207,7 @@ SH_MIN_ODD = 1.15  # 2nd half picks pay at least this much
 # Stricter strength for the Top leagues / European cups buttons, and for Daily 2 odds.
 # (Without football data a pick's chance is about 0.95 / odds, so 0.70 means odds up to about 1.35.)
 STRONG_MIN_P_TOP = STRONG_MIN_P  # Top leagues / cups: same strength as chat (raise it only if you want stricter)
+DAILY_DAYS = 3  # Daily 2 odds looks at today's 9am-8pm games first, then tomorrow's, then the day after
 DAILY_RELAX = 0.08  # if Daily 2 odds finds nothing, it tries once more with the strength bar this much lower
 DAILY_MIN_P = 0.70  # Daily 2 odds: strong picks only (lower to 0.70 if it finds nothing)
 
@@ -905,17 +906,55 @@ if smart_ticket is not None:
             print(f"Top-up with 12 picks failed: {exc}")
 
         try:
-            if kwargs.get("daily") and not built.get("chosen") and not getattr(CTX, "daily_relax", False):
-                print("Daily 2 odds found nothing: trying again with a slightly lower strength bar")
-                CTX.daily_relax = True
+            if kwargs.get("daily") and not built.get("chosen"):
+                # Nothing safe in today's 9am-8pm games: first a slightly lower strength bar,
+                # then tomorrow's games (9am-8pm), then the day after.
+                print("Daily 2 odds found nothing: trying a lower strength bar and the next days")
 
-                try:
-                    retry = _orig_build_ticket(*args, **kwargs)
-                finally:
-                    CTX.daily_relax = False
+                base_req = args[1] if len(args) > 1 else kwargs.get("req")
+                local_now = datetime.now(timezone.utc).astimezone(bot.LOCAL_TZ)
+                midnight = local_now.replace(hour=0, minute=0, second=0, microsecond=0)
+                found = None
+                found_day = 0
 
-                if retry.get("chosen"):
-                    built = retry
+                for day in range(0, DAILY_DAYS):
+                    for relaxed in ((True,) if day == 0 else (False, True)):
+                        req2 = dict(base_req)
+
+                        if day:
+                            req2["start"] = midnight + timedelta(days=day, hours=st.DAILY_FROM_HOUR)
+                            req2["end"] = midnight + timedelta(days=day, hours=st.DAILY_TO_HOUR)
+
+                        new_args, new_kwargs = list(args), dict(kwargs)
+
+                        if len(new_args) > 1:
+                            new_args[1] = req2
+                        else:
+                            new_kwargs["req"] = req2
+
+                        CTX.daily_relax = relaxed
+
+                        try:
+                            trial = _orig_build_ticket(*new_args, **new_kwargs)
+                        finally:
+                            CTX.daily_relax = False
+
+                        if trial.get("chosen"):
+                            found, found_day = trial, day
+                            break
+
+                    if found:
+                        break
+
+                if found:
+                    if found_day:
+                        when = (midnight + timedelta(days=found_day)).strftime("%A")
+                        found["note"] = (
+                            (found.get("note") or "")
+                            + f" Today's games had no safe combination, so these picks are from {when}."
+                        ).strip()
+
+                    built = found
         except Exception as exc:
             print(f"Daily 2 odds second try failed: {exc}")
 
@@ -2236,6 +2275,50 @@ if smart_ticket is not None:
         return _orig_reason_for(candidate)
 
     st._reason_for = _reason_for
+
+    import itertools as _itertools
+
+    def choose_daily(groups):
+        best = []
+
+        for group in groups:
+            usable = [c for c in group if c.get("p", 0) > 0]
+
+            if usable:
+                best.append(max(usable, key=lambda c: c.get("p", 0)))
+
+        best.sort(key=lambda c: c.get("p", 0), reverse=True)
+
+        pool = best[:25]
+
+        for low, high in ((2.00, 2.20), (2.00, 2.50)):  # never below 2.00
+            top = None
+            top_chance = 0.0
+
+            for size in (2, 3, 4):
+                for combo in _itertools.combinations(pool, size):
+                    total = 1.0
+                    chance = 1.0
+
+                    for candidate in combo:
+                        total *= candidate["odd"]
+                        chance *= candidate["p"]
+
+                    if not (low <= total <= high):
+                        continue
+
+                    if chance > top_chance:
+                        top = combo
+                        top_chance = chance
+
+            if top:
+                print(f"Daily 2 odds: {len(top)} picks chosen (window {low:.2f}-{high:.2f})")
+                return list(top), True
+
+        print(f"Daily 2 odds: no combination of 2.00 or more found ({len(pool)} matches had picks)")
+        return [], False
+
+    st.choose_daily = choose_daily
 
     # ---- Entry points ----
     _orig_ticket_flow = bot.prediction_ticket_flow

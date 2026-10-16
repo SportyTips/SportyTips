@@ -207,6 +207,7 @@ SH_MIN_ODD = 1.15  # 2nd half picks pay at least this much
 # Stricter strength for the Top leagues / European cups buttons, and for Daily 2 odds.
 # (Without football data a pick's chance is about 0.95 / odds, so 0.70 means odds up to about 1.35.)
 STRONG_MIN_P_TOP = STRONG_MIN_P  # Top leagues / cups: same strength as chat (raise it only if you want stricter)
+DAILY_RELAX = 0.08  # if Daily 2 odds finds nothing, it tries once more with the strength bar this much lower
 DAILY_MIN_P = 0.70  # Daily 2 odds: strong picks only (lower to 0.70 if it finds nothing)
 
 # Parts of the day (local time). Hours past 24 mean the next morning.
@@ -904,6 +905,21 @@ if smart_ticket is not None:
             print(f"Top-up with 12 picks failed: {exc}")
 
         try:
+            if kwargs.get("daily") and not built.get("chosen") and not getattr(CTX, "daily_relax", False):
+                print("Daily 2 odds found nothing: trying again with a slightly lower strength bar")
+                CTX.daily_relax = True
+
+                try:
+                    retry = _orig_build_ticket(*args, **kwargs)
+                finally:
+                    CTX.daily_relax = False
+
+                if retry.get("chosen"):
+                    built = retry
+        except Exception as exc:
+            print(f"Daily 2 odds second try failed: {exc}")
+
+        try:
             CTX.football_note = (
                 built.get("studied") or 0,
                 built.get("events") or 0,
@@ -1123,7 +1139,7 @@ if smart_ticket is not None:
         if mode_normal or kwargs.get("daily"):
             try:
                 if kwargs.get("daily"):
-                    min_p = DAILY_MIN_P
+                    min_p = DAILY_MIN_P - (DAILY_RELAX if getattr(CTX, "daily_relax", False) else 0)
                 elif getattr(CTX, "top_leagues", False) or getattr(CTX, "cups", None):
                     min_p = STRONG_MIN_P_TOP
                 else:
@@ -2050,6 +2066,9 @@ if smart_ticket is not None:
         except Exception:
             return base
 
+    def _daily_now():
+        return bool(getattr(CTX, "is_daily", False) or _ACTIVE.get("daily"))
+
     _full_event_candidates = event_candidates  # every pick type (Daily 2 odds uses some of them)
 
     if ONLY_UP_AND_EITHER_HALF:
@@ -2057,7 +2076,8 @@ if smart_ticket is not None:
 
         def event_candidates(event, markets):
             got = _event_candidates_all(event, markets)
-            return [c for c in got if c.get("kind") in ("up", "either_half")]
+            kinds = DAILY_KINDS if _daily_now() else ("up", "either_half")
+            return [c for c in got if c.get("kind") in kinds]
 
         # With only two kinds of picks, the ticket builder must not cap them.
         for _kind in DAILY_KINDS:
@@ -2123,7 +2143,7 @@ if smart_ticket is not None:
         k = str(kind or "").lower()
         low = str(label or "").lower()
 
-        allowed = (_ALLOWED_KINDS | DAILY_KINDS) if getattr(CTX, "is_daily", False) else _ALLOWED_KINDS
+        allowed = (_ALLOWED_KINDS | DAILY_KINDS) if _daily_now() else _ALLOWED_KINDS
 
         if k not in allowed:
             return False  # no direct win, BTTS, handicap, Over 2 / 2.5, Under, double chance, corners, ...
@@ -2602,7 +2622,7 @@ if smart_ticket is not None:
 
     _USED = {}  # chat_id -> {event_id: time used}
     _USED_LOCK = threading.Lock()
-    _ACTIVE = {"chat": None}
+    _ACTIVE = {"chat": None, "daily": False}
 
     def _used_ids(chat_id):
         cutoff = time.time() - USED_HOURS * 3600
@@ -2687,6 +2707,8 @@ if smart_ticket is not None:
         _ACTIVE["chat"] = chat_id
         CTX.last_ids = []
         CTX.is_daily = bool(st.DAILY_RE.search(str(text or "").lower()))
+        CTX.daily_relax = False
+        _ACTIVE["daily"] = CTX.is_daily
 
         try:
             return _flow_before_repeat(chat_id, text, *args, **kwargs)
@@ -2704,6 +2726,8 @@ if smart_ticket is not None:
 
             CTX.chat_id = None
             CTX.is_daily = False
+            CTX.daily_relax = False
+            _ACTIVE["daily"] = False
             _ACTIVE["chat"] = None
 
     bot.prediction_ticket_flow = prediction_ticket_flow

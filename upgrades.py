@@ -162,6 +162,8 @@ except ImportError as exc:
 # SETTINGS YOU CAN CHANGE
 # ------------------------------------------------------------
 ONLY_UP_AND_EITHER_HALF = True  # True = EVERY ticket uses ONLY 1UP, 2UP and win either half (no goal bounds, 12, team goals, corners ...)
+# DAILY 2 ODDS is the one exception: it may also use these safe picks (home / away to score 0.5, Home or Away (12) ...)
+DAILY_KINDS = {"up", "either_half", "team_goals", "dc12", "over15", "sh_goals"}
 NO_CORNERS = True  # True = corners (total and each team) are never used anywhere
 NO_STREAK = True  # True = "Any team to score 3+ goals in a row" is never used
 
@@ -205,7 +207,7 @@ SH_MIN_ODD = 1.15  # 2nd half picks pay at least this much
 # Stricter strength for the Top leagues / European cups buttons, and for Daily 2 odds.
 # (Without football data a pick's chance is about 0.95 / odds, so 0.70 means odds up to about 1.35.)
 STRONG_MIN_P_TOP = STRONG_MIN_P  # Top leagues / cups: same strength as chat (raise it only if you want stricter)
-DAILY_MIN_P = 0.72  # Daily 2 odds: strong picks only (lower to 0.70 if it finds nothing)
+DAILY_MIN_P = 0.70  # Daily 2 odds: strong picks only (lower to 0.70 if it finds nothing)
 
 # Parts of the day (local time). Hours past 24 mean the next morning.
 NIGHT_START_HOUR = 21
@@ -1088,7 +1090,7 @@ if smart_ticket is not None:
         # Team goals (Home / Away to score 0.5) usually pay 1.15 to 1.40, below the normal
         # minimum, so they were being thrown out. Let them in, then keep the normal minimum
         # for every other kind of pick.
-        if mode_normal and len(args) >= 5 and isinstance(args[4], (int, float)):
+        if (mode_normal or kwargs.get("daily")) and len(args) >= 5 and isinstance(args[4], (int, float)):
             original_floor = float(args[4])
             args = list(args)
             args[4] = min(original_floor, TEAM_GOALS_MIN_ODD, STRAIGHT_1UP_MIN, CORNERS_TOTAL_MIN_ODD, DOUBLE12_MIN_ODD, SH_MIN_ODD, EXTRA_FLOOR_ODD)
@@ -2048,6 +2050,8 @@ if smart_ticket is not None:
         except Exception:
             return base
 
+    _full_event_candidates = event_candidates  # every pick type (Daily 2 odds uses some of them)
+
     if ONLY_UP_AND_EITHER_HALF:
         _event_candidates_all = event_candidates
 
@@ -2056,7 +2060,7 @@ if smart_ticket is not None:
             return [c for c in got if c.get("kind") in ("up", "either_half")]
 
         # With only two kinds of picks, the ticket builder must not cap them.
-        for _kind in ("up", "either_half"):
+        for _kind in DAILY_KINDS:
             st.KIND_CAP[_kind] = 1.0
 
     st.event_candidates = event_candidates
@@ -2068,7 +2072,17 @@ if smart_ticket is not None:
             got = _only_line_corners(_orig_daily_candidates(event, markets))
 
             if ONLY_UP_AND_EITHER_HALF:
-                got = [c for c in got if c.get("kind") in ("up", "either_half")]
+                # Daily 2 odds: safe picks only - 1UP / 2UP, win either half, Home / Away to score 0.5,
+                # Home or Away (12), Over 1.5 goals, 2nd half Over 0.5.
+                have = {c.get("label") for c in got}
+
+                try:
+                    for c in _full_event_candidates(event, markets):
+                        if c.get("kind") in DAILY_KINDS and c.get("label") not in have:
+                            got.append(c)
+                            have.add(c.get("label"))
+                except Exception as exc:
+                    print(f"Daily 2 odds extra picks failed: {exc}")
 
             return got
 
@@ -2109,7 +2123,9 @@ if smart_ticket is not None:
         k = str(kind or "").lower()
         low = str(label or "").lower()
 
-        if k not in _ALLOWED_KINDS:
+        allowed = (_ALLOWED_KINDS | DAILY_KINDS) if getattr(CTX, "is_daily", False) else _ALLOWED_KINDS
+
+        if k not in allowed:
             return False  # no direct win, BTTS, handicap, Over 2 / 2.5, Under, double chance, corners, ...
 
         if k in EXTRA_KINDS:

@@ -1510,7 +1510,8 @@ def study(groups, notify=None):
                     _study_cache[event_id] = (time.time(), facts)
 
             if not facts:
-                why = neon.FAIL.get(f"{home} vs {away}", "unknown")
+                fail_map = getattr(neon, "FAIL", {})
+                why = fail_map.get(f"{home} vs {away}", "football data returned None; no detailed failure recorded")
                 STUDY_REPORT["fails"].append(f"{home} vs {away}: {why}")
                 continue
 
@@ -1529,7 +1530,9 @@ def study(groups, notify=None):
                 candidate["has_data"] = True
 
         except Exception as exc:
-            STUDY_REPORT["fails"].append(f"{home} vs {away}: error {type(exc).__name__}")
+            error_text = f"{type(exc).__name__}: {exc}"
+            STUDY_REPORT["fails"].append(f"{home} vs {away}: error {error_text}")
+            print(f"FOOTBALL STUDY ERROR: {home} vs {away}: {error_text}")
 
     skipped = len(groups) - len(top)
 

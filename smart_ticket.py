@@ -1453,6 +1453,10 @@ def study(groups, notify=None):
 
     import football_data as fd
 
+    # --- DEBUG PRINT ADDED HERE ---
+    print(f"DEBUG STUDY: USE_FOOTBALL_DATA={USE_FOOTBALL_DATA}, ENRICH_MAX={fd.ENRICH_MAX}, groups={len(groups)}")
+    # ------------------------------
+
     if not USE_FOOTBALL_DATA or fd.ENRICH_MAX <= 0 or not groups:
         return 0
 

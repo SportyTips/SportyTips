@@ -1473,25 +1473,29 @@ def study(groups, notify=None):
     started = time.time()
 
     for group in top:
-
         if time.time() - started > fd.ENRICH_SECONDS:
+            print("DEBUG STUDY: Time limit reached.")
             break
 
         try:
-
             event = group[0]["event"]
             event_id = event.get("eventId")
+            
+            # --- NEW DEBUG PRINT ---
+            print(f"DEBUG STUDY: Processing event {event_id}. Home: {event.get('homeTeamName')}, Away: {event.get('awayTeamName')}")
+            # -----------------------
 
             hit = _study_cache.get(event_id)
-
             facts = None
 
             if hit and (time.time() - hit[0] < STUDY_CACHE_SECONDS):
                 facts = hit[1]
-
             else:
-
                 fixture = fd.find_fixture(event)
+                
+                # --- NEW DEBUG PRINT ---
+                print(f"DEBUG STUDY: find_fixture returned: {fixture}")
+                # -----------------------
 
                 if not fixture:
                     continue
@@ -1507,7 +1511,6 @@ def study(groups, notify=None):
             studied += 1
 
             for candidate in group:
-
                 try:
                     football_probability = fd.adjusted_p(candidate, facts)
                 except Exception:
@@ -1518,14 +1521,14 @@ def study(groups, notify=None):
                     min(0.99, float(football_probability)),
                 )
 
-                # From this point forward p means football-evidence probability.
                 candidate["p"] = candidate["football_p"]
                 candidate["facts"] = facts
                 candidate["has_data"] = True
 
         except Exception as exc:
-            print(f"Football study failed: {exc}")
+            print(f"DEBUG STUDY Error: {exc}")
 
+    print(f"DEBUG STUDY: Finished. Studied {studied} matches.")
     return studied
 
 

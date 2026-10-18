@@ -18,8 +18,8 @@ If the odds cannot be reached, the ticket simply stops at the picks it found.
 cannot be reached, the next day is added, then the next, up to SEARCH_DAYS. Same for "tomorrow". "send today's straight win and win either half"
 adds "win either half" picks next to the 1UP / 2UP picks.
 5) "weekend" now means Friday to Sunday.
-5a) ALL TICKETS use ONLY 1UP and 2UP (win either half is off: NO_EITHER_HALF = True).
-No goal bounds, no Home or Away (12), no team goals, no corners, no over/under goals.
+5a) ALL pick types are on again (the switches near the top: ONLY_UP_AND_EITHER_HALF, NO_EITHER_HALF, NO_CORNERS, NO_STREAK are all False).
+BTTS, Over 2 / 2.5 goals and sure handicaps (tight games) are on, for top teams only. Direct wins stay off.
 5b) NO CORNERS anywhere (NO_CORNERS = True) and NO "3 goals in a row" picks (NO_STREAK = True).
 Normal tickets also include individual team goals (Home / Away to score 0.5 or 1.5).
 6) Under every ticket the site says whether real football stats were used.
@@ -109,15 +109,17 @@ HOW TO SOUND (this overrides the STYLE rules above and the "ONE short line" rule
 
 NEW ABILITIES (these override anything above that says the bot cannot do them)
 - With SportyBet on, the bot builds tickets from SportyBet's own matches. It can reach big targets
-  (50 odds, 100 odds) and uses ONLY these picks: 1UP and 2UP. It does NOT use win either half, goal bounds,
-  corners, Home or Away (12), team goals, over/under goals, BTTS, handicap, direct wins or "3 goals in a row":
-  say so if asked.
+  (50 odds, 100 odds) and mixes these strong picks: 1UP, 2UP, win either half, Home or Away to score 0.5,
+  corners (Over 7.5 and team corners), Home or Away (12), 2nd half Over 0.5, Over 1.5 goals, combos (for example
+  Home or GG), goal bounds, both halves, 1st half + full-time goals, draw after 10 minutes and "3 goals in a row".
+  It also uses BTTS, Over 2 and Over 2.5 goals and sure handicaps (tight games only), for top teams only (the
+  top leagues and European cups). It does NOT use direct wins. Never say it cannot do corners.
 - It also builds straight-win tickets: "2UP win", "1UP win", "plain win" or "double chance", for home, away or both,
   for a number of games and/or total odds. For those, put the words 2up, 1up, plain win or double chance, plus
   home or away, in "request". Every pick is at least 1.30 odds.
 - "Today's straight win 30 odds" uses today's games first and adds tomorrow's only if 30 odds cannot be reached.
-  Straight win is only 1UP / 2UP: it does NOT do "win either half". Keep the words
-  "straight win", "today" and the odds number EXACTLY in "request".
+  Straight win is 1UP / 2UP, and "straight win and win either half" adds win either half picks. Keep the words
+  "straight win", "today", the odds number and "either half" EXACTLY in "request".
 - It studies each team's last 5 games and head-to-head record, for as many matches as the API plan allows.
 - It can look at up to 7 days. A 100 odds ticket needs around 15 to 25 picks, so tell the user honestly
   that big odds win rarely even with strong picks.
@@ -161,9 +163,9 @@ except ImportError as exc:
 # ------------------------------------------------------------
 # SETTINGS YOU CAN CHANGE
 # ------------------------------------------------------------
-NO_EITHER_HALF = True  # True = "win either half" is never used anywhere (tickets, straight win, Daily 2 odds)
+NO_EITHER_HALF = False  # True = "win either half" is never used anywhere (tickets, straight win, Daily 2 odds)
 ONLY_KINDS = ("up",) if NO_EITHER_HALF else ("up", "either_half")  # what ONLY_UP_AND_EITHER_HALF allows
-ONLY_UP_AND_EITHER_HALF = True  # True = EVERY ticket uses ONLY 1UP, 2UP and win either half (no goal bounds, 12, team goals, corners ...)
+ONLY_UP_AND_EITHER_HALF = False  # True = EVERY ticket uses ONLY 1UP, 2UP and win either half (no goal bounds, 12, team goals, corners ...)
 # DAILY 2 ODDS is the one exception: it may also use these safe picks (home / away to score 0.5, Home or Away (12) ...)
 DAILY_KINDS = {"up", "either_half", "team_goals", "dc12", "over15", "sh_goals"}
 DAILY_MAIN_KINDS = {"up", "team_goals", "either_half"}  # Daily 2 odds uses these first: 1UP / 2UP, Home / Away to score 0.5, win either half
@@ -171,8 +173,8 @@ DAILY_MAIN_KINDS = {"up", "team_goals", "either_half"}  # Daily 2 odds uses thes
 if NO_EITHER_HALF:
     DAILY_KINDS.discard("either_half")
     DAILY_MAIN_KINDS.discard("either_half")
-NO_CORNERS = True  # True = corners (total and each team) are never used anywhere
-NO_STREAK = True  # True = "Any team to score 3+ goals in a row" is never used
+NO_CORNERS = False  # True = corners (total and each team) are never used anywhere
+NO_STREAK = False  # True = "Any team to score 3+ goals in a row" is never used
 
 SEARCH_DAYS = 7  # how far ahead the bot may look (days)
 EVENT_PAGES = 60  # how many pages of SportyBet matches to read (100 matches per page)
@@ -271,10 +273,21 @@ TEAM_GOALS_SHARE = 0.35  # at most this share of a ticket may be team-goal picks
 # Off = only the mixed-ticket picks listed above (1UP, 2UP, either half ...).
 ALLOW_ALL_MARKETS = False
 
+# BTTS, Over 2 / Over 2.5 goals and the SURE handicap. They are used in chat requests and in the buttons,
+# but ONLY for top teams (the 14 top leagues and the European cups).
+ALLOW_BTTS_OVER_HANDICAP = True
+NEW_KINDS = {"btts", "over", "handicap"}
+NEW_PICK_LINES = (2.0, 2.5)  # which Over lines: Over 2 and Over 2.5 goals
+NEW_PICKS_MIN_P = 0.55  # BTTS and Over 2 / 2.5 need at least this chance
+NEW_PICKS_MIN_ODD = 1.20  # lowest price these picks may have
+HANDICAP_MIN_P = 0.72  # a handicap must be a SURE one (high chance) ...
+HANDICAP_MIN_LINE = 1.0  # ... for a team getting +1 or more ...
+# ... and only in tight games (no clear favourite).
+
 # EXTRA MARKETS: combos (GG or Over 2.5, Home / Away or GG, Home / Away or Draw & Over 1.5),
 # and goal bounds. Full-time markets only.
 # Every pick still has to pass the strong-pick check (STRONG_MIN_P), except goal bounds (BOUNDS_MIN_P).
-EXTRA_KINDS = {"combo", "bounds", "halves", "fh_ft", "draw10", "either_half"}
+EXTRA_KINDS = {"combo", "streak", "bounds", "halves", "fh_ft", "draw10", "either_half"}
 EXTRA_FLOOR_ODD = 1.08  # lowest price these picks may have (each type also has its own range below)
 COMBO_MIN_ODD = 1.20
 COMBO_MAX_ODD = 1.50
@@ -1167,6 +1180,18 @@ if smart_ticket is not None:
 
     st._detail_order = _detail_order
 
+    def _kind_min_p(kind, min_p, daily=False):
+        if kind == "bounds":
+            return BOUNDS_MIN_P
+
+        if not daily and kind in ("btts", "over"):
+            return min(min_p, NEW_PICKS_MIN_P)
+
+        if not daily and kind == "handicap":
+            return max(min_p, HANDICAP_MIN_P)
+
+        return min_p
+
     _orig_gather = st.gather
 
     def gather(*args, **kwargs):
@@ -1185,7 +1210,7 @@ if smart_ticket is not None:
         if (mode_normal or kwargs.get("daily")) and len(args) >= 5 and isinstance(args[4], (int, float)):
             original_floor = float(args[4])
             args = list(args)
-            args[4] = min(original_floor, TEAM_GOALS_MIN_ODD, STRAIGHT_1UP_MIN, CORNERS_TOTAL_MIN_ODD, DOUBLE12_MIN_ODD, SH_MIN_ODD, EXTRA_FLOOR_ODD)
+            args[4] = min(original_floor, TEAM_GOALS_MIN_ODD, STRAIGHT_1UP_MIN, CORNERS_TOTAL_MIN_ODD, DOUBLE12_MIN_ODD, SH_MIN_ODD, EXTRA_FLOOR_ODD, NEW_PICKS_MIN_ODD)
 
         result = _orig_gather(*args, **kwargs)
 
@@ -1202,6 +1227,7 @@ if smart_ticket is not None:
                             or (c.get("kind") == "dc12" and c.get("odd", 0) >= DOUBLE12_MIN_ODD)
                             or (c.get("kind") in ("sh_goals", "sh_12") and c.get("odd", 0) >= SH_MIN_ODD)
                             or c.get("kind") in EXTRA_KINDS
+                            or (c.get("kind") in NEW_KINDS and c.get("odd", 0) >= NEW_PICKS_MIN_ODD)
                             or c.get("odd", 0) >= original_floor
                         )
                     ]
@@ -1225,7 +1251,7 @@ if smart_ticket is not None:
                 for group in result[0]:
                     kept = [
                         c for c in group
-                        if c.get("p", 0) >= (BOUNDS_MIN_P if c.get("kind") == "bounds" else min_p)
+                        if c.get("p", 0) >= _kind_min_p(c.get("kind"), min_p, bool(kwargs.get("daily")))
                     ]
                     if kept:
                         groups.append(kept)
@@ -2121,6 +2147,48 @@ if smart_ticket is not None:
 
     _orig_event_candidates = st.event_candidates
 
+    def _top_team_event(event):
+        """Top teams = the 14 top leagues and the European cups."""
+        try:
+            return bool(is_top_league(event) or is_cup_event(event, {"champions", "europa", "conference"}))
+        except Exception:
+            return False
+
+    def _new_picks_filter(event, picks, tight):
+        """BTTS, Over 2 / 2.5 goals and the sure handicap: top teams only; handicap only in tight games."""
+        if not ALLOW_BTTS_OVER_HANDICAP:
+            return [c for c in picks if c.get("kind") not in NEW_KINDS]
+
+        top = _top_team_event(event)
+        out = []
+
+        for c in picks:
+            kind = c.get("kind")
+
+            if kind not in NEW_KINDS:
+                out.append(c)
+                continue
+
+            if not top:
+                continue
+
+            if kind == "over":
+                line = c.get("line")
+
+                if line is None or not any(abs(float(line) - x) < 1e-9 for x in NEW_PICK_LINES):
+                    continue
+
+            elif kind == "handicap":
+                if not tight:
+                    continue
+
+                if (c.get("handicap") or 0) < HANDICAP_MIN_LINE or c.get("p", 0) < HANDICAP_MIN_P:
+                    continue
+
+            out.append(c)
+
+        return out
+
     def event_candidates(event, markets):
         if getattr(CTX, "corners", False):
             return corners_candidates(event, markets)
@@ -2128,9 +2196,13 @@ if smart_ticket is not None:
         base = _only_line_corners(_orig_event_candidates(event, markets))
 
         try:
-            # Tight game: no win picks at all (corners are off, so only the extra picks are left).
-            if not getattr(CTX, "straight", False) and _is_tight(markets):
-                return corners_candidates(event, markets) + extra_candidates(event, markets, tight=True)
+            tight = _is_tight(markets)
+            base = _new_picks_filter(event, base, tight)
+
+            # Tight game: no win picks at all. BTTS, Over 2 / 2.5 and the sure handicap fit these games.
+            if not getattr(CTX, "straight", False) and tight:
+                keep = [c for c in base if c.get("kind") in NEW_KINDS]
+                return keep + corners_candidates(event, markets) + extra_candidates(event, markets, tight=True)
 
             base = base + team_goal_candidates(event, markets, base)
             base = base + second_half_candidates(event, markets, base)
@@ -2209,7 +2281,13 @@ if smart_ticket is not None:
     if not NO_STREAK:
         _ALLOWED_KINDS.add("streak")  # Any team to score 3+ goals in a row
 
-    _BAD_LABEL = re.compile(r"handicap|both teams|\bunder \d|\bcards?\b", re.I)
+    if ALLOW_BTTS_OVER_HANDICAP:
+        _ALLOWED_KINDS.update(NEW_KINDS)  # BTTS, Over 2 / 2.5 goals, sure handicap
+
+    _BAD_LABEL = re.compile(
+        r"\bunder \d|\bcards?\b" if ALLOW_BTTS_OVER_HANDICAP else r"handicap|both teams|\bunder \d|\bcards?\b",
+        re.I,
+    )
 
     if ALLOW_ALL_MARKETS:
         _ALLOWED_KINDS.update({"win", "btts", "over", "handicap", "dnb", "dc"})
@@ -2224,6 +2302,9 @@ if smart_ticket is not None:
 
         if NO_EITHER_HALF and k == "either_half":
             return False  # win either half is switched off
+
+        if k in NEW_KINDS and _daily_now():
+            return False  # Daily 2 odds stays with its own safe picks
 
         allowed = (_ALLOWED_KINDS | DAILY_KINDS) if _daily_now() else _ALLOWED_KINDS
 
@@ -2492,6 +2573,16 @@ if smart_ticket is not None:
             and not QUESTION_START_RE.match(message)
             and len(words) <= 12
             and (NUMBER_RE.search(message) or WINDOW_RE.search(message) or len(words) <= 5)
+        ):
+            return bot.prediction_ticket_flow(chat_id, message.lower())
+
+        if (
+            not NO_CORNERS
+            and CORNERS_RE.search(message)
+            and (NUMBER_RE.search(message) or WINDOW_RE.search(message))
+            and "?" not in message
+            and len(message.split()) <= 9
+            and not message.startswith("/")
         ):
             return bot.prediction_ticket_flow(chat_id, message.lower())
 

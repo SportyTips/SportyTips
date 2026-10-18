@@ -329,7 +329,7 @@ def _sqlite_delete(key):
 
 def _cache_get(key):
     """
-    Memory â Redis â SQLite.
+    Memory Ã¢ÂÂ Redis Ã¢ÂÂ SQLite.
 
     Redis is preferred because it survives Render restarts/redeploys.
     """
@@ -657,12 +657,12 @@ TEAM_ALIASES = {
     ],
     "fenerbahce": [
         "fenerbahce",
-        "fenerbahÃ§e",
+        "fenerbahÃÂ§e",
         "fenerbahce sk",
     ],
     "besiktas": [
         "besiktas",
-        "beÅiktaÅ",
+        "beÃÂiktaÃÂ",
     ],
 
     # Scotland
@@ -868,32 +868,64 @@ def _event_kickoff(event):
 
 
 def _event_teams(event):
+    """
+    Read home/away names from SportyBet event dictionaries.
+
+    SportyBet commonly uses homeTeamName/awayTeamName, while older
+    provider responses and other callers may use alternate field names.
+    """
     if not isinstance(event, dict):
         return "", ""
 
-    home = (
-        event.get("home")
-        or event.get("homeTeam")
-        or event.get("home_team")
-        or event.get("home_name")
-        or ""
+    def read_team(*keys):
+        for key in keys:
+            value = event.get(key)
+
+            if value is None or value == "":
+                continue
+
+            if isinstance(value, dict):
+                value = (
+                    value.get("name")
+                    or value.get("teamName")
+                    or value.get("team_name")
+                    or value.get("displayName")
+                    or value.get("shortName")
+                    or ""
+                )
+
+            if isinstance(value, (str, int, float)):
+                value = str(value).strip()
+                if value:
+                    return value
+
+        return ""
+
+    home = read_team(
+        "homeTeamName",
+        "home_team_name",
+        "home",
+        "homeTeam",
+        "home_team",
+        "home_name",
+        "homeName",
+        "hostName",
+        "homeCompetitorName",
     )
 
-    away = (
-        event.get("away")
-        or event.get("awayTeam")
-        or event.get("away_team")
-        or event.get("away_name")
-        or ""
+    away = read_team(
+        "awayTeamName",
+        "away_team_name",
+        "away",
+        "awayTeam",
+        "away_team",
+        "away_name",
+        "awayName",
+        "awayCompetitorName",
+        "guestName",
     )
 
-    if isinstance(home, dict):
-        home = home.get("name") or ""
-
-    if isinstance(away, dict):
-        away = away.get("name") or ""
-
-    return str(home), str(away)
+    return home, away
 
 
 # ============================================================

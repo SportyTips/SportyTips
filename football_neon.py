@@ -1,16 +1,10 @@
 """
 API-Football evidence + Neon (Postgres) persistent cache for SportyTips.
 
-One API-Football call per match ("predictions") returns: win percentages,
-last-5 / season form, home & away record, goals, and head-to-head.
-Everything is saved in Neon, so a match is only fetched once.
-
 Render env vars:
   API_FOOTBALL_KEY   key from api-football.com (api-sports.io)
-  DATABASE_URL       your existing Neon string (already set)
-  APIF_DAILY_LIMIT   optional hard stop per day (default 90, free plan = 100)
-
-Uses psycopg2, which app.py already uses.
+  DATABASE_URL       your existing Neon string
+  APIF_DAILY_LIMIT   optional hard stop per day (default 90)
 """
 
 import json
@@ -35,9 +29,18 @@ APIF_BASE = "https://v3.football.api-sports.io"
 
 _table_ready = False
 
+# Internal failure records; no debug output is sent to users.
+LAST_ERR = ""
+FAIL = {}
+
+
+def _fail(home, away, reason):
+    FAIL[f"{home} vs {away}"] = str(reason)
+    return None
+
 
 # ------------------------------------------------------------
-# NEON CACHE (own table: football_cache; never touches users/payments)
+# NEON CACHE
 # ------------------------------------------------------------
 
 def neon_enabled():
@@ -97,7 +100,6 @@ def neon_set(key, value, ttl):
 
 
 def neon_purge_expired():
-    """Optional: run now and then to keep the table small."""
     if neon_enabled():
         try:
             _run("DELETE FROM football_cache WHERE expires_at < now()")
@@ -106,7 +108,7 @@ def neon_purge_expired():
 
 
 # ------------------------------------------------------------
-# API-FOOTBALL REQUESTS (daily cap + per-minute throttle)
+# API-FOOTBALL REQUESTS
 # ------------------------------------------------------------
 
 _calls = []
@@ -116,7 +118,7 @@ def _throttle():
     now = time.time()
     while _calls and now - _calls[0] > 60:
         _calls.pop(0)
-    if len(_calls) >= 9:  # free plan: 10 per minute
+    if len(_calls) >= 9:
         time.sleep(max(0.0, 60 - (now - _calls[0]) + 0.5))
     _calls.append(time.time())
 
@@ -131,13 +133,15 @@ def _quota_ok():
 
 
 def _apif(endpoint, params):
+    global LAST_ERR
+    LAST_ERR = ""
     if not APIF_KEY:
-        print("DEBUG NEON: _apif stopped - APIF_KEY is empty.")
+        LAST_ERR = "API_FOOTBALL_KEY missing"
         return None
     if not _quota_ok():
-        print("DEBUG NEON: _apif stopped - Daily quota reached.")
+        LAST_ERR = "daily quota reached"
         return None
-        
+
     _throttle()
     try:
         url = APIF_BASE + "/" + endpoint + "?" + urllib.parse.urlencode(params)
@@ -145,9 +149,11 @@ def _apif(endpoint, params):
         with urllib.request.urlopen(req, timeout=15) as r:
             data = json.loads(r.read().decode("utf-8"))
     except Exception as exc:
+        LAST_ERR = "request failed: " + type(exc).__name__
         print("API-Football request failed:", type(exc).__name__)
         return None
     if data.get("errors"):
+        LAST_ERR = "API error: " + str(data.get("errors"))[:120]
         print("API-Football error:", str(data.get("errors"))[:200])
         return None
     resp = data.get("response")
@@ -155,9 +161,6 @@ def _apif(endpoint, params):
 
 
 def _fixtures_of_day(day):
-    """One call per date, then served from Neon."""
-    # v2 avoids reusing older cached fixture rows that may contain the
-    # full API response shape rather than the slim {id, home, away} shape.
     key = "apif-fixtures:v2:" + day
     cached = neon_get(key)
     if cached is not None:
@@ -166,15 +169,12 @@ def _fixtures_of_day(day):
             and row.get("home") and row.get("away")
             for row in cached
         )
-        if valid:
-            print(f"DEBUG NEON: Using cached fixtures for {day} ({len(cached)} matches)")
+        if valid and cached:
             return cached
-        print(f"DEBUG NEON: Ignoring invalid cached fixture format for {day}")
-        
-    print(f"DEBUG NEON: Fetching fixtures from API for {day}")
+
     items = _apif("fixtures", {"date": day})
     if items is None:
-        neon_set(key, [], 600)  # failed: do not retry for 10 minutes
+        neon_set(key, [], 600)
         return []
     slim = [
         {
@@ -188,13 +188,12 @@ def _fixtures_of_day(day):
         and ((i.get("teams") or {}).get("home") or {}).get("name")
         and ((i.get("teams") or {}).get("away") or {}).get("name")
     ]
-    print(f"DEBUG NEON: Normalised {len(slim)} fixtures for {day}; sample={slim[:2]}")
     neon_set(key, slim, 6 * 3600)
     return slim
 
 
 # ------------------------------------------------------------
-# PREDICTION -> SLIM (what we store in Neon)
+# PREDICTION -> SLIM
 # ------------------------------------------------------------
 
 def _slim(item, fixture_id):
@@ -251,59 +250,50 @@ def _slim(item, fixture_id):
 
 
 def _get_slim(home, away, kickoff, similarity):
-    print(f"DEBUG NEON: _get_slim started for {home} vs {away}. APIF_KEY present: {bool(APIF_KEY)} (len: {len(APIF_KEY)})")
-    
     if not APIF_KEY:
-        print("FOOTBALL: API_FOOTBALL_KEY is not set on this server")
-        return None
-        
+        return _fail(home, away, "API_FOOTBALL_KEY missing on server")
+
     when = kickoff or datetime.now(timezone.utc)
     day = when.astimezone(timezone.utc).strftime("%Y-%m-%d")
     key = "apif-pred:%s:%s:%s" % (day, home.lower(), away.lower())
 
     cached = neon_get(key)
     if cached is not None:
-        print(f"DEBUG NEON: Using cached prediction for {home} vs {away}")
-        return cached or None
+        if cached:
+            return cached
+        return _fail(home, away, "cached miss (no fixture match earlier, retries in 1h)")
+
+    fixtures = _fixtures_of_day(day)
+    if not fixtures:
+        return _fail(home, away, "no fixtures for " + day + " (" + (LAST_ERR or "empty list") + ")")
 
     best, best_score = None, 0.0
-    fixtures = _fixtures_of_day(day)
-    
-    if not fixtures:
-        print(f"DEBUG NEON: No fixtures available for {day}")
-        return None
-
     for f in fixtures:
         if not isinstance(f, dict):
             continue
-        api_home = f.get("home") or ""
-        api_away = f.get("away") or ""
-        a = similarity(home, api_home)
-        b = similarity(away, api_away)
+        a = similarity(home, f.get("home") or "")
+        b = similarity(away, f.get("away") or "")
         score = (a + b) / 2
         if score > best_score:
             best_score = score
-        if min(a, b) >= 0.7 and (best is None or score >= best_score):
-            best = f
-            
-    if not best or best_score < 0.80 or not best.get("id"):
-        print(f"DEBUG NEON: No API-Football match found for {home} vs {away} on {day} (best score: {best_score:.2f})")
-        neon_set(key, {}, 3600)
-        return None
+            if min(a, b) >= 0.7:
+                best = f
 
-    print(f"DEBUG NEON: Match found! Fetching predictions for {home} vs {away} (ID: {best['id']})")
+    if not best or best_score < 0.80 or not best.get("id"):
+        neon_set(key, {}, 3600)
+        return _fail(home, away, "no fixture match (best score %.2f of %d fixtures)" % (best_score, len(fixtures)))
+
     items = _apif("predictions", {"fixture": best["id"]})
     if not items:
-        print(f"DEBUG NEON: Predictions API returned no data for {home} vs {away}")
-        return None
-        
+        return _fail(home, away, "predictions empty (" + (LAST_ERR or "no data") + ")")
+
     slim = _slim(items[0], best["id"])
     neon_set(key, slim, 12 * 3600)
     return slim
 
 
 # ------------------------------------------------------------
-# SLIM -> FACTS (same shape football_data.py already uses)
+# SLIM -> FACTS
 # ------------------------------------------------------------
 
 def _num(v, default=None):
@@ -423,20 +413,18 @@ def _build_facts(slim):
 
 
 def get_facts(home, away, kickoff, similarity):
-    """Full football facts for one match, or None if not enough data."""
+    FAIL.pop(f"{home} vs {away}", None)
     slim = _get_slim(home, away, kickoff, similarity)
     if not slim:
         return None
     facts = _build_facts(slim)
     played = facts["recent"]["home"]["played"] + facts["recent"]["away"]["played"]
     if played < 4 or not facts["lambda"]["home"] or not facts["lambda"]["away"]:
-        print(f"DEBUG NEON: Not enough form data for {home} vs {away} (Played: {played})")
-        return None
+        return _fail(home, away, "not enough form data (played=%d)" % played)
     return facts
 
 
 def extra_reason(facts, text=""):
-    """Win % and H2H sentence added to the pick's reason."""
     if not facts:
         return None
     text = (text or "").lower()

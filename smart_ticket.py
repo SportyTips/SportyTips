@@ -21,24 +21,24 @@ import sportybet_provider as sp
 # ============================================================
 
 E_TICKET = "\U0001F3AB"  # ticket
-E_TIPS = "\U0001F3AF"  # target (pick / tip line)
-E_CAL = "\U0001F4C5"  # calendar
-E_CLOCK = "\U0001F552"  # clock
+E_TIPS = "\U0001F3AF"    # target (pick / tip line)
+E_CAL = "\U0001F4C5"     # calendar
+E_CLOCK = "\U0001F552"   # clock
 E_LEAGUE = "\U0001F3C6"  # trophy
-E_BALL = "\u26BD"  # football
-E_MONEY = "\U0001F4B0"  # money bag
-E_CHAT = "\U0001F4AC"  # speech bubble
-E_CHART = "\U0001F4CA"  # bar chart
+E_BALL = "\u26BD"        # football
+E_MONEY = "\U0001F4B0"   # money bag
+E_CHAT = "\U0001F4AC"    # speech bubble
+E_CHART = "\U0001F4CA"   # bar chart
 E_WARN = "\u26A0\uFE0F"  # warning
 E_INFO = "\u2139\uFE0F"  # info
-E_SWAP = "\U0001F504"  # swap arrows
-E_MIX = "\U0001F9E9"  # puzzle piece
-E_CODE = "\U0001F4F2"  # phone with arrow
-E_SCI = "\U0001F52C"  # microscope
-E_LOCK = "\U0001F512"  # lock
-E_FAIL = "\u274C"  # cross mark
-DOT = "\u2022"  # bullet
-LINE = "\u2501" * 12  # heavy line
+E_SWAP = "\U0001F504"    # swap arrows
+E_MIX = "\U0001F9E9"     # puzzle piece
+E_CODE = "\U0001F4F2"    # phone with arrow
+E_SCI = "\U0001F52C"     # microscope
+E_LOCK = "\U0001F512"    # lock
+E_FAIL = "\u274C"        # cross mark
+DOT = "\u2022"           # bullet
+LINE = "\u2501" * 12     # heavy line
 
 
 # ============================================================
@@ -199,8 +199,8 @@ _UNRELIABLE_RE = re.compile(
 # ============================================================
 
 DAILY_TARGET = 2.0
-DAILY_FROM_HOUR = 9  # Daily 2 odds uses games from 9am ...
-DAILY_TO_HOUR = 20  # ... to 8pm (local time)
+DAILY_FROM_HOUR = 9   # Daily 2 odds uses games from 9am ...
+DAILY_TO_HOUR = 20    # ... to 8pm (local time)
 
 
 def _hour_text(hour):
@@ -476,51 +476,51 @@ def event_candidates(event, markets):
             pd = inv[1] / total
             pa = inv[2] / total
 
-    if (
-        ph is not None
-        and ph >= RULE_HOME_WIN_P
-        and HOME_WIN_ODD_MIN <= h <= HOME_WIN_ODD_MAX
-    ):
-        add(
-            "win",
-            f"{home} to win",
-            h,
-            ph,
-            (sp.M_1X2, "", sp.OUT_1X2["home"]),
-            side="home",
-            market_side_p=ph,
-            bypass=True,
-        )
-
-    for fav_side, fav_w, fav_odd in (
-        ("home", ph, h),
-        ("away", pa, a),
-    ):
         if (
-            fav_w is not None
-            and fav_w >= RULE_HOME_WIN_P
-            and fav_odd < HOME_WIN_ODD_MIN
+            ph is not None
+            and ph >= RULE_HOME_WIN_P
+            and HOME_WIN_ODD_MIN <= h <= HOME_WIN_ODD_MAX
         ):
-            goal_pick = _team_over(
-                markets,
-                home,
-                away,
-                fav_side,
-                1.5,
+            add(
+                "win",
+                f"{home} to win",
+                h,
+                ph,
+                (sp.M_1X2, "", sp.OUT_1X2["home"]),
+                side="home",
+                market_side_p=ph,
+                bypass=True,
             )
 
-            if goal_pick:
-                add(
-                    "team_goals",
-                    goal_pick["label"],
-                    goal_pick["odd"],
-                    goal_pick["p"],
-                    goal_pick["key"],
-                    side=fav_side,
-                    line=1.5,
-                    market_side_p=fav_w,
-                    bypass=True,
+        for fav_side, fav_w, fav_odd in (
+            ("home", ph, h),
+            ("away", pa, a),
+        ):
+            if (
+                fav_w is not None
+                and fav_w >= RULE_HOME_WIN_P
+                and fav_odd < HOME_WIN_ODD_MIN
+            ):
+                goal_pick = _team_over(
+                    markets,
+                    home,
+                    away,
+                    fav_side,
+                    1.5,
                 )
+
+                if goal_pick:
+                    add(
+                        "team_goals",
+                        goal_pick["label"],
+                        goal_pick["odd"],
+                        goal_pick["p"],
+                        goal_pick["key"],
+                        side=fav_side,
+                        line=1.5,
+                        market_side_p=fav_w,
+                        bypass=True,
+                    )
 
     # Double chance intentionally disabled.
     if ALLOW_DOUBLE_CHANCE:
@@ -540,7 +540,7 @@ def event_candidates(event, markets):
             "dc",
             f"Draw or {away}",
             sp.find_odds(markets, k2),
-            (pd + pa if pa is not None else None),
+            (pd + pa if pd is not None and pa is not None else None),
             k2,
             side="away",
         )
@@ -1439,8 +1439,11 @@ def _passes_rules(c, ctx, relax=0):
 
 
 # ============================================================
-# FOOTBALL DATA STUDY
+# FOOTBALL DATA STUDY (with debug report)
 # ============================================================
+
+STUDY_REPORT = {"total": 0, "tried": 0, "ok": 0, "fails": []}
+
 
 def study(groups, notify=None):
     """
@@ -1448,19 +1451,22 @@ def study(groups, notify=None):
 
     SportyBet odds determine which market exists.
     Football data determines whether the match is actually supported.
-    When football data is missing we fall back to SportyBet odds.
+    Every failure is recorded in STUDY_REPORT so we can see the reason.
     """
 
     import football_data as fd
+    import football_neon as neon
 
-    # --- DEBUG PRINT ADDED HERE ---
-    print(f"DEBUG STUDY: USE_FOOTBALL_DATA={USE_FOOTBALL_DATA}, ENRICH_MAX={fd.ENRICH_MAX}, groups={len(groups)}")
-    # ------------------------------
+    STUDY_REPORT.update({"total": len(groups), "tried": 0, "ok": 0, "fails": []})
 
     if not USE_FOOTBALL_DATA or fd.ENRICH_MAX <= 0 or not groups:
         return 0
 
-    # ENRICH_MAX is a maximum, NOT a quota.
+    # Study the strongest matches first.
+    groups.sort(
+        key=lambda g: max(c.get("market_p", 0) for c in g),
+        reverse=True,
+    )
     top = groups[:fd.ENRICH_MAX]
 
     if notify:
@@ -1472,19 +1478,20 @@ def study(groups, notify=None):
     studied = 0
     started = time.time()
 
-    for group in top:
+    for idx, group in enumerate(top):
+
         if time.time() - started > fd.ENRICH_SECONDS:
-            print("DEBUG STUDY: Time limit reached.")
+            left = len(top) - idx
+            STUDY_REPORT["fails"].append(f"time limit hit, {left} matches skipped")
             break
 
-        try:
-            event = group[0]["event"]
-            event_id = event.get("eventId")
-            
-            # --- NEW DEBUG PRINT ---
-            print(f"DEBUG STUDY: Processing event {event_id}. Home: {event.get('homeTeamName')}, Away: {event.get('awayTeamName')}")
-            # -----------------------
+        event = group[0]["event"]
+        home = event.get("homeTeamName", "")
+        away = event.get("awayTeamName", "")
+        STUDY_REPORT["tried"] += 1
 
+        try:
+            event_id = event.get("eventId")
             hit = _study_cache.get(event_id)
             facts = None
 
@@ -1492,12 +1499,9 @@ def study(groups, notify=None):
                 facts = hit[1]
             else:
                 fixture = fd.find_fixture(event)
-                
-                # --- NEW DEBUG PRINT ---
-                print(f"DEBUG STUDY: find_fixture returned: {fixture}")
-                # -----------------------
 
                 if not fixture:
+                    STUDY_REPORT["fails"].append(f"{home} vs {away}: team names unreadable")
                     continue
 
                 facts = fd.get_facts(fixture)
@@ -1506,29 +1510,34 @@ def study(groups, notify=None):
                     _study_cache[event_id] = (time.time(), facts)
 
             if not facts:
+                why = neon.FAIL.get(f"{home} vs {away}", "unknown")
+                STUDY_REPORT["fails"].append(f"{home} vs {away}: {why}")
                 continue
 
             studied += 1
+            STUDY_REPORT["ok"] += 1
 
             for candidate in group:
                 try:
-                    football_probability = fd.adjusted_p(candidate, facts)
+                    fp = fd.adjusted_p(candidate, facts)
                 except Exception:
-                    football_probability = 0.0
+                    fp = 0.0
 
-                candidate["football_p"] = max(
-                    0.0,
-                    min(0.99, float(football_probability)),
-                )
-
+                candidate["football_p"] = max(0.0, min(0.99, float(fp)))
                 candidate["p"] = candidate["football_p"]
                 candidate["facts"] = facts
                 candidate["has_data"] = True
 
         except Exception as exc:
-            print(f"DEBUG STUDY Error: {exc}")
+            STUDY_REPORT["fails"].append(f"{home} vs {away}: error {type(exc).__name__}")
 
-    print(f"DEBUG STUDY: Finished. Studied {studied} matches.")
+    skipped = len(groups) - len(top)
+
+    if skipped > 0:
+        STUDY_REPORT["fails"].append(f"{skipped} matches beyond ENRICH_MAX not studied")
+
+    print("STUDY REPORT:", STUDY_REPORT)
+
     return studied
 
 
@@ -3279,6 +3288,16 @@ def _flow_main(
             f"{E_LOCK} Daily 2 odds updates once every 24 hours. "
             "No pick is ever 100% certain."
         )
+
+    # ---- DEBUG REPORT (only when DEBUG_FOOTBALL=1) ----
+    if os.getenv("DEBUG_FOOTBALL", "0") == "1":
+        rep = STUDY_REPORT
+        lines.append(
+            f"{E_SCI} DEBUG: {rep['ok']}/{rep['tried']} studied "
+            f"({rep['total']} matches available)"
+        )
+        for item in rep["fails"][:8]:
+            lines.append(f"{DOT} {html.escape(item)}")
 
     lines.append(f"{E_WARN} Predictions are estimates, not guarantees (18+).")
 

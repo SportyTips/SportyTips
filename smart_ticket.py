@@ -1439,7 +1439,7 @@ def _passes_rules(c, ctx, relax=0):
 
 
 # ============================================================
-# FOOTBALL DATA STUDY (with debug report)
+# FOOTBALL DATA STUDY
 # ============================================================
 
 STUDY_REPORT = {"total": 0, "tried": 0, "ok": 0, "fails": []}
@@ -1529,8 +1529,16 @@ def study(groups, notify=None):
                         break
 
                 if not why:
+                    # _fail() may use normalized/API team names that differ
+                    # from the SportyBet event names. Use the failure recorded
+                    # by the most recent get_facts() call as a reliable fallback.
+                    last_fail = getattr(neon, "LAST_FAIL", "")
+                    last_fail_key = getattr(neon, "LAST_FAIL_KEY", "")
                     last_err = getattr(neon, "LAST_ERR", "")
-                    why = last_err or "football data returned None; no matching failure record"
+                    if last_fail:
+                        why = f"{last_fail} [recorded for {last_fail_key}]" if last_fail_key else last_fail
+                    else:
+                        why = last_err or "football data returned None; no failure reason recorded by football_neon"
 
                 STUDY_REPORT["fails"].append(f"{home} vs {away}: {why}")
                 continue
@@ -3311,16 +3319,6 @@ def _flow_main(
             f"{E_LOCK} Daily 2 odds updates once every 24 hours. "
             "No pick is ever 100% certain."
         )
-
-    # ---- DEBUG REPORT (only when DEBUG_FOOTBALL=1) ----
-    if os.getenv("DEBUG_FOOTBALL", "0") == "1":
-        rep = STUDY_REPORT
-        lines.append(
-            f"{E_SCI} DEBUG: {rep['ok']}/{rep['tried']} studied "
-            f"({rep['total']} matches available)"
-        )
-        for item in rep["fails"][:8]:
-            lines.append(f"{DOT} {html.escape(item)}")
 
     lines.append(f"{E_WARN} Predictions are estimates, not guarantees (18+).")
 

@@ -230,6 +230,7 @@ def _slim(item, fixture_id):
 
 def _get_slim(home, away, kickoff, similarity):
     if not APIF_KEY:
+        print("FOOTBALL: API_FOOTBALL_KEY is not set on this server")
         return None
     when = kickoff or datetime.now(timezone.utc)
     day = when.astimezone(timezone.utc).strftime("%Y-%m-%d")
@@ -247,6 +248,7 @@ def _get_slim(home, away, kickoff, similarity):
         if min(a, b) >= 0.7 and score > best_score:
             best, best_score = f, score
     if not best or best_score < 0.80 or not best.get("id"):
+        print("FOOTBALL: no API-Football match found for %s vs %s on %s" % (home, away, day))
         neon_set(key, {}, 3600)
         return None
 
@@ -386,6 +388,7 @@ def get_facts(home, away, kickoff, similarity):
     facts = _build_facts(slim)
     played = facts["recent"]["home"]["played"] + facts["recent"]["away"]["played"]
     if played < 4 or not facts["lambda"]["home"] or not facts["lambda"]["away"]:
+        print("FOOTBALL: not enough form data for %s vs %s" % (home, away))
         return None
     return facts
 

@@ -1494,6 +1494,7 @@ def study(groups, notify=None):
             event_id = event.get("eventId")
             hit = _study_cache.get(event_id)
             facts = None
+            fixture = None
 
             if hit and (time.time() - hit[0] < STUDY_CACHE_SECONDS):
                 facts = hit[1]
@@ -1510,8 +1511,27 @@ def study(groups, notify=None):
                     _study_cache[event_id] = (time.time(), facts)
 
             if not facts:
-                fail_map = getattr(neon, "FAIL", {})
-                why = fail_map.get(f"{home} vs {away}", "football data returned None; no detailed failure recorded")
+                # football_neon records failures using the names passed by
+                # football_data.find_fixture(), which may differ from the raw
+                # SportyBet event names used in the ticket.
+                fail_map = getattr(neon, "FAIL", {}) or {}
+                lookup_names = [(home, away)]
+                if isinstance(fixture, dict):
+                    fixture_home = fixture.get("home", "")
+                    fixture_away = fixture.get("away", "")
+                    if fixture_home and fixture_away:
+                        lookup_names.insert(0, (fixture_home, fixture_away))
+
+                why = None
+                for fail_home, fail_away in lookup_names:
+                    why = fail_map.get(f"{fail_home} vs {fail_away}")
+                    if why:
+                        break
+
+                if not why:
+                    last_err = getattr(neon, "LAST_ERR", "")
+                    why = last_err or "football data returned None; no matching failure record"
+
                 STUDY_REPORT["fails"].append(f"{home} vs {away}: {why}")
                 continue
 

@@ -131,8 +131,13 @@ def _quota_ok():
 
 
 def _apif(endpoint, params):
-    if not APIF_KEY or not _quota_ok():
+    if not APIF_KEY:
+        print("DEBUG NEON: _apif stopped - APIF_KEY is empty.")
         return None
+    if not _quota_ok():
+        print("DEBUG NEON: _apif stopped - Daily quota reached.")
+        return None
+        
     _throttle()
     try:
         url = APIF_BASE + "/" + endpoint + "?" + urllib.parse.urlencode(params)
@@ -154,7 +159,10 @@ def _fixtures_of_day(day):
     key = "apif-fixtures:" + day
     cached = neon_get(key)
     if cached is not None:
+        print(f"DEBUG NEON: Using cached fixtures for {day} ({len(cached)} matches)")
         return cached
+        
+    print(f"DEBUG NEON: Fetching fixtures from API for {day}")
     items = _apif("fixtures", {"date": day})
     if items is None:
         neon_set(key, [], 600)  # failed: do not retry for 10 minutes
@@ -229,32 +237,46 @@ def _slim(item, fixture_id):
 
 
 def _get_slim(home, away, kickoff, similarity):
+    print(f"DEBUG NEON: _get_slim started for {home} vs {away}. APIF_KEY present: {bool(APIF_KEY)} (len: {len(APIF_KEY)})")
+    
     if not APIF_KEY:
         print("FOOTBALL: API_FOOTBALL_KEY is not set on this server")
         return None
+        
     when = kickoff or datetime.now(timezone.utc)
     day = when.astimezone(timezone.utc).strftime("%Y-%m-%d")
     key = "apif-pred:%s:%s:%s" % (day, home.lower(), away.lower())
 
     cached = neon_get(key)
     if cached is not None:
+        print(f"DEBUG NEON: Using cached prediction for {home} vs {away}")
         return cached or None
 
     best, best_score = None, 0.0
-    for f in _fixtures_of_day(day):
+    fixtures = _fixtures_of_day(day)
+    
+    if not fixtures:
+        print(f"DEBUG NEON: No fixtures available for {day}")
+        return None
+
+    for f in fixtures:
         a = similarity(home, f.get("home") or "")
         b = similarity(away, f.get("away") or "")
         score = (a + b) / 2
         if min(a, b) >= 0.7 and score > best_score:
             best, best_score = f, score
+            
     if not best or best_score < 0.80 or not best.get("id"):
-        print("FOOTBALL: no API-Football match found for %s vs %s on %s" % (home, away, day))
+        print(f"DEBUG NEON: No API-Football match found for {home} vs {away} on {day} (best score: {best_score:.2f})")
         neon_set(key, {}, 3600)
         return None
 
+    print(f"DEBUG NEON: Match found! Fetching predictions for {home} vs {away} (ID: {best['id']})")
     items = _apif("predictions", {"fixture": best["id"]})
     if not items:
+        print(f"DEBUG NEON: Predictions API returned no data for {home} vs {away}")
         return None
+        
     slim = _slim(items[0], best["id"])
     neon_set(key, slim, 12 * 3600)
     return slim
@@ -388,7 +410,7 @@ def get_facts(home, away, kickoff, similarity):
     facts = _build_facts(slim)
     played = facts["recent"]["home"]["played"] + facts["recent"]["away"]["played"]
     if played < 4 or not facts["lambda"]["home"] or not facts["lambda"]["away"]:
-        print("FOOTBALL: not enough form data for %s vs %s" % (home, away))
+        print(f"DEBUG NEON: Not enough form data for {home} vs {away} (Played: {played})")
         return None
     return facts
 

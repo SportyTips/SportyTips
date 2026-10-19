@@ -20,6 +20,10 @@ Environment:
   APP_BASE_URL=https://yourdomain.com                       (payment return URL)
   COOKIE_SECURE=1                (recommended on HTTPS)
 
+Ticket history: every ticket is saved in the same database (table "tickets"), marked
+won / cancelled by itself after the games, and shown in the History tab.
+See history.py. The "Our record" numbers on the home screen are public counts only.
+
 Install as an app (PWA): /manifest.webmanifest, /sw.js and /icons/... are served
 by this file. No extra files are needed.
 """
@@ -254,6 +258,42 @@ bot.send_message = web_send_message
 bot.telegram_request = lambda method, params=None: {"ok": True, "result": []}
 
 launcher.send_photo = web_send_photo
+
+
+# ===============================================================
+# TICKET HISTORY: SAVE EVERY TICKET THAT IS BUILT
+# ===============================================================
+
+try:
+    import history  # must load BEFORE the picture function is wrapped below
+except Exception as exc:
+    history = None
+    print(f"FAILED: history.py failed to load: {type(exc).__name__}: {exc}")
+
+try:
+    import ticket_image_lite as _til
+
+    _real_make_ticket_image = _til.make_ticket_image
+
+    def _recording_make_ticket_image(rows, title, subtitle, total_odds, win_chance, code=None, status=None):
+        png = _real_make_ticket_image(rows, title, subtitle, total_odds, win_chance, code, status)
+
+        try:
+            user_id = getattr(_ctx, "user_id", None)
+
+            # Only tickets built for a logged-in person in a chat turn are saved.
+            if history is not None and user_id and getattr(_ctx, "q", None) is not None:
+                history.record_ticket(user_id, rows, title, subtitle, total_odds, win_chance, code)
+
+        except Exception as exc:
+            print(f"History: save failed: {type(exc).__name__}: {exc}")
+
+        return png
+
+    _til.make_ticket_image = _recording_make_ticket_image
+
+except Exception as exc:
+    print(f"NOTE: ticket history recording is off: {type(exc).__name__}: {exc}")
 
 
 # ===============================================================
@@ -505,6 +545,57 @@ def _init_sqlite():
 _init_account_db()
 
 
+def _history_fetch_code(code):
+    """SportyBet's own page for a booking code (may show final scores after the games)."""
+    provider = getattr(bot, "SPORTYBET_PROVIDER", None)
+
+    if provider is None:
+        return None
+
+    sp_module = importlib.import_module("sportybet_provider")
+
+    return provider._request(sp_module.LOAD_CODE_PATH.format(code=code))
+
+
+def _history_fetch_day(date_string):
+    """All matches on one day, fresh from football-data.org (never cached)."""
+
+    if not getattr(bot, "FOOTBALL_DATA_API_KEY", ""):
+        return []  # no key on the server: SportyBet and hand marking are used instead
+
+    result = bot.football_request("matches", {"dateFrom": date_string, "dateTo": date_string})
+    if isinstance(result, dict):
+        return result.get("matches", []) or []
+    return []
+
+
+def _history_similar(a, b):
+    try:
+        fd = importlib.import_module("football_data")
+        return float(fd._team_similarity(a, b))
+    except Exception:
+        from difflib import SequenceMatcher
+
+        return SequenceMatcher(None, str(a).lower(), str(b).lower()).ratio()
+
+
+if history is not None:
+    try:
+        history.init(
+            _db,
+            USE_PG,
+            _insert_returning_id,
+            fetch_day=_history_fetch_day,
+            similar=_history_similar,
+            fetch_code=_history_fetch_code,
+        )
+        history.start_loop()
+        print("OK: ticket history is on")
+    except Exception as exc:
+        print(f"FAILED: ticket history could not start: {type(exc).__name__}: {exc}")
+        history = None
+
+
 # ===============================================================
 # ACCOUNT HELPERS
 # ===============================================================
@@ -739,8 +830,9 @@ def _release_memory():
         pass
 
 
-def run_turn(sid, text, q):
+def run_turn(sid, text, q, user_id=None):
     _ctx.q = q
+    _ctx.user_id = user_id
 
     try:
 
@@ -1427,12 +1519,68 @@ def auth_login():
     return jsonify(user=_public_user(row))
 
 
+_reconcile_seen = {}
+
+
+def _reconcile_pending(user):
+    try:
+        if _premium_info(user)["active"]:
+            return user
+
+        user_id = int(user["id"])
+        now = time.time()
+
+        if now - _reconcile_seen.get(user_id, 0) < 90:
+            return user
+
+        _reconcile_seen[user_id] = now
+
+        cutoff = (datetime.now(timezone.utc) - timedelta(days=7)).isoformat()
+
+        conn = _db()
+        try:
+            rows = conn.execute(
+                """SELECT reference FROM payments
+                   WHERE user_id = ? AND status = 'pending' AND created_at > ?
+                   ORDER BY created_at DESC LIMIT 5""",
+                (user_id, cutoff),
+            ).fetchall()
+        finally:
+            conn.close()
+
+        changed = False
+
+        for row in rows:
+            try:
+                if _finalize_payment(row["reference"]) == "success":
+                    changed = True
+            except Exception as exc:
+                print(f"Reconcile error: {exc}")
+
+        if changed:
+            conn = _db()
+            try:
+                fresh = conn.execute("SELECT * FROM users WHERE id = ?", (user_id,)).fetchone()
+            finally:
+                conn.close()
+
+            if fresh is not None:
+                return fresh
+
+    except Exception as exc:
+        print(f"Reconcile failed: {exc}")
+
+    return user
+
+
 @app.get("/api/auth/me")
 def auth_me():
     user = current_user()
     if user is None:
         session.clear()
         return jsonify(user=None)
+
+    user = _reconcile_pending(user)
 
     return jsonify(user=_public_user(user))
 
@@ -1621,7 +1769,70 @@ def _paystack(method, path, payload=None):
         raise RuntimeError("Could not reach Paystack.") from exc
 
 
-def _finalize_payment(reference):
+def _recover_payment(reference, expect_user_id=None):
+    """A paid Paystack payment that has no row in our payments table (for example the
+    row could not be saved when checkout opened). The payment is checked with Paystack
+    and Premium is switched on from the details we sent when checkout opened."""
+    if not str(reference).startswith("st_"):
+        return None
+
+    res = _paystack("GET", "/transaction/verify/" + quote(reference, safe=""))
+    data = res.get("data") or {}
+    status = str(data.get("status", "")).lower()
+
+    if status != "success":
+        return "failed" if status in ("failed", "abandoned", "reversed") else "pending"
+
+    meta = data.get("metadata") or {}
+    plan = PLANS.get(str(meta.get("plan", "")).lower())
+
+    try:
+        user_id = int(meta.get("user_id"))
+    except (TypeError, ValueError):
+        return None
+
+    if plan is None:
+        return None
+
+    if expect_user_id is not None and int(expect_user_id) != user_id:
+        return None
+
+    amount_kobo = plan["amount"] * 100
+
+    if int(data.get("amount") or 0) != amount_kobo or str(data.get("currency", "")).upper() != "NGN":
+        print(f"Recovered payment {reference} amount/currency mismatch")
+        return "failed"
+
+    conn = _db()
+    try:
+        user = conn.execute("SELECT id FROM users WHERE id = ?", (user_id,)).fetchone()
+
+        if user is None:
+            return None
+
+        try:
+            conn.execute(
+                """INSERT INTO payments (reference, user_id, plan, amount_kobo, status, created_at)
+                   VALUES (?, ?, ?, ?, 'pending', ?)""",
+                (
+                    reference,
+                    user_id,
+                    str(meta.get("plan", "")).lower(),
+                    amount_kobo,
+                    datetime.now(timezone.utc).isoformat(),
+                ),
+            )
+            conn.commit()
+        except DB_INTEGRITY_ERROR:
+            pass  # another request saved it a moment ago
+    finally:
+        conn.close()
+
+    print(f"Recovered missing payment row for {reference}")
+    return _finalize_payment(reference, _retry=False)
+
+
+def _finalize_payment(reference, expect_user_id=None, _retry=True):
     """Verify a payment with Paystack and switch Premium on once.
 
     Returns 'success', 'pending', 'failed' or None (unknown reference).
@@ -1634,7 +1845,10 @@ def _finalize_payment(reference):
         conn.close()
 
     if pay is None:
-        return None
+        if not _retry:
+            return None
+
+        return _recover_payment(reference, expect_user_id)
 
     if pay["status"] == "success":
         return "success"
@@ -1702,6 +1916,22 @@ def premium_checkout():
     amount_kobo = plan["amount"] * 100
     base = APP_BASE_URL or request.url_root.rstrip("/")
 
+    # 1) Save the pending payment first.
+    conn = _db()
+    try:
+        conn.execute(
+            """INSERT INTO payments (reference, user_id, plan, amount_kobo, status, created_at)
+               VALUES (?, ?, ?, ?, 'pending', ?)""",
+            (reference, int(user["id"]), plan_id, amount_kobo, datetime.now(timezone.utc).isoformat()),
+        )
+        conn.commit()
+    except Exception as exc:
+        print(f"Checkout could not save the payment row: {exc}")
+        return jsonify(error="I couldn't open checkout. Please try again."), 502
+    finally:
+        conn.close()
+
+    # 2) Then open Paystack.
     try:
         res = _paystack(
             "POST",
@@ -1715,25 +1945,23 @@ def premium_checkout():
                 "metadata": {"user_id": int(user["id"]), "plan": plan_id},
             },
         )
+
+        url = (res.get("data") or {}).get("authorization_url")
+
+        if not url:
+            raise RuntimeError("Paystack returned no checkout link.")
+
     except Exception as exc:
         print(f"Checkout error: {exc}")
+
+        conn = _db()
+        try:
+            conn.execute("DELETE FROM payments WHERE reference = ? AND status = 'pending'", (reference,))
+            conn.commit()
+        finally:
+            conn.close()
+
         return jsonify(error="I couldn't open checkout. Please try again."), 502
-
-    url = (res.get("data") or {}).get("authorization_url")
-
-    if not url:
-        return jsonify(error="I couldn't open checkout. Please try again."), 502
-
-    conn = _db()
-    try:
-        conn.execute(
-            """INSERT INTO payments (reference, user_id, plan, amount_kobo, status, created_at)
-               VALUES (?, ?, ?, ?, 'pending', ?)""",
-            (reference, int(user["id"]), plan_id, amount_kobo, datetime.now(timezone.utc).isoformat()),
-        )
-        conn.commit()
-    finally:
-        conn.close()
 
     return jsonify(authorization_url=url, reference=reference)
 
@@ -1756,14 +1984,17 @@ def premium_verify():
     finally:
         conn.close()
 
-    if pay is None or int(pay["user_id"]) != int(user["id"]):
+    if pay is not None and int(pay["user_id"]) != int(user["id"]):
         return jsonify(error="That payment was not found on your account."), 404
 
     try:
-        status = _finalize_payment(reference)
+        status = _finalize_payment(reference, expect_user_id=int(user["id"]))
     except Exception as exc:
         print(f"Verify payment error: {exc}")
         return jsonify(error="I couldn't confirm the payment yet. Try again in a moment."), 502
+
+    if status is None:
+        return jsonify(error="That payment was not found on your account."), 404
 
     conn = _db()
     try:
@@ -1794,11 +2025,15 @@ def premium_webhook():
 
     if event.get("event") == "charge.success":
         reference = str((event.get("data") or {}).get("reference", ""))
+
         try:
-            _finalize_payment(reference)
+            status = _finalize_payment(reference)
         except Exception as exc:
             print(f"Webhook error: {exc}")
             return "", 500
+
+        if status == "pending":
+            return "", 500  # not confirmed yet: ask Paystack to send it again
 
     return "", 200
 
@@ -1827,6 +2062,7 @@ def health():
         status="ok",
         sportybet=provider_loaded,
         smart_ticket=SMART_TICKET_MODULE is not None,
+        history=history is not None,
         database="postgres" if USE_PG else "sqlite",
         database_ok=database_ok,
         secret_key_set=bool(os.getenv("SECRET_KEY")),
@@ -1928,7 +2164,7 @@ def _start_chat_turn(sid, text):
 
     threading.Thread(
         target=run_turn,
-        args=(sid, text, q),
+        args=(sid, text, q, int(user["id"])),
         daemon=True,
     ).start()
 
@@ -2105,6 +2341,169 @@ def api_why():
         return {"reason": reason}
 
     return _ticket_tool(work, premium_only=True)
+
+
+# ===============================================================
+# TICKET HISTORY
+# ===============================================================
+
+def _is_admin(user):
+    return bool(user) and user["identifier"] in ADMIN_EMAILS
+
+
+@app.get("/api/history/record")
+def api_history_record():
+    """Public numbers for the home screen. Counts only, nothing personal."""
+
+    if history is None:
+        return jsonify(error="History is off."), 503
+
+    try:
+        return jsonify(history.stats())
+    except Exception as exc:
+        print(f"History record error: {type(exc).__name__}: {exc}")
+        return jsonify(error="Could not load the record."), 500
+
+
+@app.get("/api/history")
+@login_required
+def api_history():
+
+    if history is None:
+        return jsonify(error="History is off."), 503
+
+    status = str(request.args.get("status", "all")).lower()
+    before = request.args.get("before")
+
+    try:
+        return jsonify(
+            history.list_tickets(
+                g.user["id"],
+                status=status,
+                limit=request.args.get("limit", 30),
+                before=before if before and before.isdigit() else None,
+            )
+        )
+    except Exception as exc:
+        print(f"History list error: {type(exc).__name__}: {exc}")
+        return jsonify(error="Could not load your history."), 500
+
+
+@app.get("/api/history/<int:ticket_id>")
+@login_required
+def api_history_one(ticket_id):
+    """The picks of one ticket (used by the admin marking panel)."""
+
+    if history is None:
+        return jsonify(error="History is off."), 503
+
+    row = history.get_ticket(ticket_id)
+
+    if row is None or (int(row["user_id"]) != int(g.user["id"]) and not _is_admin(g.user)):
+        return jsonify(error="Ticket not found."), 404
+
+    legs = [
+        {
+            "match": leg.get("match", ""),
+            "pick": leg.get("pick", ""),
+            "odd": leg.get("odd"),
+            "result": leg.get("result"),
+            "source": leg.get("source"),
+        }
+        for leg in json.loads(row["legs"])
+    ]
+
+    return jsonify(id=int(row["id"]), status=row["status"], legs=legs)
+
+
+@app.get("/api/history/<int:ticket_id>/image.png")
+@login_required
+def api_history_image(ticket_id):
+
+    if history is None:
+        return jsonify(error="History is off."), 503
+
+    if too_fast("hist:" + client_ip(), 60):
+        return jsonify(error="Slow down. Try again in a minute."), 429
+
+    row = history.get_ticket(ticket_id)
+
+    if row is None or (int(row["user_id"]) != int(g.user["id"]) and not _is_admin(g.user)):
+        return jsonify(error="Ticket not found."), 404
+
+    try:
+        png = history.render_png(row)
+    except Exception as exc:
+        print(f"History picture error: {type(exc).__name__}: {exc}")
+        return jsonify(error="Could not draw that ticket."), 500
+
+    done = row["status"] in ("won", "cancelled")
+
+    return Response(
+        png,
+        mimetype="image/png",
+        headers={"Cache-Control": "private, max-age=" + ("86400" if done else "120")},
+    )
+
+
+@app.post("/api/history/<int:ticket_id>/mark")
+@login_required
+def api_history_mark(ticket_id):
+    """Admin only: tick or cross a pick by hand (for picks the data cannot prove)."""
+
+    if history is None:
+        return jsonify(error="History is off."), 503
+
+    if not _is_admin(g.user):
+        return jsonify(error="Admins only."), 403
+
+    data = request.get_json(silent=True) or {}
+
+    try:
+        status = history.mark_leg(ticket_id, int(data.get("index")), str(data.get("result", "")))
+    except (TypeError, ValueError):
+        return jsonify(error="Bad request."), 400
+
+    if status is None:
+        return jsonify(error="Ticket not found."), 404
+
+    return jsonify(status=status)
+
+
+@app.get("/api/history/<int:ticket_id>/probe")
+@login_required
+def api_history_probe(ticket_id):
+    """Admin only: show what SportyBet returns for this ticket's booking code."""
+
+    if history is None:
+        return jsonify(error="History is off."), 503
+
+    if not _is_admin(g.user):
+        return jsonify(error="Admins only."), 403
+
+    row = history.get_ticket(ticket_id)
+
+    if row is None or not row["code"]:
+        return jsonify(error="This ticket has no booking code."), 404
+
+    try:
+        return jsonify(history.probe_code(row["code"]))
+    except Exception as exc:
+        return jsonify(error=f"SportyBet said: {type(exc).__name__}: {exc}"), 502
+
+
+@app.post("/api/history/settle")
+@login_required
+def api_history_settle():
+    """Admin only: check results right now instead of waiting for the timer."""
+
+    if history is None:
+        return jsonify(error="History is off."), 503
+
+    if not _is_admin(g.user):
+        return jsonify(error="Admins only."), 403
+
+    return jsonify(history.settle_pending(force=True))
 
 
 # ===============================================================

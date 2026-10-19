@@ -112,8 +112,12 @@ GROUP_LIMIT = int(os.getenv("GROUP_LIMIT", "200"))
 # MARKETS
 # ============================================================
 
-# User does not want double chance.
-ALLOW_DOUBLE_CHANCE = False
+# Master switch: True = the old strict self-made rules are OFF (only the odds floor stays).
+RULES_OFF = True
+MIN_ODD_FLOOR = 1.12  # picks at 1.11 or lower are never used
+
+# Double chance (Home or Draw / Draw or Away) is on again.
+ALLOW_DOUBLE_CHANCE = True
 
 # Football-data bonus used by selection optimizer.
 DATA_BONUS = 0.12
@@ -159,7 +163,7 @@ def _env_float(name, default):
         return float(default)
 
 
-NORMAL_MIN_ODD = _env_float("NORMAL_MIN_ODD", 1.20)
+NORMAL_MIN_ODD = _env_float("NORMAL_MIN_ODD", MIN_ODD_FLOOR)
 RULE_AWAY_WIN_MIN_P = _env_float("RULE_AWAY_WIN_MIN_P", 0.48)
 RULE_HOME_WIN_P = _env_float("RULE_HOME_WIN_P", 0.55)
 HOME_WIN_ODD_MIN = _env_float("HOME_WIN_ODD_MIN", 1.50)
@@ -176,13 +180,13 @@ RULE_MIN_MINUTES = _env_float("RULE_MIN_MINUTES", 0)
 RULE_MARGIN_MIN = _env_float("RULE_MARGIN_MIN", 1.02)
 RULE_MARGIN_MAX = _env_float("RULE_MARGIN_MAX", 1.20)
 
-MAX_PER_LEAGUE = int(_env_float("MAX_PER_LEAGUE", 2))
+MAX_PER_LEAGUE = 0 if RULES_OFF else int(_env_float("MAX_PER_LEAGUE", 2))
 
 RULE_DRAW_SKIP_GAME = os.getenv("RULE_DRAW_SKIP_GAME", "0").strip().lower() in (
     "1", "true", "yes", "on",
 )
 
-SKIP_UNRELIABLE = os.getenv("SKIP_UNRELIABLE", "1").strip().lower() in (
+SKIP_UNRELIABLE = (not RULES_OFF) and os.getenv("SKIP_UNRELIABLE", "1").strip().lower() in (
     "1", "true", "yes", "on",
 )
 
@@ -217,7 +221,7 @@ DAILY_MIN_P = float(os.getenv("DAILY_MIN_P", "0.0"))
 
 DAILY_SECONDS = 24 * 60 * 60
 
-DAILY_MIN_ODD = 1.30
+DAILY_MIN_ODD = MIN_ODD_FLOOR
 DAILY_BTTS_MIN = 1.60
 DAILY_CORNER_MAX = 1.50
 
@@ -366,10 +370,7 @@ def _candidate_is_allowed(kind, label=""):
     label = str(label or "").lower()
 
     # User specifically does not want these.
-    if kind in {"under", "dnb", "dc", "dc12", "yellow_cards", "cards"}:
-        return False
-
-    if "draw no bet" in label:
+    if kind in {"under", "yellow_cards", "cards"}:
         return False
 
     if "under " in label:
@@ -1378,6 +1379,9 @@ def _match_context(markets):
 
 def _passes_rules(c, ctx, relax=0):
 
+    if RULES_OFF:
+        return True
+
     kind = c.get("kind")
     side = c.get("side")
 
@@ -1718,7 +1722,8 @@ def gather(
         margin = ctx.get("margin")
 
         if (
-            margin is not None
+            not RULES_OFF
+            and margin is not None
             and not (RULE_MARGIN_MIN <= margin <= RULE_MARGIN_MAX)
         ):
             continue
@@ -3302,6 +3307,11 @@ def _flow_main(
                 "pick": candidate["label"],
                 "odd": candidate["odd"],
                 "prob": candidate["p"],
+                # extra details so the History page can mark each pick later
+                "kind": candidate.get("kind"),
+                "home": candidate["home"],
+                "away": candidate["away"],
+                "kickoff_ts": candidate["kickoff"].timestamp(),
             }
             for candidate in chosen
         ]

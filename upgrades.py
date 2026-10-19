@@ -43,6 +43,9 @@ import main as bot
 
 CTX = threading.local()  # app.py sets CTX.pidgin for each chat turn
 
+ODD_FLOOR = 1.12  # picks at 1.11 or lower are never used
+RULES_OFF = True  # True = the old strict self-made rules (tight games, draw limits ...) are OFF
+
 USE_UP_MARKETS = True
 UP_2UP_MIN_PROB = 0.70  # lower this to use 2UP more often, raise it for more 1UP
 
@@ -116,7 +119,7 @@ NEW ABILITIES (these override anything above that says the bot cannot do them)
   top leagues and European cups). It does NOT use direct wins. Never say it cannot do corners.
 - It also builds straight-win tickets: "2UP win", "1UP win", "plain win" or "double chance", for home, away or both,
   for a number of games and/or total odds. For those, put the words 2up, 1up, plain win or double chance, plus
-  home or away, in "request". Every pick is at least 1.30 odds.
+  home or away, in "request". Every pick is at least 1.12 odds.
 - "Today's straight win 30 odds" uses today's games first and adds tomorrow's only if 30 odds cannot be reached.
   Straight win is 1UP / 2UP, and "straight win and win either half" adds win either half picks. Keep the words
   "straight win", "today", the odds number and "either half" EXACTLY in "request".
@@ -195,26 +198,26 @@ STRAIGHT_DETAIL = 150  # for Straight win: how many matches get their 1UP / 2UP 
 STRAIGHT_STRONG_P = 0.55  # a team needs at least this chance to win (from SportyBet's prices)
 STRAIGHT_MAX_STRENGTH = 0.88  # teams stronger than this pay too little, so they are not read
 STRAIGHT_2UP_FROM_P = 0.60  # 55% to 59% -> 1UP. 60% and above -> 2UP (when its price fits)
-STRAIGHT_1UP_MIN = 1.20  # 1UP pays at least this ...
-STRAIGHT_1UP_MAX = 1.32  # ... and NEVER more than this
-STRAIGHT_2UP_MIN = 1.30  # 2UP pays at least this ...
-STRAIGHT_2UP_MAX = 1.50  # ... and NEVER more than this
+STRAIGHT_1UP_MIN = ODD_FLOOR  # 1UP pays at least this ...
+STRAIGHT_1UP_MAX = 3.00  # ... and NEVER more than this
+STRAIGHT_2UP_MIN = ODD_FLOOR  # 2UP pays at least this ...
+STRAIGHT_2UP_MAX = 4.00  # ... and NEVER more than this
 # If the target cannot be reached (e.g. 100 odds), the ticket is topped up with
 # "Home or Away" (12) picks where a draw is unlikely.
 DOUBLE12_MAX_DRAW = 0.27  # 12 is only used when the draw chance is at most this
-DOUBLE12_MIN_ODD = 1.15
-DOUBLE12_MAX_ODD = 1.45
+DOUBLE12_MIN_ODD = ODD_FLOOR
+DOUBLE12_MAX_ODD = 10.00
 SOONER_BONUS = 0.012  # small push towards games that kick off sooner
 
 # Replacements for handicap: "sure" picks that SportyBet prices clearly
-FH_GOALS_MIN_ODD = 1.30  # "Over 0.5 goals (1st half)" must pay at least this much
+FH_GOALS_MIN_ODD = ODD_FLOOR  # "Over 0.5 goals (1st half)" must pay at least this much
 DOUBLE12_SURE_DRAW = 0.24  # in normal tickets "Home or Away" (12) is used only when a draw is this unlikely
 
 # MIXED TICKETS (every ticket except Straight win): only these pick types, and only strong ones.
 # 1UP, 2UP, win either half, Home / Away to score 0.5,
 # Home or Away (12), 2nd half Over 0.5 goals, Over 1.5 goals.
 STRONG_MIN_P = 0.66  # a pick needs at least this chance (from SportyBet's prices / football stats)
-SH_MIN_ODD = 1.15  # 2nd half picks pay at least this much
+SH_MIN_ODD = ODD_FLOOR  # 2nd half picks pay at least this much
 
 # Stricter strength for the Top leagues / European cups buttons, and for Daily 2 odds.
 # (Without football data a pick's chance is about 0.95 / odds, so 0.70 means odds up to about 1.35.)
@@ -255,23 +258,23 @@ TOP_LEAGUE_PICKS = 8  # picks on the ticket when the person does not say a numbe
 
 # Corner settings (only used when NO_CORNERS = False)
 CORNERS_LINE = 7.5  # total corners are always "Over 7.5 corners"
-CORNERS_TOTAL_MIN_ODD = 1.15  # Over 7.5 corners usually pays a little less than other picks
-CORNERS_MIN_ODD = 1.30  # team corner picks pay at least this much
-CORNERS_MAX_ODD = 2.30  # and at most this much
+CORNERS_TOTAL_MIN_ODD = ODD_FLOOR  # Over 7.5 corners usually pays a little less than other picks
+CORNERS_MIN_ODD = ODD_FLOOR  # team corner picks pay at least this much
+CORNERS_MAX_ODD = 10.00  # and at most this much
 CORNERS_MIN_P = 0.60  # chance (from SportyBet's prices) a corner pick must have
 CORNERS_PER_MATCH = 3  # how many corner choices each match offers the ticket builder
 CORNERS_DETAIL = 100  # how many top-league matches get their corner prices read
 CORNERS_MAX_PER_LEAGUE = 5  # corners tickets may use more matches from one league
 
 # Individual team goals ("Home to score 0.5") are added to normal tickets
-TEAM_GOALS_MIN_ODD = 1.25  # "Home / Away to score 0.5" must pay at least this (1.25 and above)
+TEAM_GOALS_MIN_ODD = ODD_FLOOR  # "Home / Away to score 0.5" must pay at least this (1.25 and above)
 TEAM_GOALS_BONUS = 0.10  # how strongly the ticket builder prefers them (0 = no push)
 TEAM_GOALS_SHARE = 0.35  # at most this share of a ticket may be team-goal picks
 
 # Turn this on to let the ticket builder use every SportyBet market it knows
 # (direct win, BTTS, Over goals, handicap, draw no bet ...), still strong picks only.
 # Off = only the mixed-ticket picks listed above (1UP, 2UP, either half ...).
-ALLOW_ALL_MARKETS = False
+ALLOW_ALL_MARKETS = True
 
 # BTTS, Over 2 / Over 2.5 goals and the SURE handicap. They are used in chat requests and in the buttons,
 # but ONLY for top teams (the 14 top leagues and the European cups).
@@ -279,7 +282,7 @@ ALLOW_BTTS_OVER_HANDICAP = True
 NEW_KINDS = {"btts", "over", "handicap"}
 NEW_PICK_LINES = (2.0, 2.5)  # which Over lines: Over 2 and Over 2.5 goals
 NEW_PICKS_MIN_P = 0.55  # BTTS and Over 2 / 2.5 need at least this chance
-NEW_PICKS_MIN_ODD = 1.20  # lowest price these picks may have
+NEW_PICKS_MIN_ODD = ODD_FLOOR  # lowest price these picks may have
 HANDICAP_MIN_P = 0.72  # a handicap must be a SURE one (high chance) ...
 HANDICAP_MIN_LINE = 1.0  # ... for a team getting +1 or more ...
 # ... and only in tight games (no clear favourite).
@@ -288,25 +291,25 @@ HANDICAP_MIN_LINE = 1.0  # ... for a team getting +1 or more ...
 # and goal bounds. Full-time markets only.
 # Every pick still has to pass the strong-pick check (STRONG_MIN_P), except goal bounds (BOUNDS_MIN_P).
 EXTRA_KINDS = {"combo", "streak", "bounds", "halves", "fh_ft", "draw10", "either_half"}
-EXTRA_FLOOR_ODD = 1.08  # lowest price these picks may have (each type also has its own range below)
-COMBO_MIN_ODD = 1.20
-COMBO_MAX_ODD = 1.50
+EXTRA_FLOOR_ODD = ODD_FLOOR  # lowest price these picks may have (each type also has its own range below)
+COMBO_MIN_ODD = ODD_FLOOR
+COMBO_MAX_ODD = 10.00
 COMBOS_PER_MATCH = 2  # how many combo choices each match offers the ticket builder
-STREAK_MIN_ODD = 1.15  # "Any team to score 3+ goals in a row" (only used when NO_STREAK = False)
-STREAK_MAX_ODD = 1.60
-BOUNDS_MIN_ODD = 1.15  # a wide range (for example Home team 0-2) can pay quite low
-BOUNDS_MAX_ODD = 2.60
+STREAK_MIN_ODD = ODD_FLOOR  # "Any team to score 3+ goals in a row" (only used when NO_STREAK = False)
+STREAK_MAX_ODD = 10.00
+BOUNDS_MIN_ODD = ODD_FLOOR  # a wide range (for example Home team 0-2) can pay quite low
+BOUNDS_MAX_ODD = 10.00
 BOUNDS_MIN_P = 0.60  # goal bounds use their own strength check
 BOUNDS_WANTED = None  # None = any range the market offers, or a set such as {"0-1", "2-3", "3-4"}
 BOUNDS_PER_MATCH = 2  # total goal bounds, Home team goal bounds and Away team goal bounds: at most this many per match
-HALVES_MIN_ODD = 1.15  # Both halves Over 1.5 / Under 1.5 (yes or no)
-HALVES_MAX_ODD = 1.60
-FHFT_MIN_ODD = 1.20  # 1st half Over 0.5 & full-time Over 1.5
-FHFT_MAX_ODD = 1.60
-DRAW10_MIN_ODD = 1.10  # draw after 10 minutes (10 min 1X2)
-DRAW10_MAX_ODD = 1.45
-EITHER_HALF_MIN_ODD = 1.20  # Home / Away team to win either half
-EITHER_HALF_MAX_ODD = 1.60
+HALVES_MIN_ODD = ODD_FLOOR  # Both halves Over 1.5 / Under 1.5 (yes or no)
+HALVES_MAX_ODD = 10.00
+FHFT_MIN_ODD = ODD_FLOOR  # 1st half Over 0.5 & full-time Over 1.5
+FHFT_MAX_ODD = 10.00
+DRAW10_MIN_ODD = ODD_FLOOR  # draw after 10 minutes (10 min 1X2)
+DRAW10_MAX_ODD = 10.00
+EITHER_HALF_MIN_ODD = ODD_FLOOR  # Home / Away team to win either half
+EITHER_HALF_MAX_ODD = 10.00
 CORNERS_SHARE_NORMAL = 0.15  # (only used when NO_CORNERS = False)
 
 
@@ -2327,6 +2330,9 @@ if smart_ticket is not None:
     _orig_passes_rules = st._passes_rules
 
     def _passes_rules(candidate, ctx, relax=0):
+        if RULES_OFF:
+            return True
+
         if getattr(CTX, "corners", False):
             return True  # corners are chosen by their own prices, not the goal rules
 

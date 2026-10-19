@@ -1748,7 +1748,6 @@ def gather(
     if SAFE_MODE and not SHOW_ALL and not daily and not straight:
         # odds do not matter, probability does
         max_odd = 1000000.0
-        floor = 0.0
         post_min_p = max(post_min_p, SAFE_MIN_P)
 
     groups = []

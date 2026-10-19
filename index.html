@@ -214,6 +214,40 @@ header { display: flex; align-items: center; gap: 10px; padding: 12px 16px; bord
 .block h2 { margin: 0 0 4px; font-size: 18px; font-weight: 800; }
 .block p { margin: 0 0 10px; color: var(--gray); font-size: 15px; }
 
+/* ============ HISTORY ============ */
+#histview { overflow-y: auto; overflow-x: hidden; -webkit-overflow-scrolling: touch; padding: 22px 18px 28px; }
+.hstats { display: grid; grid-template-columns: repeat(4, minmax(0, 1fr)); gap: 8px; margin: 0 0 14px; }
+.hstat { background: var(--bar); border-radius: 16px; padding: 10px 4px; text-align: center; }
+.hstat b { display: block; font-size: 20px; line-height: 1.1; }
+.hstat span { display: block; font-size: 11px; color: var(--gray); font-weight: 700; margin-top: 2px; }
+.hstat.won b { color: var(--green); }
+.hstat.cancelled b { color: var(--red); }
+.hchips { display: flex; gap: 8px; margin: 0 0 12px; overflow-x: auto; }
+.hchip { border: 1px solid var(--line); background: var(--surface); color: var(--ink); font: inherit; font-size: 14px; font-weight: 700; padding: 8px 14px; border-radius: 999px; cursor: pointer; flex: none; }
+.hchip.on { background: var(--chip); border-color: var(--chip); color: #fff; }
+.hitem { width: 100%; text-align: left; font: inherit; color: var(--ink); background: var(--surface); border: 1px solid var(--line); border-radius: 18px; padding: 13px 14px; margin: 0 0 10px; display: flex; align-items: center; gap: 12px; cursor: pointer; }
+.hitem:active { border-color: var(--red); }
+.hitem .hl { flex: 1; min-width: 0; }
+.hitem b { display: block; font-size: 16px; }
+.hitem small { display: block; color: var(--gray); font-size: 12.5px; margin-top: 3px; }
+.hitem .hr { text-align: right; flex: none; }
+.hitem .ho { font-weight: 800; font-size: 17px; }
+.hb { display: inline-block; font-size: 11.5px; font-weight: 800; padding: 3px 9px; border-radius: 999px; margin-bottom: 4px; background: var(--bubble); color: var(--gray); }
+.hb.won { background: var(--green); color: #fff; }
+.hb.cancelled { background: var(--red); color: #fff; }
+.hempty { text-align: center; color: var(--gray); padding: 36px 10px; font-size: 15px; }
+.hview { position: fixed; inset: 0; z-index: 60; background: #04111f; overflow-y: auto; -webkit-overflow-scrolling: touch; padding: 14px 14px calc(24px + env(safe-area-inset-bottom)); }
+.hview .hx { position: sticky; top: 0; float: right; width: 40px; height: 40px; border-radius: 50%; border: 0; background: #fff; color: #04111f; font-size: 24px; line-height: 1; cursor: pointer; z-index: 2; }
+.hview img { display: block; width: 100%; max-width: 520px; margin: 44px auto 0; border-radius: 14px; background: #fff; }
+.hview .hnote { max-width: 520px; margin: 12px auto 0; color: #c4ccd8; font-size: 13px; text-align: center; }
+.hadmin { max-width: 520px; margin: 14px auto 0; background: var(--surface); color: var(--ink); border-radius: 16px; padding: 10px 12px; }
+.hadmin h3 { margin: 2px 0 8px; font-size: 14px; }
+.hleg { display: flex; align-items: center; gap: 8px; padding: 7px 0; border-top: 1px solid var(--line); font-size: 13px; }
+.hleg > span { flex: 1; min-width: 0; }
+.hleg button { border: 1px solid var(--line); background: var(--surface); color: var(--ink); border-radius: 10px; width: 34px; height: 32px; font-size: 16px; font-weight: 800; cursor: pointer; }
+.hleg button.on { background: var(--chip); color: #fff; border-color: var(--chip); }
+
+
 .fixer { background: var(--navy); color: #fff; border-radius: 22px; padding: 16px; position: relative; overflow: hidden; margin-top: 22px; }
 .fixer::before { content: ""; position: absolute; inset: 0; background: var(--red); clip-path: polygon(78% 0, 100% 0, 100% 100%, 88% 100%); }
 .fixer::after { content: ""; position: absolute; inset: 0; background: var(--dark-red); clip-path: polygon(82% 0, 88% 0, 96% 100%, 90% 100%); }
@@ -750,6 +784,7 @@ padding: 32px;
 <nav class="topnav" aria-label="Main menu">
 <button class="tn on" data-go="hub" type="button">Home</button>
 <button class="tn" data-go="chat" type="button">Chat</button>
+<button class="tn" data-go="hist" type="button">History</button>
 </nav>
 
 <button class="iconbtn" id="gear" aria-label="Settings">
@@ -800,6 +835,14 @@ padding: 32px;
 <em class="new">New</em>
 </button>
 
+<button type="button" class="card wide" id="recordcard">
+<svg viewBox="0 0 24 24" aria-hidden="true"><circle cx="12" cy="12" r="9"/><polyline points="12 7 12 12 15.5 14"/></svg>
+<div class="wtext">
+<b>Our record</b>
+<span id="recordnum">Every ticket is saved and marked</span>
+</div>
+</button>
+
 <div class="block" id="hsaved" hidden>
 <h2>Saved tickets</h2>
 <div class="svlist" id="hslist"></div>
@@ -829,6 +872,22 @@ padding: 32px;
 </div>
 </section>
 
+<!-- HISTORY -->
+<section class="view" id="histview" hidden>
+<h2 class="hub-hi">History</h2>
+<p class="hub-sub">Every ticket you build is saved here and marked by itself.</p>
+<div class="hstats" id="hstats"></div>
+<div class="hchips" id="hchips">
+<button type="button" class="hchip on" data-f="all">All</button>
+<button type="button" class="hchip" data-f="won">Won</button>
+<button type="button" class="hchip" data-f="cancelled">Cancelled</button>
+<button type="button" class="hchip" data-f="pending">Pending</button>
+</div>
+<div id="hlist"></div>
+<button type="button" class="mini" id="hmore" hidden>Show more</button>
+<p class="hub-legal">Results are checked automatically after the games. Picks that cannot be checked stay pending.</p>
+</section>
+
 </div>
 
 <nav class="tabbar">
@@ -840,8 +899,20 @@ Home
 <svg viewBox="0 0 24 24"><path d="M21 12a8 8 0 0 1-11.6 7.1L3 21l1.9-5.4A8 8 0 1 1 21 12z"/></svg>
 Chat
 </button>
+<button class="tb" data-go="hist">
+<svg viewBox="0 0 24 24"><circle cx="12" cy="12" r="9"/><polyline points="12 7 12 12 15.5 14"/></svg>
+History
+</button>
 </nav>
 
+</div>
+
+<!-- ============ HISTORY TICKET VIEWER ============ -->
+<div class="hview" id="hview" hidden>
+<button type="button" class="hx" id="hvclose" aria-label="Close">&times;</button>
+<img id="hvimg" alt="Ticket">
+<p class="hnote" id="hvnote"></p>
+<div class="hadmin" id="hvadmin" hidden></div>
 </div>
 
 <!-- ============ TOOLS SHEET ============ -->
@@ -986,20 +1057,177 @@ SCREENS: home hub and chat
 
 const hub = $("hub");
 const chatview = $("chatview");
+const histview = $("histview");
 let view = "hub";
 
 function go(v) {
 view = v;
 hub.hidden = v !== "hub";
 chatview.hidden = v !== "chat";
+histview.hidden = v !== "hist";
 $("back").hidden = v !== "chat";
 document.querySelectorAll(".tb, .tn").forEach((b) => b.classList.toggle("on", b.dataset.go === v));
-if (v === "hub") renderHubSaved();
+if (v === "hub") { renderHubSaved(); loadRecord(); }
+else if (v === "hist") loadHistory(true);
 else scrollDown();
 }
 
 document.querySelectorAll(".tb, .tn").forEach((b) => b.addEventListener("click", () => go(b.dataset.go)));
 $("back").addEventListener("click", () => go("hub"));
+
+
+/* =========================================================
+HISTORY: every ticket, marked won / cancelled by itself
+========================================================= */
+
+let histFilter = "all";
+let histItems = [];
+const HIST_TEXT = { won: "WON", cancelled: "CANCELLED", pending: "PENDING", unverified: "UNCHECKED" };
+
+async function loadRecord() {
+try {
+const r = await fetch("/api/history/record");
+if (!r.ok) return;
+const d = await r.json();
+const done = (d.won || 0) + (d.cancelled || 0);
+$("recordnum").textContent = done
+? d.won + " won \u00b7 " + d.cancelled + " cancelled" + (d.win_rate != null ? " \u00b7 " + d.win_rate + "% won" : "")
+: "Every ticket is saved and marked";
+} catch (e) {}
+}
+
+function histDate(iso) {
+const d = new Date(iso);
+if (isNaN(d)) return "";
+return d.toLocaleDateString(undefined, { day: "numeric", month: "short" }) + ", " +
+d.toLocaleTimeString(undefined, { hour: "numeric", minute: "2-digit" });
+}
+
+function histCard(t) {
+const done = t.won + t.lost;
+const note = t.archived ? "Old ticket (picture removed)" : t.picks + " picks" + (done ? " \u00b7 " + t.won + " won" + (t.lost ? ", " + t.lost + " lost" : "") : "");
+return '<button type="button" class="hitem" data-id="' + t.id + '"><div class="hl"><b>' + esc(t.title) + "</b><small>" +
+esc(histDate(t.created_at)) + " \u00b7 " + esc(note) + (t.code ? " \u00b7 " + esc(t.code) : "") +
+'</small></div><div class="hr"><span class="hb ' + esc(t.status) + '">' + (HIST_TEXT[t.status] || "PENDING") +
+'</span><div class="ho">' + Number(t.total_odds).toFixed(2) + "</div></div></button>";
+}
+
+async function loadHistory(reset) {
+const list = $("hlist");
+if (reset) { histItems = []; list.innerHTML = '<div class="hempty">Loading...</div>'; $("hmore").hidden = true; }
+try {
+const before = !reset && histItems.length ? "&before=" + histItems[histItems.length - 1].id : "";
+const r = await fetch("/api/history?status=" + encodeURIComponent(histFilter) + "&limit=30" + before);
+if (r.status === 401) { list.innerHTML = '<div class="hempty">Please log in to see your history.</div>'; return; }
+const d = await r.json();
+if (!r.ok) throw new Error(d.error || "failed");
+const c = d.counts || {};
+$("hstats").innerHTML =
+'<div class="hstat won"><b>' + (c.won || 0) + "</b><span>Won</span></div>" +
+'<div class="hstat cancelled"><b>' + (c.cancelled || 0) + "</b><span>Cancelled</span></div>" +
+'<div class="hstat"><b>' + (c.pending || 0) + "</b><span>Pending</span></div>" +
+'<div class="hstat"><b>' + (((c.won || 0) + (c.cancelled || 0)) ? Math.round(100 * (c.won || 0) / ((c.won || 0) + (c.cancelled || 0))) + "%" : "-") + "</b><span>Win rate</span></div>";
+histItems = histItems.concat(d.tickets || []);
+list.innerHTML = histItems.length
+? histItems.map(histCard).join("")
+: '<div class="hempty">No tickets here yet. Build one in the chat and it will appear.</div>';
+$("hmore").hidden = (d.tickets || []).length < 30;
+} catch (e) {
+if (reset) list.innerHTML = '<div class="hempty">Could not load your history. Try again in a moment.</div>';
+}
+}
+
+$("hchips").addEventListener("click", (e) => {
+const b = e.target.closest("[data-f]");
+if (!b) return;
+histFilter = b.dataset.f;
+document.querySelectorAll(".hchip").forEach((x) => x.classList.toggle("on", x === b));
+loadHistory(true);
+});
+$("hmore").addEventListener("click", () => loadHistory(false));
+$("recordcard").addEventListener("click", () => go("hist"));
+$("hlist").addEventListener("click", (e) => {
+const b = e.target.closest("[data-id]");
+if (b) openHistTicket(Number(b.dataset.id));
+});
+
+let hvId = null;
+
+function histImg(id) {
+$("hvimg").src = "/api/history/" + id + "/image.png?t=" + Date.now();
+}
+
+async function openHistTicket(id) {
+hvId = id;
+const t = histItems.find((x) => x.id === id) || {};
+$("hvadmin").hidden = true;
+$("hvnote").textContent = t.archived ? "This old ticket keeps only its odds and result." : "";
+if (!t.archived) histImg(id); else $("hvimg").removeAttribute("src");
+$("hview").hidden = false;
+document.body.style.overflow = "hidden";
+if (accountUser && accountUser.premium && accountUser.premium.admin && !t.archived) renderHistAdmin(id);
+}
+
+function closeHistTicket() {
+$("hview").hidden = true;
+document.body.style.overflow = "";
+hvId = null;
+}
+$("hvclose").addEventListener("click", closeHistTicket);
+
+/* Admin only: tick or cross a pick by hand when the data cannot prove it (corners, 1UP). */
+async function renderHistAdmin(id) {
+try {
+const r = await fetch("/api/history/" + id);
+if (!r.ok) return;
+const d = await r.json();
+const box = $("hvadmin");
+box.innerHTML = "<h3>Admin: mark picks by hand</h3>" + (d.legs || []).map((l, i) =>
+'<div class="hleg" data-i="' + i + '"><span>' + esc(l.match) + " - " + esc(l.pick) +
+(l.source === "admin" ? " (by hand)" : "") + "</span>" +
+'<button type="button" data-r="won" class="' + (l.result === "won" ? "on" : "") + '">&#10003;</button>' +
+'<button type="button" data-r="lost" class="' + (l.result === "lost" ? "on" : "") + '">&#10007;</button>' +
+'<button type="button" data-r="void" class="' + (l.result === "void" ? "on" : "") + '">-</button></div>'
+).join("") + '<div style="display:flex;gap:8px;margin-top:8px;flex-wrap:wrap"><button type="button" class="mini" id="hvcheck">Check results now</button><button type="button" class="mini" id="hvprobe">What does SportyBet show?</button></div><pre id="hvprobeout" style="white-space:pre-wrap;word-break:break-word;font-size:11.5px;margin:8px 0 0;display:none"></pre>';
+box.hidden = false;
+} catch (e) {}
+}
+
+$("hvadmin").addEventListener("click", async (e) => {
+if (e.target.id === "hvprobe") {
+const out = $("hvprobeout");
+out.style.display = "block";
+out.textContent = "Asking SportyBet...";
+try {
+const r = await fetch("/api/history/" + hvId + "/probe");
+const d = await r.json();
+out.textContent = JSON.stringify(d, null, 1);
+} catch (x) { out.textContent = "Could not reach the server."; }
+return;
+}
+if (e.target.id === "hvcheck") {
+e.target.textContent = "Checking...";
+try { await fetch("/api/history/settle", { method: "POST" }); } catch (x) {}
+if (hvId) { histImg(hvId); renderHistAdmin(hvId); }
+loadHistory(true);
+return;
+}
+const b = e.target.closest("[data-r]");
+const row = e.target.closest("[data-i]");
+if (!b || !row || !hvId) return;
+const was = b.classList.contains("on");
+try {
+const r = await fetch("/api/history/" + hvId + "/mark", {
+method: "POST",
+headers: { "Content-Type": "application/json" },
+body: JSON.stringify({ index: Number(row.dataset.i), result: was ? "" : b.dataset.r })
+});
+if (!r.ok) throw new Error();
+histImg(hvId);
+renderHistAdmin(hvId);
+loadHistory(true);
+} catch (x) { toast("Could not save that mark."); }
+});
 
 /* Hide the tab bar while typing so the keyboard has room. */
 input.addEventListener("focus", () => document.body.classList.add("typing-now"));

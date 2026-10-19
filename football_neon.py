@@ -108,198 +108,321 @@ def neon_purge_expired():
 
 
 # ------------------------------------------------------------
-# API-FOOTBALL REQUESTS
+# SOCCERSAPI REQUESTS
 # ------------------------------------------------------------
 
-_calls = []
+import difflib
+from datetime import timedelta
+
+SOCCERSAPI_KEY = (
+    os.getenv("SOCCERSAPI_API_KEY")
+    or os.getenv("SOCCERSAPI_KEY")
+    or os.getenv("SOCCERSAPI_TOKEN")
+    or ""
+).strip().strip("\"'")
+SOCCERSAPI_BASE = "https://api.soccersapi.com/v2.2"
+
+LAST_ERR = ""
+FAIL = {}
+LAST_FAIL = ""
+LAST_FAIL_KEY = ""
 
 
-def _throttle():
-    now = time.time()
-    while _calls and now - _calls[0] > 60:
-        _calls.pop(0)
-    if len(_calls) >= 9:
-        time.sleep(max(0.0, 60 - (now - _calls[0]) + 0.5))
-    _calls.append(time.time())
+def _fail(home, away, reason):
+    global LAST_FAIL, LAST_FAIL_KEY
+    LAST_FAIL_KEY = f"{home} vs {away}"
+    LAST_FAIL = str(reason)
+    FAIL[LAST_FAIL_KEY] = LAST_FAIL
+    return None
 
 
-def _quota_ok():
-    key = "apif-count:" + datetime.now(timezone.utc).strftime("%Y-%m-%d")
-    used = neon_get(key) or 0
-    if used >= APIF_DAILY_LIMIT:
-        return False
-    neon_set(key, used + 1, 2 * 86400)
-    return True
-
-
-def _apif(endpoint, params):
+def _request(resource, params):
+    """Small timeout-bound SoccersAPI request; never prints or exposes credentials."""
     global LAST_ERR
     LAST_ERR = ""
-    if not APIF_KEY:
-        LAST_ERR = "API_FOOTBALL_KEY missing"
+    if not SOCCERSAPI_KEY:
+        LAST_ERR = "SOCCERSAPI_API_KEY missing on server"
         return None
-    if not _quota_ok():
-        LAST_ERR = "daily quota reached"
-        return None
-
-    _throttle()
+    q = dict(params or {})
+    q.setdefault("lang", "en")
+    url = SOCCERSAPI_BASE + "/" + resource.strip("/") + "/?" + urllib.parse.urlencode(q)
+    req = urllib.request.Request(
+        url,
+        headers={"Authorization": "Bearer " + SOCCERSAPI_KEY, "Accept": "application/json", "User-Agent": "SportyTips/1.0"},
+    )
     try:
-        url = APIF_BASE + "/" + endpoint + "?" + urllib.parse.urlencode(params)
-        req = urllib.request.Request(url, headers={"x-apisports-key": APIF_KEY})
-        with urllib.request.urlopen(req, timeout=15) as r:
-            data = json.loads(r.read().decode("utf-8"))
+        with urllib.request.urlopen(req, timeout=15) as response:
+            payload = json.loads(response.read().decode("utf-8"))
     except Exception as exc:
-        LAST_ERR = "request failed: " + type(exc).__name__
-        print("API-Football request failed:", type(exc).__name__)
+        LAST_ERR = "SoccersAPI request failed: " + type(exc).__name__
         return None
-    if data.get("errors"):
-        LAST_ERR = "API error: " + str(data.get("errors"))[:120]
-        print("API-Football error:", str(data.get("errors"))[:200])
+    if not isinstance(payload, dict):
+        LAST_ERR = "SoccersAPI returned an unexpected response"
         return None
-    resp = data.get("response")
-    return resp if isinstance(resp, list) else None
+    meta = payload.get("meta") or {}
+    if meta.get("msg"):
+        LAST_ERR = str(meta.get("msg"))[:180]
+    if payload.get("error"):
+        LAST_ERR = str(payload.get("error"))[:180]
+        return None
+    # SoccersAPI can return an empty data array as a valid result.
+    if "data" not in payload:
+        LAST_ERR = LAST_ERR or "SoccersAPI response had no data field"
+        return None
+    return payload.get("data")
 
 
-def _fixtures_of_day(day):
-    key = "apif-fixtures:v2:" + day
-    cached = neon_get(key)
-    if cached is not None:
-        valid = isinstance(cached, list) and all(
-            isinstance(row, dict) and row.get("id")
-            and row.get("home") and row.get("away")
-            for row in cached
-        )
-        if valid and cached:
-            return cached
-
-    items = _apif("fixtures", {"date": day})
-    if items is None:
-        neon_set(key, [], 600)
-        return []
-    slim = [
-        {
-            "id": (i.get("fixture") or {}).get("id"),
-            "home": ((i.get("teams") or {}).get("home") or {}).get("name"),
-            "away": ((i.get("teams") or {}).get("away") or {}).get("name"),
-        }
-        for i in items
-        if isinstance(i, dict)
-        and (i.get("fixture") or {}).get("id")
-        and ((i.get("teams") or {}).get("home") or {}).get("name")
-        and ((i.get("teams") or {}).get("away") or {}).get("name")
-    ]
-    neon_set(key, slim, 6 * 3600)
-    return slim
+def _cache_key(*parts):
+    return "soccersapi:v1:" + ":".join(str(x or "").strip().lower() for x in parts)
 
 
-# ------------------------------------------------------------
-# PREDICTION -> SLIM
-# ------------------------------------------------------------
+def _as_list(data):
+    if isinstance(data, list):
+        return data
+    if isinstance(data, dict):
+        for key in ("data", "events", "fixtures", "items", "last", "overall"):
+            value = data.get(key)
+            if isinstance(value, list):
+                return value
+    return []
 
-def _slim(item, fixture_id):
-    p = item.get("predictions") or {}
+
+def _team_names(item):
     teams = item.get("teams") or {}
+    h = teams.get("home") or item.get("home") or {}
+    a = teams.get("away") or item.get("away") or {}
+    if isinstance(h, str): h = {"name": h}
+    if isinstance(a, str): a = {"name": a}
+    return h, a
 
-    def side(s):
-        t = teams.get(s) or {}
-        l5 = t.get("last_5") or {}
-        lg = t.get("league") or {}
-        fx = lg.get("fixtures") or {}
-        gl = lg.get("goals") or {}
-        venue = {}
-        for v in ("home", "away"):
-            venue[v] = {
-                "played": (fx.get("played") or {}).get(v),
-                "wins": (fx.get("wins") or {}).get(v),
-                "draws": (fx.get("draws") or {}).get(v),
-                "losses": (fx.get("loses") or {}).get(v),
-                "scored": ((gl.get("for") or {}).get("total") or {}).get(v),
-                "conceded": ((gl.get("against") or {}).get("total") or {}).get(v),
-            }
-        return {
-            "id": t.get("id"),
-            "name": t.get("name"),
-            "league_form": lg.get("form"),
-            "l5_played": l5.get("played"),
-            "l5_for": ((l5.get("goals") or {}).get("for") or {}).get("total"),
-            "l5_against": ((l5.get("goals") or {}).get("against") or {}).get("total"),
-            "venue": venue,
-        }
 
-    h2h = []
-    for m in (item.get("h2h") or [])[:10]:
-        tm = m.get("teams") or {}
-        g = m.get("goals") or {}
-        h2h.append(
-            {
-                "hid": (tm.get("home") or {}).get("id"),
-                "aid": (tm.get("away") or {}).get("id"),
-                "hg": g.get("home"),
-                "ag": g.get("away"),
-            }
-        )
+def _score_pair(item):
+    scores = item.get("scores") or {}
+    # v2.2 fixture responses normally use home_score/away_score.
+    hs = scores.get("home_score", scores.get("home"))
+    as_ = scores.get("away_score", scores.get("away"))
+    if hs in (None, "", "-") or as_ in (None, "", "-"):
+        # Some feeds use ft_score as "2-1".
+        ft = item.get("ft_score") or scores.get("ft_score")
+        if isinstance(ft, str) and "-" in ft:
+            bits = ft.split("-", 1)
+            hs, as_ = bits[0].strip(), bits[1].strip()
+    try:
+        return int(float(hs)), int(float(as_))
+    except (TypeError, ValueError):
+        return None, None
 
+
+def _team_id(item, side):
+    teams = item.get("teams") or {}
+    team = teams.get(side) or {}
+    return team.get("id") if isinstance(team, dict) else None
+
+
+def _kickoff_date(kickoff):
+    if isinstance(kickoff, datetime):
+        if kickoff.tzinfo is None:
+            kickoff = kickoff.replace(tzinfo=timezone.utc)
+        return kickoff.astimezone(timezone.utc).strftime("%Y-%m-%d")
+    if isinstance(kickoff, (int, float)):
+        return datetime.fromtimestamp(kickoff, timezone.utc).strftime("%Y-%m-%d")
+    if isinstance(kickoff, str) and kickoff.strip():
+        s = kickoff.strip().replace("Z", "+00:00")
+        try:
+            dt = datetime.fromisoformat(s)
+            if dt.tzinfo is None:
+                dt = dt.replace(tzinfo=timezone.utc)
+            return dt.astimezone(timezone.utc).strftime("%Y-%m-%d")
+        except ValueError:
+            try:
+                return datetime.strptime(s[:10], "%Y-%m-%d").strftime("%Y-%m-%d")
+            except ValueError:
+                pass
+    return datetime.now(timezone.utc).strftime("%Y-%m-%d")
+
+
+def _schedule(day):
+    key = _cache_key("schedule", day)
+    cached = neon_get(key)
+    if isinstance(cached, list):
+        return cached
+    data = _request("fixtures", {"t": "schedule", "d": day, "utc": 0, "page": 1})
+    rows = _as_list(data)
+    neon_set(key, rows, 6 * 3600 if rows else 600)
+    return rows
+
+
+def _similarity(a, b, similarity):
+    try:
+        return float(similarity(a or "", b or ""))
+    except Exception:
+        return difflib.SequenceMatcher(None, str(a or "").lower(), str(b or "").lower()).ratio()
+
+
+def _find_match(home, away, kickoff, similarity):
+    day = _kickoff_date(kickoff)
+    dates = [day]
+    try:
+        d = datetime.strptime(day, "%Y-%m-%d").replace(tzinfo=timezone.utc)
+        dates += [(d + timedelta(days=delta)).strftime("%Y-%m-%d") for delta in (-1, 1)]
+    except Exception:
+        pass
+    best, best_score = None, 0.0
+    for date in dates:
+        for row in _schedule(date):
+            if not isinstance(row, dict):
+                continue
+            h, a = _team_names(row)
+            hn, an = h.get("name", ""), a.get("name", "")
+            direct = (_similarity(home, hn, similarity) + _similarity(away, an, similarity)) / 2
+            reverse = (_similarity(home, an, similarity) + _similarity(away, hn, similarity)) / 2
+            score = max(direct, reverse)
+            if score > best_score:
+                best, best_score = row, score
+    if best and best_score >= 0.76:
+        return best
+    return None
+
+
+def _finished_matches(team_data):
+    if not isinstance(team_data, dict):
+        return []
+    rows = team_data.get("last") or []
+    if not isinstance(rows, list):
+        rows = []
+    out = []
+    for row in rows:
+        if not isinstance(row, dict):
+            continue
+        hs, aw = _score_pair(row)
+        if hs is None or aw is None:
+            continue
+        status = str(row.get("status_name") or "").lower()
+        if status and not any(word in status for word in ("finish", "ended", "after penalties")) and str(row.get("status")) not in ("3", "31"):
+            continue
+        out.append(row)
+    return out
+
+
+def _team_recent(team_id, team_name, venue_side):
+    key = _cache_key("lastnext", team_id)
+    data = neon_get(key)
+    if data is None:
+        data = _request("fixtures", {"t": "last_next", "team_id": team_id, "utc": 0})
+        if isinstance(data, dict):
+            neon_set(key, data, 30 * 60)
+    matches = _finished_matches(data)
+    matches.sort(key=lambda x: ((x.get("time") or {}).get("timestamp") or 0), reverse=True)
+    matches = matches[:5]
+    form, scored, conceded = "", 0, 0
+    venue_played = venue_wins = venue_draws = venue_losses = venue_scored = venue_conceded = 0
+    all_played = all_wins = all_draws = all_losses = all_scored = all_conceded = 0
+    for row in matches:
+        h, a = _team_names(row)
+        hid, aid = _team_id(row, "home"), _team_id(row, "away")
+        hs, aw = _score_pair(row)
+        if hs is None or aw is None:
+            continue
+        is_home = str(hid) == str(team_id) or (not hid and h.get("name") == team_name)
+        mine, theirs = (hs, aw) if is_home else (aw, hs)
+        scored += mine; conceded += theirs
+        all_played += 1; all_scored += mine; all_conceded += theirs
+        if mine > theirs:
+            form += "W"; all_wins += 1
+        elif mine == theirs:
+            form += "D"; all_draws += 1
+        else:
+            form += "L"; all_losses += 1
+        if (venue_side == "home" and is_home) or (venue_side == "away" and not is_home):
+            venue_played += 1; venue_scored += mine; venue_conceded += theirs
+            if mine > theirs: venue_wins += 1
+            elif mine == theirs: venue_draws += 1
+            else: venue_losses += 1
     return {
-        "fixture_id": fixture_id,
-        "competition": (item.get("league") or {}).get("name"),
-        "percent": p.get("percent") or {},
-        "home": side("home"),
-        "away": side("away"),
-        "h2h": h2h,
+        "id": team_id, "name": team_name, "league_form": form,
+        "l5_played": all_played, "l5_for": all_scored, "l5_against": all_conceded,
+        "venue": {venue_side: {"played": venue_played, "wins": venue_wins, "draws": venue_draws,
+            "losses": venue_losses, "scored": venue_scored, "conceded": venue_conceded}},
     }
 
 
+def _h2h_rows(data):
+    if isinstance(data, dict):
+        # /h2h/?t=teams returns data.home.events.overall in documented v2.2 responses.
+        home = data.get("home") or {}
+        events = home.get("events") or {}
+        rows = events.get("overall") or events.get("home") or []
+        if isinstance(rows, list): return rows
+        for key in ("overall", "matches", "events"):
+            if isinstance(data.get(key), list): return data[key]
+    return _as_list(data)
+
+
 def _get_slim(home, away, kickoff, similarity):
-    if not APIF_KEY:
-        return _fail(home, away, "API_FOOTBALL_KEY missing on server")
+    if not SOCCERSAPI_KEY:
+        return _fail(home, away, "SOCCERSAPI_API_KEY missing on server")
+    day = _kickoff_date(kickoff)
+    cache_key = _cache_key("facts", day, home, away)
+    cached = neon_get(cache_key)
+    if isinstance(cached, dict) and cached:
+        return cached
 
-    when = kickoff or datetime.now(timezone.utc)
-    day = when.astimezone(timezone.utc).strftime("%Y-%m-%d")
-    key = "apif-pred:%s:%s:%s" % (day, home.lower(), away.lower())
+    match = _find_match(home, away, kickoff, similarity)
+    if not match:
+        return _fail(home, away, "SoccersAPI could not match these teams to a fixture on/near " + day + (" (" + LAST_ERR + ")" if LAST_ERR else ""))
+    teams = match.get("teams") or {}
+    ht, at = teams.get("home") or {}, teams.get("away") or {}
+    hid, aid = ht.get("id"), at.get("id")
+    hname, aname = ht.get("name") or home, at.get("name") or away
+    if not hid or not aid:
+        # Some fixture-list records omit IDs; request canonical detail by match ID.
+        match_id = match.get("id")
+        detail = _request("fixtures", {"t": "info", "id": match_id}) if match_id else None
+        if isinstance(detail, dict):
+            match = detail
+            teams = match.get("teams") or {}
+            ht, at = teams.get("home") or {}, teams.get("away") or {}
+            hid, aid = ht.get("id"), at.get("id")
+            hname, aname = ht.get("name") or home, at.get("name") or away
+    if not hid or not aid:
+        return _fail(home, away, "SoccersAPI fixture response did not include team IDs")
 
-    cached = neon_get(key)
-    if cached is not None:
-        if cached:
-            return cached
-        return _fail(home, away, "cached miss (no fixture match earlier, retries in 1h)")
-
-    fixtures = _fixtures_of_day(day)
-    if not fixtures:
-        return _fail(home, away, "no fixtures for " + day + " (" + (LAST_ERR or "empty list") + ")")
-
-    best, best_score = None, 0.0
-    for f in fixtures:
-        if not isinstance(f, dict):
-            continue
-        a = similarity(home, f.get("home") or "")
-        b = similarity(away, f.get("away") or "")
-        score = (a + b) / 2
-        if score > best_score:
-            best_score = score
-            if min(a, b) >= 0.7:
-                best = f
-
-    if not best or best_score < 0.80 or not best.get("id"):
-        neon_set(key, {}, 3600)
-        return _fail(home, away, "no fixture match (best score %.2f of %d fixtures)" % (best_score, len(fixtures)))
-
-    items = _apif("predictions", {"fixture": best["id"]})
-    if not items:
-        return _fail(home, away, "predictions empty (" + (LAST_ERR or "no data") + ")")
-
-    slim = _slim(items[0], best["id"])
-    neon_set(key, slim, 12 * 3600)
+    h_recent = _team_recent(hid, hname, "home")
+    a_recent = _team_recent(aid, aname, "away")
+    h2h_key = _cache_key("h2h", hid, aid)
+    h2h_data = neon_get(h2h_key)
+    if h2h_data is None:
+        h2h_data = _request("h2h", {"t": "teams", "team1": hid, "team2": aid})
+        if h2h_data is not None:
+            neon_set(h2h_key, h2h_data, 12 * 3600)
+    h2h = []
+    for row in _h2h_rows(h2h_data):
+        if not isinstance(row, dict): continue
+        rh, ra = _team_names(row)
+        rs = row.get("scores") or {}
+        hs, aw = _score_pair(row)
+        if hs is None or aw is None: continue
+        h2h.append({"hid": _team_id(row, "home"), "aid": _team_id(row, "away"), "hg": hs, "ag": aw,
+                    "home_name": rh.get("name"), "away_name": ra.get("name")})
+    slim = {
+        "fixture_id": match.get("id"),
+        "competition": (match.get("league") or {}).get("name") or match.get("league_name"),
+        "percent": {},
+        "home": h_recent,
+        "away": a_recent,
+        "h2h": h2h,
+    }
+    neon_set(cache_key, slim, 45 * 60)
     return slim
 
 
 # ------------------------------------------------------------
-# SLIM -> FACTS
+# SOCCERSAPI DATA -> EXISTING FACTS SCHEMA
 # ------------------------------------------------------------
 
 def _num(v, default=None):
     try:
-        if v is None or v == "":
-            return default
+        if v is None or v == "": return default
         return float(str(v).replace("%", ""))
     except Exception:
         return default
@@ -315,132 +438,88 @@ def _recent(s):
     n = _int(s.get("l5_played"), 0) or len(form)
     scored = _int(s.get("l5_for"), 0)
     conceded = _int(s.get("l5_against"), 0)
-    return {
-        "played": len(form),
-        "wins": form.count("W"),
-        "draws": form.count("D"),
-        "losses": form.count("L"),
-        "scored": scored,
-        "conceded": conceded,
-        "avg_scored": scored / n if n else None,
-        "avg_conceded": conceded / n if n else None,
-    }
+    return {"played": _int(s.get("l5_played"), len(form)), "wins": form.count("W"), "draws": form.count("D"),
+            "losses": form.count("L"), "scored": scored, "conceded": conceded,
+            "avg_scored": scored / n if n else None, "avg_conceded": conceded / n if n else None}
 
 
 def _venue(s, v):
     d = (s.get("venue") or {}).get(v) or {}
-    played = _int(d.get("played"), 0)
-    scored = _int(d.get("scored"), 0)
-    conceded = _int(d.get("conceded"), 0)
-    return {
-        "played": played,
-        "wins": _int(d.get("wins"), 0),
-        "draws": _int(d.get("draws"), 0),
-        "losses": _int(d.get("losses"), 0),
-        "scored": scored,
-        "conceded": conceded,
-        "avg_scored": scored / played if played else None,
-        "avg_conceded": conceded / played if played else None,
-    }
+    played = _int(d.get("played"), 0); scored = _int(d.get("scored"), 0); conceded = _int(d.get("conceded"), 0)
+    return {"played": played, "wins": _int(d.get("wins"), 0), "draws": _int(d.get("draws"), 0),
+            "losses": _int(d.get("losses"), 0), "scored": scored, "conceded": conceded,
+            "avg_scored": scored / played if played else None, "avg_conceded": conceded / played if played else None}
 
 
 def _h2h_stats(items, hid, aid):
-    out = {"played": 0, "home_wins": 0, "draws": 0, "away_wins": 0,
-           "home_scored": 0, "away_scored": 0}
+    out = {"played": 0, "home_wins": 0, "draws": 0, "away_wins": 0, "home_scored": 0, "away_scored": 0}
     for m in items or []:
-        if {m.get("hid"), m.get("aid")} != {hid, aid}:
+        # SoccersAPI H2H events can use team IDs or omit them; map by names when IDs are absent.
+        mhid, maid = m.get("hid"), m.get("aid")
+        if mhid is not None and maid is not None and {str(mhid), str(maid)} != {str(hid), str(aid)}:
             continue
-        if m.get("hg") is None or m.get("ag") is None:
-            continue
+        if m.get("hg") is None or m.get("ag") is None: continue
         hg, ag = _int(m["hg"]), _int(m["ag"])
         out["played"] += 1
-        if m["hid"] == hid:
-            out["home_scored"] += hg
-            out["away_scored"] += ag
+        if mhid is not None and str(mhid) == str(hid): mine, theirs = hg, ag
+        elif mhid is not None and str(mhid) == str(aid): mine, theirs = ag, hg
+        else:
+            # H2H endpoint is requested team1=home, team2=away; use listed order.
             mine, theirs = hg, ag
-        else:
-            out["home_scored"] += ag
-            out["away_scored"] += hg
-            mine, theirs = ag, hg
-        if mine > theirs:
-            out["home_wins"] += 1
-        elif mine == theirs:
-            out["draws"] += 1
-        else:
-            out["away_wins"] += 1
+        out["home_scored"] += mine; out["away_scored"] += theirs
+        if mine > theirs: out["home_wins"] += 1
+        elif mine == theirs: out["draws"] += 1
+        else: out["away_wins"] += 1
     return out
-
-
-def _pct(v):
-    n = _num(v)
-    return n / 100.0 if n is not None else None
 
 
 def _build_facts(slim):
     h, a = slim.get("home") or {}, slim.get("away") or {}
     h_recent, a_recent = _recent(h), _recent(a)
     h_venue, a_venue = _venue(h, "home"), _venue(a, "away")
-
     hc = [x for x in (h_recent["avg_scored"], a_recent["avg_conceded"]) if x is not None]
     ac = [x for x in (a_recent["avg_scored"], h_recent["avg_conceded"]) if x is not None]
     hl = sum(hc) / len(hc) if hc else None
     al = sum(ac) / len(ac) if ac else None
     if hl is not None:
         hl = max(0.20, min(4.50, hl))
-        if h_venue["avg_scored"] is not None:
-            hl = hl * 0.65 + h_venue["avg_scored"] * 0.35
+        if h_venue["avg_scored"] is not None: hl = hl * 0.65 + h_venue["avg_scored"] * 0.35
     if al is not None:
         al = max(0.20, min(4.00, al))
-        if a_venue["avg_scored"] is not None:
-            al = al * 0.65 + a_venue["avg_scored"] * 0.35
-
-    pc = slim.get("percent") or {}
-    return {
-        "home": h.get("name") or "Home",
-        "away": a.get("name") or "Away",
-        "home_id": h.get("id"),
-        "away_id": a.get("id"),
-        "form": {"home": "", "away": "", "home_counts": {}, "away_counts": {}},
-        "recent": {"home": h_recent, "away": a_recent},
-        "venue": {"home": h_venue, "away": a_venue},
-        "prediction": {"home": _pct(pc.get("home")), "draw": _pct(pc.get("draw")), "away": _pct(pc.get("away"))},
-        "h2h": _h2h_stats(slim.get("h2h"), h.get("id"), a.get("id")),
-        "lambda": {"home": hl, "away": al},
-        "fixture_id": slim.get("fixture_id"),
-        "competition": slim.get("competition"),
-        "retrieved_at": datetime.now(timezone.utc).isoformat(),
-    }
+        if a_venue["avg_scored"] is not None: al = al * 0.65 + a_venue["avg_scored"] * 0.35
+    return {"home": h.get("name") or "Home", "away": a.get("name") or "Away", "home_id": h.get("id"), "away_id": a.get("id"),
+            "form": {"home": "", "away": "", "home_counts": {}, "away_counts": {}},
+            "recent": {"home": h_recent, "away": a_recent}, "venue": {"home": h_venue, "away": a_venue},
+            "prediction": {"home": None, "draw": None, "away": None},
+            "h2h": _h2h_stats(slim.get("h2h"), h.get("id"), a.get("id")),
+            "lambda": {"home": hl, "away": al}, "fixture_id": slim.get("fixture_id"),
+            "competition": slim.get("competition"), "retrieved_at": datetime.now(timezone.utc).isoformat()}
 
 
 def get_facts(home, away, kickoff, similarity):
+    global LAST_FAIL, LAST_FAIL_KEY
     FAIL.pop(f"{home} vs {away}", None)
+    LAST_FAIL = ""; LAST_FAIL_KEY = ""
     slim = _get_slim(home, away, kickoff, similarity)
-    if not slim:
-        return None
+    if not slim: return None
     facts = _build_facts(slim)
     played = facts["recent"]["home"]["played"] + facts["recent"]["away"]["played"]
     if played < 4 or not facts["lambda"]["home"] or not facts["lambda"]["away"]:
-        return _fail(home, away, "not enough form data (played=%d)" % played)
+        return _fail(home, away, "not enough recent results from SoccersAPI (played=%d)" % played)
     return facts
 
 
 def extra_reason(facts, text=""):
-    if not facts:
-        return None
-    text = (text or "").lower()
+    if not facts: return None
+    h2h = facts.get("h2h") or {}
     parts = []
-    pr = facts.get("prediction") or {}
-    if None not in (pr.get("home"), pr.get("draw"), pr.get("away")) and any(
-        w in text for w in ("win", "1up", "2up", "handicap")
-    ):
-        parts.append(
-            "API-Football win chance: %s %.0f%% / draw %.0f%% / %s %.0f%%."
-            % (facts["home"], pr["home"] * 100, pr["draw"] * 100, facts["away"], pr["away"] * 100)
-        )
-    h = facts.get("h2h") or {}
-    if h.get("played"):
-        parts.append(
-            "H2H (last %d): %s %dW, %dD, %s %dW."
-            % (h["played"], facts["home"], h["home_wins"], h["draws"], facts["away"], h["away_wins"])
-        )
+    if h2h.get("played"):
+        parts.append("SoccersAPI H2H (%d meetings): %s %d wins, %d draws; %s %d wins." % (
+            h2h["played"], facts["home"], h2h["home_wins"], h2h["draws"], facts["away"], h2h["away_wins"]))
+    for side, label in (("home", facts["home"]), ("away", facts["away"])):
+        r = (facts.get("recent") or {}).get(side) or {}
+        if r.get("played"):
+            parts.append("%s recent form: %d wins, %d draws, %d losses in %d matches; %d scored and %d conceded." % (
+                label, r.get("wins", 0), r.get("draws", 0), r.get("losses", 0), r.get("played", 0),
+                r.get("scored", 0), r.get("conceded", 0)))
     return " ".join(parts) or None

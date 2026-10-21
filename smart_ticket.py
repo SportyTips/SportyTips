@@ -1447,6 +1447,124 @@ def _passes_rules(c, ctx, relax=0):
 # FOOTBALL DATA STUDY
 # ============================================================
 
+BTTS_MIN_SCORE_RATE = _env_float("BTTS_MIN_SCORE_RATE", 0.60)
+BTTS_MIN_GAMES = int(_env_float("BTTS_MIN_GAMES", 3))
+
+
+def _btts_supported(facts):
+    """GG (both teams to score) only when BOTH teams really score in this setting.
+
+    The home team's HOME games and the away team's AWAY games are looked at. A team
+    that scored in fewer than 60% of them (for example 0 goals in its last 5 home
+    games) blocks the GG pick. No team stats at all also means no GG, because it
+    could not be checked.
+    """
+
+    if not facts:
+        return False
+
+    venue = facts.get("venue") or {}
+    recent = facts.get("recent") or {}
+
+    for side in ("home", "away"):
+
+        data = venue.get(side) or {}
+
+        if (data.get("played") or 0) < BTTS_MIN_GAMES:
+            data = recent.get(side) or {}
+
+        played = data.get("played") or 0
+
+        if played < BTTS_MIN_GAMES:
+            return False
+
+        scored_in = data.get("scored_in")
+
+        if scored_in is None:
+            return False  # facts from older code: cannot prove it, so no GG
+
+        if scored_in / played < BTTS_MIN_SCORE_RATE:
+            return False
+
+    return True
+
+
+UP_MIN_SCORE_RATE = _env_float("UP_MIN_SCORE_RATE", 0.60)      # picked team scores in 60%+ of its games
+UP_MIN_CONCEDE_RATE = _env_float("UP_MIN_CONCEDE_RATE", 0.50)  # opponent concedes in 50%+ of its games
+UP2_MIN_AVG_GOALS = _env_float("UP2_MIN_AVG_GOALS", 1.40)      # 2UP: needs a team that scores plenty
+UP_NEED_STATS = os.getenv("UP_NEED_STATS", "0").strip().lower() in ("1", "true", "yes", "on")
+
+
+def _is_up(candidate):
+
+    return candidate.get("kind") == "up" and candidate.get("side") in ("home", "away")
+
+
+def _up_supported(candidate):
+    """1UP / 2UP only for a team that really gets goals, against a team that lets them in.
+
+    A team can only go a goal up if it scores, so the picked team's scoring record in
+    this setting (home team at home, away team away) is checked, and the opponent must
+    concede in half of its games. 2UP also needs an average of 1.4 goals or more.
+
+    Without team stats the pick is kept (the SportyBet odds are all there is), unless
+    UP_NEED_STATS=1 is set on Render, which then drops every 1UP / 2UP that has no stats.
+    """
+
+    facts = candidate.get("facts")
+
+    if not facts:
+        return not UP_NEED_STATS
+
+    side = candidate.get("side")
+    opponent = "away" if side == "home" else "home"
+    venue = facts.get("venue") or {}
+    recent = facts.get("recent") or {}
+
+    def sample(team_side):
+
+        data = venue.get(team_side) or {}
+
+        if (data.get("played") or 0) < BTTS_MIN_GAMES:
+            data = recent.get(team_side) or {}
+
+        return data
+
+    mine = sample(side)
+    theirs = sample(opponent)
+
+    played = mine.get("played") or 0
+
+    if played < BTTS_MIN_GAMES or mine.get("scored_in") is None:
+        return not UP_NEED_STATS
+
+    if mine["scored_in"] / played < UP_MIN_SCORE_RATE:
+        return False
+
+    if int(candidate.get("up_level") or 1) >= 2:
+        average = mine.get("avg_scored")
+
+        if average is not None and average < UP2_MIN_AVG_GOALS:
+            return False
+
+    their_played = theirs.get("played") or 0
+
+    if their_played >= BTTS_MIN_GAMES and theirs.get("conceded_in") is not None:
+
+        if theirs["conceded_in"] / their_played < UP_MIN_CONCEDE_RATE:
+            return False
+
+    return True
+
+
+def _is_gg_yes(candidate):
+
+    return (
+        candidate.get("kind") == "btts"
+        and "not" not in str(candidate.get("label", "")).lower()
+    )
+
+
 def study(groups, notify=None):
     """
     Football data is studied BEFORE the evidence gate.
@@ -1842,6 +1960,14 @@ def gather(
                 # keep has_data = False so we know it is a fallback
 
             if candidate.get("p", 0) < post_min_p and not candidate.get("bypass"):
+                continue
+
+            # GG needs proof that both teams score. No stats = no GG.
+            if _is_gg_yes(candidate) and not _btts_supported(candidate.get("facts")):
+                continue
+
+            # 1UP / 2UP needs a team that scores against a team that concedes.
+            if _is_up(candidate) and not _up_supported(candidate):
                 continue
 
             valid.append(candidate)

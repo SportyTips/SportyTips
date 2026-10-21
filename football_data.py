@@ -3186,7 +3186,7 @@ def diag_summary():
 # These definitions replace the older API-Football-shaped implementation
 # above while keeping the public smart_ticket interface unchanged.
 
-CACHE_VERSION = os.getenv("FOOTBALL_CACHE_VERSION", "v5")
+CACHE_VERSION = os.getenv("FOOTBALL_CACHE_VERSION", "v7")
 ENRICH_MAX = int(os.getenv("ENRICH_MAX", "6"))
 
 
@@ -3403,7 +3403,7 @@ def _fd4_h2h(match_id):
 
 
 def _fd4_stats(results, team_id):
-    wins = draws = losses = scored = conceded = played = 0
+    wins = draws = losses = scored = conceded = played = scored_in = conceded_in = 0
     for fixture in _fd4_finished(results):
         home_team, _ = _fd4_team(fixture, "home")
         away_team, _ = _fd4_team(fixture, "away")
@@ -3415,17 +3415,22 @@ def _fd4_stats(results, team_id):
         played += 1
         if home_id == team_id:
             scored += hg; conceded += ag
+            if hg > 0: scored_in += 1
+            if ag > 0: conceded_in += 1
             if hg > ag: wins += 1
             elif hg == ag: draws += 1
             else: losses += 1
         else:
             scored += ag; conceded += hg
+            if ag > 0: scored_in += 1
+            if hg > 0: conceded_in += 1
             if ag > hg: wins += 1
             elif ag == hg: draws += 1
             else: losses += 1
     return {
         "played": played, "wins": wins, "draws": draws, "losses": losses,
-        "scored": scored, "conceded": conceded,
+        "scored": scored, "conceded": conceded, "scored_in": scored_in,
+        "conceded_in": conceded_in,
         "avg_scored": scored / played if played else None,
         "avg_conceded": conceded / played if played else None,
     }

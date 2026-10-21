@@ -2432,6 +2432,12 @@ if smart_ticket is not None:
                     if kinds is not None and kind not in kinds:
                         continue
 
+                    if st._is_gg_yes(c) and not st._btts_supported(c.get("facts")):
+                        continue
+
+                    if st._is_up(c) and not st._up_supported(c):
+                        continue
+
                     if kind not in best_of_kind or c["p"] > best_of_kind[kind]["p"]:
                         best_of_kind[kind] = c
 

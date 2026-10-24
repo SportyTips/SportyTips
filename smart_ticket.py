@@ -3829,3 +3829,227 @@ _orig_flow = bot.prediction_ticket_flow
 bot.prediction_ticket_flow = flow
 
 bot.MAX_DAYS_AHEAD = max(getattr(bot, "MAX_DAYS_AHEAD", 2), 3)
+
+
+# ============================================================
+# EDIT TICKET: MAKE A PASTED CODE A "SURE" TICKET
+# ============================================================
+#
+# Uses the SAME steps as the prediction: the markets of the game, the football
+# stats, the odds floor, the 1UP / 2UP and GG checks, and the chance of each pick.
+#
+#   pick passes every check and its chance is at least SURE_MIN_P  -> kept
+#   pick fails                                                      -> swapped for the
+#                                                                      best-chance pick
+#                                                                      in the SAME game
+#   the game has no pick that passes                                -> removed
+
+SURE_MIN_P = _env_float("SURE_MIN_P", 0.62)
+
+
+class SaferError(Exception):
+    """A plain-words problem for the person (app.py shows it as it is)."""
+
+
+class _CodeGames:
+    """Lets gather() look at only the games on one booking code."""
+
+    def __init__(self, provider, events):
+        self._provider = provider
+        self._events = events
+
+    def get_upcoming(self, start, end):
+        return list(self._events)
+
+    def __getattr__(self, name):
+        return getattr(self._provider, name)
+
+
+def _label_side(label, home, away):
+
+    text = str(label or "").lower()
+    h, a = str(home or "").lower(), str(away or "").lower()
+
+    if h and h in text and not (a and a in text):
+        return "home"
+
+    if a and a in text and not (h and h in text):
+        return "away"
+
+    return None
+
+
+def _edit_fail_reason(leg, group, original):
+    """Plain words for why the original pick did not pass."""
+
+    if original is not None:
+        return f"Only about a {round(original.get('p', 0) * 100)}% chance"
+
+    odd = leg.get("odd") or 0.0
+
+    if odd and odd < NORMAL_MIN_ODD:
+        return f"Odds of {odd:.2f} are too low"
+
+    label = sp.leg_label(leg)
+    low = label.lower()
+    facts = next((c.get("facts") for c in group if c.get("facts")), None)
+
+    try:
+
+        up = re.search(r"\((\d)\s*up\)", low)
+
+        if up and facts:
+
+            side = _label_side(label, leg.get("home"), leg.get("away"))
+
+            if side:
+
+                probe = {
+                    "kind": "up",
+                    "side": side,
+                    "up_level": int(up.group(1)),
+                    "facts": facts,
+                }
+
+                if not _up_supported(probe):
+
+                    venue = (facts.get("venue") or {}).get(side) or {}
+                    played = venue.get("played") or 0
+                    scored_in = venue.get("scored_in")
+                    where = "home" if side == "home" else "away"
+
+                    if played and scored_in is not None:
+                        return f"Scored in only {scored_in} of {played} {where} games"
+
+                    return "This team does not score or the other side does not concede enough"
+
+        if "both teams to score" in low and "not" not in low and facts:
+
+            if not _btts_supported(facts):
+                return "Both teams do not score often enough"
+
+    except Exception:
+        pass
+
+    return "Did not pass the prediction checks"
+
+
+def safer_rebuild(provider, code):
+
+    legs = provider.load_code(code)
+
+    events = {}
+
+    for leg in legs:
+
+        raw = dict(leg.get("event_raw") or {})
+        raw.setdefault("eventId", leg["event_id"])
+        raw.setdefault("homeTeamName", leg["home"])
+        raw.setdefault("awayTeamName", leg["away"])
+
+        events.setdefault(leg["event_id"], raw)
+
+    now = datetime.now(timezone.utc)
+
+    groups, _, _, _ = gather(
+        _CodeGames(provider, list(events.values())),
+        now,
+        now + timedelta(days=30),
+        "normal",
+        NORMAL_MIN_ODD,
+        frozenset(),
+    )
+
+    by_event = {}
+
+    for group in groups:
+        if group:
+            by_event[group[0]["event_id"]] = group
+
+    new_legs = []
+    dropped = []
+    kept = swapped = 0
+    seen = set()
+
+    for leg in legs:
+
+        group = by_event.get(leg["event_id"]) or []
+        match = f"{leg['home']} vs {leg['away']}"
+
+        original = next((c for c in group if c["key"] == leg["key"]), None)
+        good = [c for c in group if c.get("p", 0) >= SURE_MIN_P]
+
+        if original is not None and original in good:
+            pick = original
+            reason = "Kept: " + _reason_for(original)
+            was_kept = True
+
+        else:
+
+            was_kept = False
+
+            if not good:
+
+                dropped.append(
+                    {
+                        "match": match,
+                        "reason": (
+                            "No pick in this game passes the checks"
+                            if group
+                            else "No open market (the game may have started)"
+                        ),
+                    }
+                )
+
+                continue
+
+            pick = max(good, key=lambda c: (c.get("p", 0), c["odd"]))
+
+            reason = (
+                _edit_fail_reason(leg, group, original)
+                + ". Swapped for the safest pick in this game: "
+                + _reason_for(pick)
+            )
+
+        identity = (leg["event_id"], pick["key"])
+
+        if identity in seen:
+            continue
+
+        seen.add(identity)
+
+        if was_kept:
+            kept += 1
+        else:
+            swapped += 1
+
+        new_legs.append(
+            {
+                "event_id": leg["event_id"],
+                "home": leg["home"],
+                "away": leg["away"],
+                "key": pick["key"],
+                "odd": pick["odd"],
+                "label_override": pick["label"],
+                "reason": reason,
+            }
+        )
+
+    if not new_legs:
+        raise SaferError("No game on this ticket has a safe pick right now.")
+
+    changed = bool(swapped or dropped)
+
+    new_code = code
+
+    if changed:
+        new_code = provider._save_code([(l["event_id"], l["key"]) for l in new_legs])
+
+    result = sp.summarize_legs(new_legs)
+
+    result["code"] = new_code
+    result["changed"] = changed
+    result["dropped"] = dropped
+    result["counts"] = {"kept": kept, "swapped": swapped, "dropped": len(dropped)}
+
+    return result

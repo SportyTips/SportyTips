@@ -438,6 +438,7 @@ class SportyBetProvider:
                         "odd": _float(outcome.get("odds")),
                         "market_name": market.get("desc") or market.get("name") or "",
                         "outcome_name": outcome.get("desc") or outcome.get("name") or "",
+                        "event_raw": {k: v for k, v in event.items() if k != "markets"},
                     })
         if not legs:
             raise SportyBetError("Could not read that code (expired, or the format changed).")

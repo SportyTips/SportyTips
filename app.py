@@ -21,7 +21,8 @@ Environment:
   COOKIE_SECURE=1                (recommended on HTTPS)
 
 Ticket history: every ticket is saved in the same database (table "tickets"), marked
-won / cancelled by itself after the games, and shown in the History tab.
+won / cancelled by itself while the games are played (never by hand), and shown in the
+History tab.
 See history.py. The "Our record" numbers on the home screen are public counts only.
 
 Install as an app (PWA): /manifest.webmanifest, /sw.js and /icons/... are served
@@ -557,6 +558,15 @@ def _history_fetch_code(code):
     return provider._request(sp_module.LOAD_CODE_PATH.format(code=code))
 
 
+def _history_fetch_match(match_id):
+    """One game with its goal-by-goal list (used to prove 1UP / 2UP picks)."""
+
+    if not getattr(bot, "FOOTBALL_DATA_API_KEY", ""):
+        return None
+
+    return bot.football_request(f"matches/{int(match_id)}")
+
+
 def _history_fetch_day(date_string):
     """All matches on one day, fresh from football-data.org (never cached)."""
 
@@ -588,12 +598,55 @@ if history is not None:
             fetch_day=_history_fetch_day,
             similar=_history_similar,
             fetch_code=_history_fetch_code,
+            fetch_match=_history_fetch_match,
         )
         history.start_loop()
         print("OK: ticket history is on")
     except Exception as exc:
         print(f"FAILED: ticket history could not start: {type(exc).__name__}: {exc}")
         history = None
+
+
+# ===============================================================
+# DAILY 2 ODDS: ONE TICKET FOR EVERYONE, KEPT IN THE DATABASE
+# ===============================================================
+
+class _DailyStore:
+    """Holds today's Daily 2 odds in the database so it is the same for every user and
+    is not lost when Render restarts or redeploys."""
+
+    def __init__(self):
+        conn = _db()
+        try:
+            conn.execute("CREATE TABLE IF NOT EXISTS daily_ticket (id INTEGER PRIMARY KEY, data TEXT NOT NULL)")
+            conn.commit()
+        finally:
+            conn.close()
+
+    def get(self):
+        conn = _db()
+        try:
+            row = conn.execute("SELECT data FROM daily_ticket WHERE id = 1").fetchone()
+        finally:
+            conn.close()
+        return json.loads(row["data"]) if row else None
+
+    def put(self, data):
+        conn = _db()
+        try:
+            conn.execute("DELETE FROM daily_ticket WHERE id = 1")
+            conn.execute("INSERT INTO daily_ticket (id, data) VALUES (1, ?)", (json.dumps(data),))
+            conn.commit()
+        finally:
+            conn.close()
+
+
+try:
+    if SMART_TICKET_MODULE is not None:
+        SMART_TICKET_MODULE.DAILY_STORE = _DailyStore()
+        print("OK: Daily 2 odds is kept in the database")
+except Exception as exc:
+    print(f"NOTE: Daily 2 odds store is off (file used instead): {type(exc).__name__}: {exc}")
 
 
 # ===============================================================
@@ -2389,33 +2442,6 @@ def api_history():
         return jsonify(error="Could not load your history."), 500
 
 
-@app.get("/api/history/<int:ticket_id>")
-@login_required
-def api_history_one(ticket_id):
-    """The picks of one ticket (used by the admin marking panel)."""
-
-    if history is None:
-        return jsonify(error="History is off."), 503
-
-    row = history.get_ticket(ticket_id)
-
-    if row is None or (int(row["user_id"]) != int(g.user["id"]) and not _is_admin(g.user)):
-        return jsonify(error="Ticket not found."), 404
-
-    legs = [
-        {
-            "match": leg.get("match", ""),
-            "pick": leg.get("pick", ""),
-            "odd": leg.get("odd"),
-            "result": leg.get("result"),
-            "source": leg.get("source"),
-        }
-        for leg in json.loads(row["legs"])
-    ]
-
-    return jsonify(id=int(row["id"]), status=row["status"], legs=legs)
-
-
 @app.get("/api/history/<int:ticket_id>/image.png")
 @login_required
 def api_history_image(ticket_id):
@@ -2446,30 +2472,6 @@ def api_history_image(ticket_id):
     )
 
 
-@app.post("/api/history/<int:ticket_id>/mark")
-@login_required
-def api_history_mark(ticket_id):
-    """Admin only: tick or cross a pick by hand (for picks the data cannot prove)."""
-
-    if history is None:
-        return jsonify(error="History is off."), 503
-
-    if not _is_admin(g.user):
-        return jsonify(error="Admins only."), 403
-
-    data = request.get_json(silent=True) or {}
-
-    try:
-        status = history.mark_leg(ticket_id, int(data.get("index")), str(data.get("result", "")))
-    except (TypeError, ValueError):
-        return jsonify(error="Bad request."), 400
-
-    if status is None:
-        return jsonify(error="Ticket not found."), 404
-
-    return jsonify(status=status)
-
-
 @app.get("/api/history/<int:ticket_id>/probe")
 @login_required
 def api_history_probe(ticket_id):
@@ -2490,6 +2492,29 @@ def api_history_probe(ticket_id):
         return jsonify(history.probe_code(row["code"]))
     except Exception as exc:
         return jsonify(error=f"SportyBet said: {type(exc).__name__}: {exc}"), 502
+
+
+@app.post("/api/history/clear")
+@login_required
+def api_history_clear():
+    """Hide the logged-in person's own tickets from their History.
+
+    Nothing is deleted: the public record keeps counting them, so nobody can clean up
+    the record by clearing losses."""
+
+    if history is None:
+        return jsonify(error="History is off."), 503
+
+    data = request.get_json(silent=True) or {}
+
+    if data.get("confirm") is not True:
+        return jsonify(error="Confirm first."), 400
+
+    try:
+        return jsonify(cleared=history.clear_user(g.user["id"]))
+    except Exception as exc:
+        print(f"History clear error: {type(exc).__name__}: {exc}")
+        return jsonify(error="Could not clear your history."), 500
 
 
 @app.post("/api/history/settle")

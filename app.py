@@ -20,11 +20,6 @@ Environment:
   APP_BASE_URL=https://yourdomain.com                       (payment return URL)
   COOKIE_SECURE=1                (recommended on HTTPS)
 
-Ticket history: every ticket is saved in the same database (table "tickets"), marked
-won / cancelled by itself while the games are played (never by hand), and shown in the
-History tab.
-See history.py. The "Our record" numbers on the home screen are public counts only.
-
 Install as an app (PWA): /manifest.webmanifest, /sw.js and /icons/... are served
 by this file. No extra files are needed.
 """
@@ -259,42 +254,6 @@ bot.send_message = web_send_message
 bot.telegram_request = lambda method, params=None: {"ok": True, "result": []}
 
 launcher.send_photo = web_send_photo
-
-
-# ===============================================================
-# TICKET HISTORY: SAVE EVERY TICKET THAT IS BUILT
-# ===============================================================
-
-try:
-    import history  # must load BEFORE the picture function is wrapped below
-except Exception as exc:
-    history = None
-    print(f"FAILED: history.py failed to load: {type(exc).__name__}: {exc}")
-
-try:
-    import ticket_image_lite as _til
-
-    _real_make_ticket_image = _til.make_ticket_image
-
-    def _recording_make_ticket_image(rows, title, subtitle, total_odds, win_chance, code=None, status=None):
-        png = _real_make_ticket_image(rows, title, subtitle, total_odds, win_chance, code, status)
-
-        try:
-            user_id = getattr(_ctx, "user_id", None)
-
-            # Only tickets built for a logged-in person in a chat turn are saved.
-            if history is not None and user_id and getattr(_ctx, "q", None) is not None:
-                history.record_ticket(user_id, rows, title, subtitle, total_odds, win_chance, code)
-
-        except Exception as exc:
-            print(f"History: save failed: {type(exc).__name__}: {exc}")
-
-        return png
-
-    _til.make_ticket_image = _recording_make_ticket_image
-
-except Exception as exc:
-    print(f"NOTE: ticket history recording is off: {type(exc).__name__}: {exc}")
 
 
 # ===============================================================
@@ -546,109 +505,6 @@ def _init_sqlite():
 _init_account_db()
 
 
-def _history_fetch_code(code):
-    """SportyBet's own page for a booking code (may show final scores after the games)."""
-    provider = getattr(bot, "SPORTYBET_PROVIDER", None)
-
-    if provider is None:
-        return None
-
-    sp_module = importlib.import_module("sportybet_provider")
-
-    return provider._request(sp_module.LOAD_CODE_PATH.format(code=code))
-
-
-def _history_fetch_match(match_id):
-    """One game with its goal-by-goal list (used to prove 1UP / 2UP picks)."""
-
-    if not getattr(bot, "FOOTBALL_DATA_API_KEY", ""):
-        return None
-
-    return bot.football_request(f"matches/{int(match_id)}")
-
-
-def _history_fetch_day(date_string):
-    """All matches on one day, fresh from football-data.org (never cached)."""
-
-    if not getattr(bot, "FOOTBALL_DATA_API_KEY", ""):
-        return []  # no key on the server: SportyBet and hand marking are used instead
-
-    result = bot.football_request("matches", {"dateFrom": date_string, "dateTo": date_string})
-    if isinstance(result, dict):
-        return result.get("matches", []) or []
-    return []
-
-
-def _history_similar(a, b):
-    try:
-        fd = importlib.import_module("football_data")
-        return float(fd._team_similarity(a, b))
-    except Exception:
-        from difflib import SequenceMatcher
-
-        return SequenceMatcher(None, str(a).lower(), str(b).lower()).ratio()
-
-
-if history is not None:
-    try:
-        history.init(
-            _db,
-            USE_PG,
-            _insert_returning_id,
-            fetch_day=_history_fetch_day,
-            similar=_history_similar,
-            fetch_code=_history_fetch_code,
-            fetch_match=_history_fetch_match,
-        )
-        history.start_loop()
-        print("OK: ticket history is on")
-    except Exception as exc:
-        print(f"FAILED: ticket history could not start: {type(exc).__name__}: {exc}")
-        history = None
-
-
-# ===============================================================
-# DAILY 2 ODDS: ONE TICKET FOR EVERYONE, KEPT IN THE DATABASE
-# ===============================================================
-
-class _DailyStore:
-    """Holds today's Daily 2 odds in the database so it is the same for every user and
-    is not lost when Render restarts or redeploys."""
-
-    def __init__(self):
-        conn = _db()
-        try:
-            conn.execute("CREATE TABLE IF NOT EXISTS daily_ticket (id INTEGER PRIMARY KEY, data TEXT NOT NULL)")
-            conn.commit()
-        finally:
-            conn.close()
-
-    def get(self):
-        conn = _db()
-        try:
-            row = conn.execute("SELECT data FROM daily_ticket WHERE id = 1").fetchone()
-        finally:
-            conn.close()
-        return json.loads(row["data"]) if row else None
-
-    def put(self, data):
-        conn = _db()
-        try:
-            conn.execute("DELETE FROM daily_ticket WHERE id = 1")
-            conn.execute("INSERT INTO daily_ticket (id, data) VALUES (1, ?)", (json.dumps(data),))
-            conn.commit()
-        finally:
-            conn.close()
-
-
-try:
-    if SMART_TICKET_MODULE is not None:
-        SMART_TICKET_MODULE.DAILY_STORE = _DailyStore()
-        print("OK: Daily 2 odds is kept in the database")
-except Exception as exc:
-    print(f"NOTE: Daily 2 odds store is off (file used instead): {type(exc).__name__}: {exc}")
-
-
 # ===============================================================
 # ACCOUNT HELPERS
 # ===============================================================
@@ -883,9 +739,8 @@ def _release_memory():
         pass
 
 
-def run_turn(sid, text, q, user_id=None):
+def run_turn(sid, text, q):
     _ctx.q = q
-    _ctx.user_id = user_id
 
     try:
 
@@ -2115,7 +1970,6 @@ def health():
         status="ok",
         sportybet=provider_loaded,
         smart_ticket=SMART_TICKET_MODULE is not None,
-        history=history is not None,
         database="postgres" if USE_PG else "sqlite",
         database_ok=database_ok,
         secret_key_set=bool(os.getenv("SECRET_KEY")),
@@ -2217,7 +2071,7 @@ def _start_chat_turn(sid, text):
 
     threading.Thread(
         target=run_turn,
-        args=(sid, text, q, int(user["id"])),
+        args=(sid, text, q),
         daemon=True,
     ).start()
 
@@ -2394,141 +2248,6 @@ def api_why():
         return {"reason": reason}
 
     return _ticket_tool(work, premium_only=True)
-
-
-# ===============================================================
-# TICKET HISTORY
-# ===============================================================
-
-def _is_admin(user):
-    return bool(user) and user["identifier"] in ADMIN_EMAILS
-
-
-@app.get("/api/history/record")
-def api_history_record():
-    """Public numbers for the home screen. Counts only, nothing personal."""
-
-    if history is None:
-        return jsonify(error="History is off."), 503
-
-    try:
-        return jsonify(history.stats())
-    except Exception as exc:
-        print(f"History record error: {type(exc).__name__}: {exc}")
-        return jsonify(error="Could not load the record."), 500
-
-
-@app.get("/api/history")
-@login_required
-def api_history():
-
-    if history is None:
-        return jsonify(error="History is off."), 503
-
-    status = str(request.args.get("status", "all")).lower()
-    before = request.args.get("before")
-
-    try:
-        return jsonify(
-            history.list_tickets(
-                g.user["id"],
-                status=status,
-                limit=request.args.get("limit", 30),
-                before=before if before and before.isdigit() else None,
-            )
-        )
-    except Exception as exc:
-        print(f"History list error: {type(exc).__name__}: {exc}")
-        return jsonify(error="Could not load your history."), 500
-
-
-@app.get("/api/history/<int:ticket_id>/image.png")
-@login_required
-def api_history_image(ticket_id):
-
-    if history is None:
-        return jsonify(error="History is off."), 503
-
-    if too_fast("hist:" + client_ip(), 60):
-        return jsonify(error="Slow down. Try again in a minute."), 429
-
-    row = history.get_ticket(ticket_id)
-
-    if row is None or (int(row["user_id"]) != int(g.user["id"]) and not _is_admin(g.user)):
-        return jsonify(error="Ticket not found."), 404
-
-    try:
-        png = history.render_png(row)
-    except Exception as exc:
-        print(f"History picture error: {type(exc).__name__}: {exc}")
-        return jsonify(error="Could not draw that ticket."), 500
-
-    done = row["status"] in ("won", "cancelled")
-
-    return Response(
-        png,
-        mimetype="image/png",
-        headers={"Cache-Control": "private, max-age=" + ("86400" if done else "120")},
-    )
-
-
-@app.get("/api/history/<int:ticket_id>/probe")
-@login_required
-def api_history_probe(ticket_id):
-    """Admin only: show what SportyBet returns for this ticket's booking code."""
-
-    if history is None:
-        return jsonify(error="History is off."), 503
-
-    if not _is_admin(g.user):
-        return jsonify(error="Admins only."), 403
-
-    row = history.get_ticket(ticket_id)
-
-    if row is None or not row["code"]:
-        return jsonify(error="This ticket has no booking code."), 404
-
-    try:
-        return jsonify(history.probe_code(row["code"]))
-    except Exception as exc:
-        return jsonify(error=f"SportyBet said: {type(exc).__name__}: {exc}"), 502
-
-
-@app.post("/api/history/clear")
-@login_required
-def api_history_clear():
-    """Hide the logged-in person's own tickets from their History.
-
-    Nothing is deleted: the public record keeps counting them, so nobody can clean up
-    the record by clearing losses."""
-
-    if history is None:
-        return jsonify(error="History is off."), 503
-
-    data = request.get_json(silent=True) or {}
-
-    if data.get("confirm") is not True:
-        return jsonify(error="Confirm first."), 400
-
-    try:
-        return jsonify(cleared=history.clear_user(g.user["id"]))
-    except Exception as exc:
-        print(f"History clear error: {type(exc).__name__}: {exc}")
-        return jsonify(error="Could not clear your history."), 500
-
-
-@app.post("/api/history/settle")
-@login_required
-def api_history_settle():
-    """Admin only: check results right now instead of waiting for the timer."""
-
-    if history is None:
-        return jsonify(error="History is off."), 503
-
-    if not _is_admin(g.user):
-        return jsonify(error="Admins only."), 403
-
-    return jsonify(history.settle_pending(force=True))
 
 
 # ===============================================================

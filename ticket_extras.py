@@ -23,6 +23,7 @@ Load it AFTER upgrades.py. In app.py it goes into the same block as push_notify:
 
 import os
 import re
+import threading
 
 import main as bot
 import smart_ticket as st
@@ -35,6 +36,17 @@ except Exception:  # upgrades.py is optional
 # Basketball has no football stats: its picks come from SportyBet's prices.
 # A basketball-only ticket needs at least this chance per pick (the football bar is 0.66).
 BB_MIN_P = float(os.getenv("BB_MIN_P", "0.52"))
+
+# "over 1.5 acca today": no size given, so this many games (upgrades.py would make it 5).
+ACCA_DEFAULT_PICKS = int(os.getenv("ACCA_DEFAULT_PICKS", "10"))
+
+LOADED = True  # smart_ticket.py checks this when it explains a basketball problem
+
+_LOCAL = threading.local()  # the message exactly as the person typed it
+_HAS_NUMBER = re.compile(
+    r"\d+(?:\.\d+)?\s*(?:odds?|picks?|games?|matches|selections?|tips?|legs?|teams?)\b",
+    re.I,
+)
 
 
 # ------------------------------------------------------------
@@ -114,6 +126,20 @@ def _overrides(text):
     return {name: value for name, value in out.items() if hasattr(up, name)}
 
 
+_prev_handle_text = getattr(bot, "handle_text", None)
+
+if _prev_handle_text is not None:
+
+    def handle_text(chat_id, text):
+        _LOCAL.orig = str(text or "")
+
+        try:
+            return _prev_handle_text(chat_id, text)
+        finally:
+            _LOCAL.orig = ""
+
+    bot.handle_text = handle_text
+
 _prev_flow = bot.prediction_ticket_flow
 
 
@@ -125,6 +151,13 @@ def prediction_ticket_flow(chat_id, text, *args, **kwargs):
     try:
         if not st.DAILY_RE.search(text.lower()):
             changes = _overrides(text)
+
+            # "over 1.5 acca today" (no size): upgrades.py adds "5 picks". Use a longer acca instead.
+            market_only, _risk = st._parse_extras(text)
+            typed = getattr(_LOCAL, "orig", "")
+
+            if market_only is not None and typed and not _HAS_NUMBER.search(re.sub(r"\bover\s*[0-4]\.5\b", " ", st._comma_free(typed), flags=re.I)):
+                text = re.sub(r"\s+\d+\s*picks?\s*$", "", text, flags=re.I) + f" {ACCA_DEFAULT_PICKS} picks"
     except Exception as exc:
         print(f"Ticket extras: could not read the request: {exc}")
 

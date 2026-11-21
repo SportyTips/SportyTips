@@ -278,8 +278,17 @@ OVER_ONLY_RE = re.compile(
 
 
 def _comma_free(text):
-    """'16,000 odds' -> '16000 odds' (a comma inside a number is not a separator)."""
-    return re.sub(r"(?<=\d),(?=\d{3}(?!\d))", "", str(text or ""))
+    """'16,000 odds' -> '16000 odds' (a comma inside a number is not a separator),
+    and '7k odds' -> '7000 odds', '1.5k' -> '1500'."""
+
+    text = re.sub(r"(?<=\d),(?=\d{3}(?!\d))", "", str(text or ""))
+
+    return re.sub(
+        r"\b(\d+(?:\.\d+)?)\s?k\b",
+        lambda m: str(int(round(float(m.group(1)) * 1000))),
+        text,
+        flags=re.I,
+    )
 
 
 def _parse_extras(text):
@@ -1907,6 +1916,32 @@ def _bb_events(provider):
     return events
 
 
+_BB_DEBUG = {"games": 0, "with_markets": 0, "with_picks": 0, "league_skipped": 0, "names": []}
+
+_BB_LABEL_BAD = re.compile(r"\bunder\b|\bcards?\b", re.I)
+
+
+def _bb_side(outcome, home, away):
+    """home / away from an outcome's own label (Home, Away, 1, 2 or the team name)."""
+
+    label = _label_of(outcome)
+    oid = str(outcome.get("id"))
+
+    if label.startswith("home") or label == "1" or (len(home) > 2 and label == home.lower()):
+        return "home"
+
+    if label.startswith("away") or label == "2" or (len(away) > 2 and label == away.lower()):
+        return "away"
+
+    if oid == "4":  # SportyBet's basketball winner ids are 4 (home) and 5 (away)
+        return "home"
+
+    if oid == "5":
+        return "away"
+
+    return None
+
+
 def basketball_candidates(event, markets):
     """Winner, Over total points and positive handicap (all incl. overtime)."""
 
@@ -1917,7 +1952,8 @@ def basketball_candidates(event, markets):
 
     def add(kind, label, odd, p, key, **extra):
 
-        if not _candidate_is_allowed(kind, label):
+        # basketball picks do not depend on any other module's list of allowed pick types
+        if _BB_LABEL_BAD.search(str(label or "")):
             return
 
         odd = _safe_float(odd)
@@ -1946,6 +1982,14 @@ def basketball_candidates(event, markets):
             if o.get("isActive") is not False
         ]
 
+        # remember a few market names, so a problem can be seen in the message
+        if len(_BB_DEBUG["names"]) < 8:
+
+            sample = f"{mid}: {name.strip()}" + (f" [{spec}]" if spec else "") + f" ({len(outcomes)})"
+
+            if sample not in _BB_DEBUG["names"]:
+                _BB_DEBUG["names"].append(sample)
+
         if len(outcomes) != 2:
             continue
 
@@ -1956,28 +2000,44 @@ def basketball_candidates(event, markets):
         odds = [_f(o.get("odds")) for o in outcomes]
 
         # ---- winner of the game (overtime included) ----
-        if not spec and any(w in name for w in ("winner", "moneyline", "money line")):
+        if (
+            not spec
+            and not any(w in name for w in ("odd", "even", "exact", "handicap", "total", "margin", "range", "most"))
+        ):
 
-            for index, (o, odd, other) in enumerate(zip(outcomes, odds, odds[::-1])):
+            sides = [_bb_side(o, home, away) for o in outcomes]
+            named_winner = any(w in name for w in ("winner", "moneyline", "money line", "to win", "match result"))
 
-                side = _side_of(o, two_way=True) or ("home" if index == 0 else "away")
-                team = home if side == "home" else away
+            if len(set(sides)) == 2 and None not in sides:
+                pass  # both outcomes are clearly home / away
 
-                add(
-                    "bb_win",
-                    f"{team} to win",
-                    odd,
-                    _two_way(odd, other),
-                    (mid, spec, str(o.get("id"))),
-                    side=side,
-                )
+            elif named_winner:
+                sides = ["home", "away"]  # a market called "winner": first is home, second is away
 
-            continue
+            else:
+                sides = None
+
+            if sides:
+
+                for o, odd, other, side in zip(outcomes, odds, odds[::-1], sides):
+
+                    team = home if side == "home" else away
+
+                    add(
+                        "bb_win",
+                        f"{team} to win",
+                        odd,
+                        _two_way(odd, other),
+                        (mid, spec, str(o.get("id"))),
+                        side=side,
+                    )
+
+                continue
 
         # ---- Over total points (never Under) ----
         if (
             spec.startswith("total=")
-            and "total" in name
+            and any(w in name for w in ("total", "over/under", "o/u"))
             and not any(w in name for w in ("home", "away", "team", "odd", "even", "exact"))
         ):
 
@@ -2018,11 +2078,9 @@ def basketball_candidates(event, markets):
             if not line:
                 continue
 
-            for o, odd, other in zip(outcomes, odds, odds[::-1]):
+            for index, (o, odd, other) in enumerate(zip(outcomes, odds, odds[::-1])):
 
-                side = _side_of(o, two_way=True) or (
-                    "home" if o is outcomes[0] else "away"
-                )
+                side = _bb_side(o, home, away) or ("home" if index == 0 else "away")
 
                 if side == "home" and line > 0:
                     team = home
@@ -2238,6 +2296,9 @@ def gather(
         except Exception as exc:
             print(f"Basketball games could not be loaded: {type(exc).__name__}: {exc}")
 
+    if sport in ("basketball", "mixed"):
+        _BB_DEBUG.update(games=0, with_markets=0, with_picks=0, league_skipped=0, names=[])
+
     if not events:
         return [], 0, 0, 0
 
@@ -2344,6 +2405,7 @@ def gather(
             country = str((fixture.get("league", {}) or {}).get("country", ""))
 
             if pattern and not pattern.search(f"{league_name} {country}"):
+                _BB_DEBUG["league_skipped"] += 1
                 continue
 
         ctx = _match_context(markets)
@@ -2365,7 +2427,16 @@ def gather(
             continue
 
         if is_bb and not daily and not straight:
+
+            _BB_DEBUG["games"] += 1
+
+            if markets:
+                _BB_DEBUG["with_markets"] += 1
+
             source = basketball_candidates(event, markets)
+
+            if source:
+                _BB_DEBUG["with_picks"] += 1
 
         elif daily:
             source = daily_candidates(event, markets)
@@ -2391,7 +2462,11 @@ def gather(
 
         for candidate in source:
 
-            if not _candidate_is_allowed(candidate["kind"], candidate["label"]):
+            if is_bb:
+                if _BB_LABEL_BAD.search(str(candidate["label"])):
+                    continue
+
+            elif not _candidate_is_allowed(candidate["kind"], candidate["label"]):
                 continue
 
             # Rule checks that do not require football data.
@@ -3712,6 +3787,29 @@ def _shortfall_text(built, req, target, count, sport_mode, market_only, risk_ok,
     return " ".join(part for part in (found, result, advice) if part)
 
 
+def _bb_debug_text():
+    """A short technical line, shown when a basketball ticket could not be built."""
+
+    import sys as _sys
+
+    parts = [
+        f"basketball games checked: {_BB_DEBUG['games']}",
+        f"with markets: {_BB_DEBUG['with_markets']}",
+        f"with usable picks: {_BB_DEBUG['with_picks']}",
+    ]
+
+    if _BB_DEBUG["league_skipped"]:
+        parts.append(f"skipped by league name: {_BB_DEBUG['league_skipped']}")
+
+    if _BB_DEBUG["names"]:
+        parts.append("markets seen: " + "; ".join(_BB_DEBUG["names"][:6]))
+
+    if "upgrades" in _sys.modules and not getattr(_sys.modules.get("ticket_extras"), "LOADED", False):
+        parts.append("ticket_extras.py is NOT loaded, so upgrades.py may block basketball: add its lines to app.py")
+
+    return "Details: " + " | ".join(parts)
+
+
 # ============================================================
 # MAIN FLOW
 # ============================================================
@@ -3954,7 +4052,8 @@ def _flow_main(
                 chat_id,
                 f"{E_FAIL} I couldn't build a basketball ticket for that request. "
                 + html.escape(_searched_text(built, req, sport_mode, market_only))
-                + " Try a longer window or lower odds.",
+                + " Try a longer window or lower odds."
+                + (("\n\n" + html.escape(_bb_debug_text())) if SHOW_BUILD_ERRORS else ""),
             )
 
             return
@@ -4685,7 +4784,8 @@ _orig_parse_request = bot.parse_request
 
 
 def _parse_request_commas(text):
-    return _orig_parse_request(_comma_free(text))
+    # "over 2.5 games" would be read as "5 games": the goals line is taken out for main.py
+    return _orig_parse_request(re.sub(r"\bover\s*[0-4]\.5\b", " ", _comma_free(text), flags=re.I))
 
 
 bot.parse_request = _parse_request_commas

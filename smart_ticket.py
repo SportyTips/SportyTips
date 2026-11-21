@@ -99,23 +99,9 @@ MAX_LEG_ODDS = {
 
 MAX_LEGS = 30
 
-# BIG ODDS: a target of BIG_ODDS_START or more ("5000 odds", "16000 odds") may use up to
-# MAX_LEGS_RISKY legs instead of 30. 30 legs at about 1.28 each is only about 1,600 odds,
-# which was the old ceiling. SportyBet itself limits how many games one ticket can hold,
-# so keep MAX_LEGS_RISKY at or under that limit (change it on Render if needed).
-MAX_LEGS_RISKY = int(os.getenv("MAX_LEGS_RISKY", "40"))
-BIG_ODDS_START = float(os.getenv("BIG_ODDS_START", "500"))
-
-# "I don't mind risky legs": weaker picks (down to this chance) are allowed.
-RISKY_OK_MIN_P = float(os.getenv("RISKY_OK_MIN_P", "0.25"))
-
 MAX_DETAIL_EVENTS = int(os.getenv("MAX_DETAIL_EVENTS", "100"))
 DETAIL_WORKERS = int(os.getenv("DETAIL_WORKERS", "12"))
 DETAIL_SECONDS = int(os.getenv("DETAIL_SECONDS", "40"))
-
-# Big-odds tickets look at more games (and wait a little longer for their markets).
-MAX_DETAIL_BIG = int(os.getenv("MAX_DETAIL_BIG", "160"))
-DETAIL_SECONDS_BIG = int(os.getenv("DETAIL_SECONDS_BIG", "55"))
 
 OVERSHOOT = 0.25
 
@@ -253,54 +239,6 @@ STRAIGHT_RE = re.compile(
 
 
 # ============================================================
-# WHAT THE PERSON TYPED: "over 2.5 only", "I don't mind risky legs", "16,000 odds"
-# ============================================================
-
-# "I don't mind risky legs", "risky is fine", "high risk", "bold" ...
-RISK_OK_RE = re.compile(
-    r"don'?t\s+mind\s+(?:the\s+)?risk"
-    r"|do\s+not\s+mind\s+(?:the\s+)?risk"
-    r"|\brisk(?:y)?\s+(?:legs?|picks?|games?|ok|fine)\b"
-    r"|\bhigh[\s-]*risk\b"
-    r"|\bbold\b"
-    r"|\brisky\b",
-    re.I,
-)
-
-# "over 2.5", "over 1.5 acca": a ticket made only of that goals line.
-OVER_ONLY_RE = re.compile(
-    r"\bover\s*([0-4]\.5)\b(?!\s*(?:team\s*)?(?:corners?|cards?|shots?))",
-    re.I,
-)
-
-
-def _comma_free(text):
-    """'16,000 odds' -> '16000 odds' (a comma inside a number is not a separator)."""
-    return re.sub(r"(?<=\d),(?=\d{3}(?!\d))", "", str(text or ""))
-
-
-def _parse_extras(text):
-    """Returns (market_only, risk_ok).
-
-    market_only is the goals line the ticket must be made of (2.5 for "over 2.5 only"),
-    or None. risk_ok is True when the person says risky legs are fine.
-    """
-
-    text = _comma_free(text)
-
-    market_only = None
-    match = OVER_ONLY_RE.search(text)
-
-    if match:
-        try:
-            market_only = float(match.group(1))
-        except Exception:
-            market_only = None
-
-    return market_only, bool(RISK_OK_RE.search(text))
-
-
-# ============================================================
 # SELECTION WEIGHTS
 # ============================================================
 
@@ -314,9 +252,6 @@ KIND_BONUS = {
     "over": 0.02,
     "team_goals": 0.03,
     "win": 0.05,
-    "bb_win": 0.05,
-    "bb_over": 0.02,
-    "bb_hcp": 0.04,
 }
 
 LEG_PENALTY = 0.06
@@ -331,9 +266,6 @@ KIND_CAP = {
     "handicap": 0.30,
     "team_goals": 0.25,
     "win": 0.30,
-    "bb_win": 0.40,
-    "bb_over": 0.30,
-    "bb_hcp": 0.30,
 }
 
 KIND_NAME = {
@@ -349,9 +281,6 @@ KIND_NAME = {
     "dc12": "Home or Away (12)",
     "dnb": "Draw no bet",
     "streak": "3+ in a row",
-    "bb_win": "Basketball win",
-    "bb_over": "Basketball over",
-    "bb_hcp": "Basketball handicap",
 }
 
 
@@ -1724,343 +1653,6 @@ def study(groups, notify=None):
 
 
 # ============================================================
-# BASKETBALL (NCAA, NBA ...)
-# ============================================================
-#
-# Basketball games come from SportyBet's own game list (sport id sr:sport:2) and are
-# read through the same provider as football. Every market is found by its NAME on the
-# game page (winner, total points, positive handicap, all "incl. overtime"), the same way
-# the 1UP / 2UP markets are, so no market number has to be right for it to work.
-#
-# There are no football stats for basketball, so the chance of a pick comes from the
-# SportyBet prices with the bookmaker margin removed. Only Over totals and positive
-# handicaps are used (never Under), the same rule as football.
-
-BASKETBALL_SPORT_ID = "sr:sport:2"
-
-# Only used to ask SportyBet for these markets in the game list. If a number is wrong the
-# markets are still read from each game page.
-BASKETBALL_MARKET_IDS = os.getenv("BASKETBALL_MARKET_IDS", "219,223,225")
-BB_EVENT_PAGES = int(os.getenv("BB_EVENT_PAGES", "8"))
-BB_CACHE_SECONDS = int(os.getenv("BB_CACHE_SECONDS", "300"))
-
-# A "mixed" ticket has at least this many basketball legs (fewer if there is no room).
-BB_MIXED_LEGS = int(os.getenv("BB_MIXED_LEGS", "3"))
-
-BB_LEAGUES = {
-    "ncaa": re.compile(r"ncaa|college", re.I),
-    "nba": re.compile(r"\bnba\b", re.I),
-    "euroleague": re.compile(r"euro\s*league", re.I),
-}
-
-BB_WORD_RE = re.compile(
-    r"\b(?:basket\s*ball|ncaab?|nba|euro\s*league|college\s+basketball)\b",
-    re.I,
-)
-
-BB_MIXED_RE = re.compile(r"\bmix(?:ed)?\b|\bfootball\b|\bsoccer\b", re.I)
-
-_BB_PERIOD = (
-    "quarter", "half", "1st", "2nd", "3rd", "4th",
-    "first", "second", "third", "fourth", "period",
-)
-
-_bb_cache = {"time": 0.0, "events": []}
-_BB_LOCK = threading.Lock()
-
-
-def _is_basketball(event):
-
-    if event.get("_sport") == "basketball":
-        return True
-
-    sport = event.get("sport") or {}
-
-    return (
-        str(sport.get("id") or "") == BASKETBALL_SPORT_ID
-        or str(sport.get("name") or "").strip().lower() == "basketball"
-    )
-
-
-def _parse_sport(text):
-    """Returns (sport, league): "football" | "basketball" | "mixed", and "ncaa" / "nba" / None.
-
-    "ncaa 100 odds" and "basketball 100 odds"  -> basketball only
-    "safe 10 odds mixed with basketball"        -> football and basketball together
-    """
-
-    low = _comma_free(text).lower()
-
-    if not BB_WORD_RE.search(low):
-        return "football", None
-
-    named = []
-
-    if re.search(r"\bncaab?\b|\bcollege\b", low):
-        named.append("ncaa")
-
-    if re.search(r"\bnba\b", low):
-        named.append("nba")
-
-    if re.search(r"euro\s*league", low):
-        named.append("euroleague")
-
-    # "ncaa and nba": both leagues, so no single-league filter
-    league = named[0] if len(named) == 1 else None
-
-    mixed = bool(BB_MIXED_RE.search(low))
-
-    return ("mixed" if mixed else "basketball"), league
-
-
-def _bb_events(provider):
-    """Every upcoming basketball game on SportyBet (kept for a few minutes)."""
-
-    with _BB_LOCK:
-
-        if _bb_cache["events"] and time.time() - _bb_cache["time"] < BB_CACHE_SECONDS:
-            return _bb_cache["events"]
-
-    walk = getattr(sp, "_walk_events", None)
-    virtual = getattr(sp, "is_virtual", lambda e: False)
-
-    if walk is None or not hasattr(provider, "_request"):
-        raise RuntimeError("This SportyBet provider cannot load basketball games.")
-
-    events = []
-    seen = set()
-
-    for page in range(1, BB_EVENT_PAGES + 1):
-
-        result = provider._request(
-            sp.UPCOMING_PATH,
-            {
-                "sportId": BASKETBALL_SPORT_ID,
-                "marketId": BASKETBALL_MARKET_IDS,
-                "pageSize": 100,
-                "pageNum": page,
-                "todayGames": "false",
-            },
-        )
-
-        found = [
-            e
-            for e in walk(result.get("data"))
-            if e.get("eventId") not in seen
-        ]
-
-        if not found:
-            break
-
-        for event in found:
-
-            seen.add(event.get("eventId"))
-
-            if virtual(event):
-                continue
-
-            event["_sport"] = "basketball"
-            events.append(event)
-
-    with _BB_LOCK:
-        _bb_cache["events"] = events
-        _bb_cache["time"] = time.time()
-
-    return events
-
-
-def basketball_candidates(event, markets):
-    """Winner, Over total points and positive handicap (all incl. overtime)."""
-
-    home = event.get("homeTeamName", "Home")
-    away = event.get("awayTeamName", "Away")
-
-    out = []
-
-    def add(kind, label, odd, p, key, **extra):
-
-        if not _candidate_is_allowed(kind, label):
-            return
-
-        odd = _safe_float(odd)
-        p = _safe_float(p)
-
-        if not odd or odd <= 1 or not p or p <= 0:
-            return
-
-        item = {"kind": kind, "label": label, "odd": odd, "p": p, "key": key}
-        item.update(extra)
-        out.append(item)
-
-    for market in markets or []:
-
-        mid = str(market.get("id"))
-        spec = market.get("specifier") or ""
-
-        name = (
-            f"{market.get('desc') or ''} "
-            f"{market.get('name') or ''}"
-        ).lower()
-
-        outcomes = [
-            o
-            for o in market.get("outcomes", [])
-            if o.get("isActive") is not False
-        ]
-
-        if len(outcomes) != 2:
-            continue
-
-        # Only the whole game, never one quarter or one half.
-        if any(word in name for word in _BB_PERIOD):
-            continue
-
-        odds = [_f(o.get("odds")) for o in outcomes]
-
-        # ---- winner of the game (overtime included) ----
-        if not spec and any(w in name for w in ("winner", "moneyline", "money line")):
-
-            for index, (o, odd, other) in enumerate(zip(outcomes, odds, odds[::-1])):
-
-                side = _side_of(o, two_way=True) or ("home" if index == 0 else "away")
-                team = home if side == "home" else away
-
-                add(
-                    "bb_win",
-                    f"{team} to win",
-                    odd,
-                    _two_way(odd, other),
-                    (mid, spec, str(o.get("id"))),
-                    side=side,
-                )
-
-            continue
-
-        # ---- Over total points (never Under) ----
-        if (
-            spec.startswith("total=")
-            and "total" in name
-            and not any(w in name for w in ("home", "away", "team", "odd", "even", "exact"))
-        ):
-
-            line = _f(spec.replace("total=", ""))
-
-            if line is None or (line * 2) % 1 != 0:
-                continue
-
-            over = under = None
-            over_id = None
-
-            for o, odd in zip(outcomes, odds):
-
-                label = _label_of(o)
-
-                if label.startswith("over"):
-                    over, over_id = odd, str(o.get("id"))
-
-                elif label.startswith("under"):
-                    under = odd
-
-            add(
-                "bb_over",
-                f"Over {line:g} points",
-                over,
-                _two_way(over, under),
-                (mid, spec, over_id),
-                line=line,
-            )
-
-            continue
-
-        # ---- positive handicap only ----
-        if spec.startswith("hcp=") and "handicap" in name:
-
-            line = _hcp_line(spec)
-
-            if not line:
-                continue
-
-            for o, odd, other in zip(outcomes, odds, odds[::-1]):
-
-                side = _side_of(o, two_way=True) or (
-                    "home" if o is outcomes[0] else "away"
-                )
-
-                if side == "home" and line > 0:
-                    team = home
-
-                elif side == "away" and line < 0:
-                    team = away
-
-                else:
-                    continue
-
-                add(
-                    "bb_hcp",
-                    f"{team} +{abs(line):g} handicap",
-                    odd,
-                    _two_way(odd, other),
-                    (mid, spec, str(o.get("id"))),
-                    side=side,
-                    handicap=abs(line),
-                )
-
-    return out
-
-
-def _split_sport(groups):
-
-    football, basketball = [], []
-
-    for group in groups:
-
-        if group and group[0].get("sport") == "basketball":
-            basketball.append(group)
-        else:
-            football.append(group)
-
-    return football, basketball
-
-
-def _force_basketball(groups, limit_product=None, need=None):
-    """A 'mixed' ticket must really contain basketball.
-
-    The strongest basketball pick of the best games is taken first, then the rest of
-    the ticket is built around them. Returns (forced picks, the other games, their odds).
-    """
-
-    need = BB_MIXED_LEGS if need is None else need
-
-    _, basketball = _split_sport(groups)
-
-    ranked = sorted(
-        basketball,
-        key=lambda g: max(c.get("p", 0) for c in g),
-        reverse=True,
-    )
-
-    forced, used = [], 1.0
-
-    for group in ranked:
-
-        if len(forced) >= need:
-            break
-
-        best = max(group, key=lambda c: c.get("p", 0))
-
-        if limit_product and used * best["odd"] > limit_product:
-            continue
-
-        forced.append(best)
-        used *= best["odd"]
-
-    ids = {c["event_id"] for c in forced}
-    rest = [g for g in groups if g[0]["event_id"] not in ids]
-
-    return forced, rest, used
-
-
-# ============================================================
 # FAVOURITE / DETAIL ORDER
 # ============================================================
 
@@ -2089,9 +1681,9 @@ def favourite_strength(event):
         return 0.0
 
 
-def _detail_football(events, limit):
+def _detail_order(events):
 
-    if len(events) <= limit:
+    if len(events) <= MAX_DETAIL_EVENTS:
         return list(events)
 
     ranked = sorted(events, key=favourite_strength, reverse=True)
@@ -2099,7 +1691,7 @@ def _detail_football(events, limit):
     selected = []
     seen = set()
 
-    priority_count = min(limit // 2, len(ranked))
+    priority_count = min(MAX_DETAIL_EVENTS // 2, len(ranked))
 
     for event in ranked[:priority_count]:
 
@@ -2111,7 +1703,7 @@ def _detail_football(events, limit):
         selected.append(event)
         seen.add(eid)
 
-    remaining = limit - len(selected)
+    remaining = MAX_DETAIL_EVENTS - len(selected)
 
     if remaining > 0:
 
@@ -2128,27 +1720,10 @@ def _detail_football(events, limit):
             selected.append(event)
             seen.add(eid)
 
-            if len(selected) >= limit:
+            if len(selected) >= MAX_DETAIL_EVENTS:
                 break
 
-    return selected[:limit]
-
-
-def _detail_order(events, limit=None):
-
-    limit = limit or MAX_DETAIL_EVENTS
-
-    basketball = [e for e in events if _is_basketball(e)]
-
-    if not basketball:
-        return _detail_football(events, limit)
-
-    # Basketball games are few: they all get their markets loaded first.
-    basketball = basketball[: max(limit // 2, 1)]
-    football = [e for e in events if not _is_basketball(e)]
-    room = max(limit - len(basketball), 0)
-
-    return basketball + (_detail_football(football, room) if room else [])
+    return selected[:MAX_DETAIL_EVENTS]
 
 
 # ============================================================
@@ -2167,43 +1742,14 @@ def gather(
     straight=False,
     daily=False,
     relax=0,
-    market_only=None,
-    risk_ok=False,
-    detail_limit=None,
-    detail_seconds=None,
-    sport="football",
-    league_hint=None,
 ):
-    """
-    sport: "football", "basketball" or "mixed". league_hint: "ncaa", "nba" ... (basketball).
-    market_only: a goals line (2.5) - only "Over 2.5 goals" picks are kept.
-    risk_ok: the person does not mind risky legs, so weaker picks are allowed.
-    detail_limit / detail_seconds: big-odds tickets look at more games.
-    """
 
-    events = []
-
-    if sport in ("football", "mixed"):
-        events.extend(provider.get_upcoming(start, end))
-
-    if sport in ("basketball", "mixed"):
-
-        try:
-
-            for game in _bb_events(provider):
-
-                ms = game.get("estimateStartTime")
-
-                if ms and start.timestamp() <= ms / 1000 < end.timestamp():
-                    events.append(game)
-
-        except Exception as exc:
-            print(f"Basketball games could not be loaded: {type(exc).__name__}: {exc}")
+    events = provider.get_upcoming(start, end)
 
     if not events:
         return [], 0, 0, 0
 
-    wanted = _detail_order(events, detail_limit)
+    wanted = _detail_order(events)
 
     details = {}
 
@@ -2231,10 +1777,7 @@ def gather(
 
             try:
 
-                for future in as_completed(
-                    futures,
-                    timeout=(detail_seconds or DETAIL_SECONDS),
-                ):
+                for future in as_completed(futures, timeout=DETAIL_SECONDS):
 
                     event = futures[future]
 
@@ -2262,10 +1805,6 @@ def gather(
         min_p = 0.30
         post_min_p = DAILY_MIN_P
         max_odd = DAILY_MAX_ODD
-
-    # "I don't mind risky legs": weaker picks are allowed.
-    if risk_ok and not straight and not daily:
-        post_min_p = min(post_min_p, RISKY_OK_MIN_P)
 
     groups = []
 
@@ -2297,17 +1836,6 @@ def gather(
         if not _event_ok(event, league_name):
             continue
 
-        is_bb = _is_basketball(event)
-
-        # "ncaa 100 odds": only the games of that basketball league.
-        if is_bb and league_hint:
-
-            pattern = BB_LEAGUES.get(league_hint)
-            country = str((fixture.get("league", {}) or {}).get("country", ""))
-
-            if pattern and not pattern.search(f"{league_name} {country}"):
-                continue
-
         ctx = _match_context(markets)
 
         margin = ctx.get("margin")
@@ -2326,10 +1854,7 @@ def gather(
         ):
             continue
 
-        if is_bb and not daily and not straight:
-            source = basketball_candidates(event, markets)
-
-        elif daily:
+        if daily:
             source = daily_candidates(event, markets)
 
         elif straight:
@@ -2337,16 +1862,6 @@ def gather(
 
         else:
             source = event_candidates(event, markets)
-
-        # "over 2.5 only" / "over 1.5 acca": keep only that goals line (football legs).
-        if market_only is not None and not daily and not straight and not is_bb:
-
-            source = [
-                c
-                for c in source
-                if c.get("kind") in ("over15", "over")
-                and c.get("line") == market_only
-            ]
 
         kept = []
         seen = set()
@@ -2360,7 +1875,7 @@ def gather(
             if not straight and not _passes_rules(candidate, ctx, relax):
                 continue
 
-            if not ((MIN_ODD_FLOOR if is_bb else floor) <= candidate["odd"] <= max_odd):
+            if not (floor <= candidate["odd"] <= max_odd):
                 continue
 
             key = (event["eventId"], candidate["key"])
@@ -2397,7 +1912,6 @@ def gather(
                     "league": league_data.get("name", "Football"),
                     "has_data": False,
                     "facts": None,
-                    "sport": "basketball" if is_bb else "football",
                     "ctx": ctx,
                     "market_p": candidate.get("p", 0.0),
                     "win_p": max(ctx["ph"] or 0, ctx["pa"] or 0),
@@ -2414,10 +1928,7 @@ def gather(
     # --------------------------------------------------------
 
     if USE_FOOTBALL_DATA:
-        studied = study(
-            [g for g in groups if not (g and g[0].get("sport") == "basketball")],
-            notify,
-        )
+        studied = study(groups, notify)
 
     else:
         # Compatibility mode only.
@@ -2484,20 +1995,12 @@ def gather(
 # DYNAMIC PROGRAMMING
 # ============================================================
 
-def _dp(groups, target, penalty=None, S=None):
-    """Cheapest set of picks (one per game) whose odds multiply to the target.
-
-    penalty: the cost of each extra leg. A higher value makes the search reach the
-    target with fewer, higher-odds legs.
-    S: how finely odds are measured. Big targets use a coarser scale so the search
-    stays fast.
-    """
+def _dp(groups, target):
 
     if not groups or not target:
         return None
 
-    S = S or (200 if target <= 300 else 80)
-    leg_penalty = LEG_PENALTY if penalty is None else penalty
+    S = 200
 
     try:
 
@@ -2538,7 +2041,7 @@ def _dp(groups, target, penalty=None, S=None):
                 cost = (
                     -math.log(probability)
                     - KIND_BONUS.get(candidate.get("kind"), 0.0)
-                    + leg_penalty
+                    + LEG_PENALTY
                     - (DATA_BONUS if candidate.get("has_data") else 0.0)
                 )
 
@@ -2594,9 +2097,7 @@ def _dp(groups, target, penalty=None, S=None):
 
     picked.reverse()
 
-    # NOTE: the old code cut the result to 30 legs here, which silently threw away
-    # odds. The leg limit is now handled in _fit_legs, which keeps the target.
-    return picked
+    return picked[:MAX_LEGS]
 
 
 def _product(picks):
@@ -2609,7 +2110,7 @@ def _product(picks):
     return total
 
 
-def _dp_exact(groups, target, penalty=None):
+def _dp_exact(groups, target):
 
     if not groups:
         return None
@@ -2619,7 +2120,7 @@ def _dp_exact(groups, target, penalty=None):
 
     for _ in range(6):
 
-        picks = _dp(groups, aim, penalty)
+        picks = _dp(groups, aim)
 
         if not picks:
             break
@@ -2638,48 +2139,6 @@ def _dp_exact(groups, target, penalty=None):
         aim = max(target, aim * target / actual * 1.004)
 
     return best
-
-
-def _fit_legs(groups, target, max_legs):
-    """Reach the target with at most max_legs legs.
-
-    First the cheapest set of legs is tried. If it needs too many legs, the cost of
-    each leg is raised, so the search reaches for higher-odds legs and uses fewer.
-    """
-
-    penalty = LEG_PENALTY
-
-    for _ in range(4):
-
-        picks = _dp_exact(groups, target, penalty)
-
-        if not picks:
-            # Even every game together cannot reach the target: more legs will not help.
-            return None
-
-        if len(picks) <= max_legs:
-            return picks
-
-        penalty *= 3.0
-
-    return None
-
-
-def _best_effort(groups, max_legs):
-    """The target cannot be reached: the highest-odds pick of the most games."""
-
-    best = []
-
-    for group in groups:
-
-        usable = [c for c in group if c.get("odd", 0) > 1]
-
-        if usable:
-            best.append(max(usable, key=lambda c: c["odd"]))
-
-    best.sort(key=lambda c: c["odd"], reverse=True)
-
-    return best[:max_legs]
 
 
 def _prune(groups, legs, scale):
@@ -2727,11 +2186,7 @@ def _kind_counts(chosen):
     return counts
 
 
-def choose_target(groups, target, max_legs=None, caps=True):
-    """caps=False (big odds, or 'over 2.5 only') skips the per-market share limits,
-    which used to keep only the strongest (lowest-odds) picks of each market."""
-
-    max_legs = max_legs or MAX_LEGS
+def choose_target(groups, target):
 
     if not groups or not target:
         return [], False
@@ -2746,21 +2201,12 @@ def choose_target(groups, target, max_legs=None, caps=True):
     if not all_weights:
         return [], False
 
-    if not caps:
-
-        chosen = _fit_legs(groups, target, max_legs)
-
-        if chosen:
-            return chosen, True
-
-        return [], False
-
     median_weight = all_weights[len(all_weights) // 2]
 
     legs = max(
         3,
         min(
-            max_legs,
+            MAX_LEGS,
             round(math.log(target) / max(median_weight, 0.05)),
         ),
     )
@@ -2779,7 +2225,7 @@ def choose_target(groups, target, max_legs=None, caps=True):
                 scale *= 1.6
                 continue
 
-            chosen = _fit_legs(pruned, target, max_legs)
+            chosen = _dp_exact(pruned, target)
 
             if chosen:
                 break
@@ -2809,12 +2255,12 @@ def choose_target(groups, target, max_legs=None, caps=True):
     return [], False
 
 
-def choose_count(groups, count, max_legs=None, caps=True):
+def choose_count(groups, count):
 
     if not groups or count <= 0:
         return [], False
 
-    count = min(int(count), max_legs or MAX_LEGS)
+    count = min(int(count), MAX_LEGS)
 
     # Soft: no longer require has_data
     ranked = sorted(
@@ -2830,7 +2276,7 @@ def choose_count(groups, count, max_legs=None, caps=True):
 
     chosen = []
 
-    for scale in ((1.0, 1.6, 2.5, 4.0) if caps else (1.0,)):
+    for scale in (1.0, 1.6, 2.5, 4.0):
 
         chosen = []
         used_events = set()
@@ -2850,7 +2296,7 @@ def choose_count(groups, count, max_legs=None, caps=True):
                 math.ceil(KIND_CAP.get(kind, 0.30) * count * scale),
             )
 
-            if caps and counts.get(kind, 0) >= cap:
+            if counts.get(kind, 0) >= cap:
                 continue
 
             chosen.append(candidate)
@@ -3194,18 +2640,12 @@ def build_ticket(
     notify=None,
     straight=False,
     daily=False,
-    opts=None,
 ):
-    """opts: {"market_only": 2.5 or None, "risk_ok": True/False}"""
 
     best = None
     best_level = 0
 
-    # With RULES_OFF the loosening levels change nothing, so one pass is enough
-    # (the extra passes only made a failed request take three times as long).
-    levels = 1 if RULES_OFF else 3
-
-    for level in range(levels):
+    for level in range(3):
 
         built = _build_once(
             provider,
@@ -3218,7 +2658,6 @@ def build_ticket(
             straight,
             daily,
             level,
-            opts,
         )
 
         chosen = built["chosen"]
@@ -3350,29 +2789,7 @@ def _build_once(
     straight=False,
     daily=False,
     relax=0,
-    opts=None,
 ):
-
-    opts = opts or {}
-
-    # "over 2.5 only": every leg must be that goals line.
-    market_only = None if (straight or daily) else opts.get("market_only")
-
-    # "I don't mind risky legs" (or the word risky): weaker picks are allowed.
-    risk_ok = (
-        (bool(opts.get("risk_ok")) or risk == "risky")
-        and not (straight or daily)
-    )
-
-    # football (default), basketball, or both ("mixed")
-    sport = "football" if (straight or daily) else (opts.get("sport") or "football")
-    league_hint = None if (straight or daily) else opts.get("league")
-
-    # BIG ODDS (500 and up): up to MAX_LEGS_RISKY legs, a wider pool of games, and no
-    # per-market share limits (those limits kept only the lowest-odds picks).
-    big = bool(target and target >= BIG_ODDS_START) and not (straight or daily)
-    max_legs = MAX_LEGS_RISKY if big else MAX_LEGS
-    use_caps = not (market_only is not None or big)
 
     floor = NORMAL_MIN_LEG
 
@@ -3380,10 +2797,6 @@ def _build_once(
         floor = max(floor, 1.35)
 
     floor = max(floor, NORMAL_MIN_ODD)
-
-    if market_only is not None:
-        # Over 1.5 is often priced 1.20 to 1.40: do not throw those away.
-        floor = MIN_ODD_FLOOR
 
     if straight:
         floor = 1.05
@@ -3424,12 +2837,6 @@ def _build_once(
             straight=straight,
             daily=daily,
             relax=relax,
-            market_only=market_only,
-            risk_ok=risk_ok,
-            detail_limit=(MAX_DETAIL_BIG if (big or sport != "football") else None),
-            detail_seconds=(DETAIL_SECONDS_BIG if (big or sport != "football") else None),
-            sport=sport,
-            league_hint=league_hint,
         )
 
         if not groups:
@@ -3446,70 +2853,17 @@ def _build_once(
                 return choose_straight(gs, target, count)
 
             if target:
+                picks, ok = choose_target(gs, target)
 
-                picks, ok = None, False
-
-                # "mixed": the strongest basketball picks go in first, the rest is built around them.
-                if sport == "mixed":
-
-                    forced, rest, used = _force_basketball(gs, target * 0.6)
-
-                    if forced:
-
-                        left = target / used
-
-                        if left <= 1.15:
-                            picks, ok = list(forced), used >= target
-
-                        else:
-
-                            more, ok = choose_target(
-                                rest,
-                                left,
-                                max(1, max_legs - len(forced)),
-                                use_caps,
-                            )
-
-                            if more:
-                                picks = list(forced) + more
-
-                if not picks:
-                    picks, ok = choose_target(gs, target, max_legs, use_caps)
-
-                if not picks and (
-                    req.get("exact_window")
-                    or (big and extra_days >= max_extra)
-                ):
-                    # Could not reach it: give the best there is (shown with a
-                    # "could not reach" warning) instead of nothing.
-                    if big:
-                        picks = _best_effort(gs, max_legs)
-                    else:
-                        # Small night slate: the best strong picks there are.
-                        picks, _ = choose_count(gs, max_legs, caps=use_caps)
-
+                if not picks and req.get("exact_window"):
+                    # Small night slate: give the best strong picks there are
+                    # (shown with a "could not reach" warning) instead of nothing.
+                    picks, _ = choose_count(gs, MAX_LEGS)
                     ok = False
 
                 return picks, ok
 
-            if sport == "mixed":
-
-                wanted = int(count)
-                need = min(BB_MIXED_LEGS, max(1, wanted // 3))
-                forced, rest, _used = _force_basketball(gs, None, need)
-
-                if forced:
-
-                    left = wanted - len(forced)
-
-                    if left <= 0:
-                        return list(forced)[:wanted], True
-
-                    more, ok = choose_count(rest, left, max_legs, use_caps)
-
-                    return list(forced) + more, ok
-
-            return choose_count(gs, count, max_legs, use_caps)
+            return choose_count(gs, count)
 
         chosen, reached = pick(groups)
 
@@ -3611,9 +2965,6 @@ def _flow_main(
     daily=False,
     **kwargs,
 ):
-
-    # "16,000 odds" must be read as 16000.
-    text = _comma_free(text)
 
     provider = getattr(bot, "SPORTYBET_PROVIDER", None)
 
@@ -3722,15 +3073,6 @@ def _flow_main(
         count = None
         risk = "safe"
 
-    # "over 2.5 only" and "I don't mind risky legs" (not used by Daily / Straight win)
-    market_only, risk_ok = (None, False) if (daily or straight) else _parse_extras(text)
-
-    if risk_ok:
-        risk = "risky"
-
-    # "ncaa 100 odds", "basketball 100 odds", "safe 10 odds mixed with basketball"
-    sport_mode, league_hint = ("football", None) if (daily or straight) else _parse_sport(text)
-
     if straight and not target and not count:
 
         count = STRAIGHT_DEFAULT_LEGS
@@ -3742,17 +3084,7 @@ def _flow_main(
 
     elif not target and not count:
 
-        # "over 1.5 acca today" with no size: 10 legs (say "20 picks" or "5000 odds" for more)
-        count = 10 if market_only is not None else 5
-
-    big_run = bool(target and target >= BIG_ODDS_START) and not (daily or straight)
-
-    opts = {
-        "market_only": market_only,
-        "risk_ok": risk_ok,
-        "sport": sport_mode,
-        "league": league_hint,
-    }
+        count = 5
 
     try:
 
@@ -3765,7 +3097,6 @@ def _flow_main(
             notify=None,
             straight=straight,
             daily=daily,
-            opts=opts,
         )
 
     except Exception as exc:
@@ -3797,7 +3128,6 @@ def _flow_main(
                 count,
                 "risky",
                 notify=None,
-                opts=opts,
             )
 
             if retry["chosen"]:
@@ -3837,27 +3167,6 @@ def _flow_main(
 
     if not chosen:
 
-        if sport_mode != "football":
-
-            bot.send_message(
-                chat_id,
-                f"{E_FAIL} I couldn't build a basketball ticket for that request. "
-                "There may be no games of that league in this window, or not enough "
-                "to reach the odds. Try a longer window or lower odds.",
-            )
-
-            return
-
-        if market_only is not None:
-
-            bot.send_message(
-                chat_id,
-                f"{E_FAIL} I couldn't find enough Over {market_only:g} games for that "
-                "request. Try a longer window (for example the weekend) or fewer picks.",
-            )
-
-            return
-
         bot.send_message(
             chat_id,
             f"{E_FAIL} I couldn't build a ticket from the available football "
@@ -3874,15 +3183,7 @@ def _flow_main(
     swapped = []
     reviewed = False
 
-    # Big-odds tickets (many legs, risky on purpose) skip the AI review: it would
-    # drop legs and rebuild the whole ticket.
-    if (
-        USE_AI_REVIEW
-        and ANTHROPIC_API_KEY
-        and not straight
-        and not big_run
-        and sport_mode == "football"  # the review is written for football
-    ):
+    if USE_AI_REVIEW and ANTHROPIC_API_KEY and not straight:
 
         try:
 
@@ -3931,7 +3232,6 @@ def _flow_main(
                     exclude=exclude,
                     straight=straight,
                     daily=daily,
-                    opts=opts,
                 )
 
                 if not rebuilt["chosen"]:
@@ -4012,15 +3312,6 @@ def _flow_main(
     else:
         title = f"{len(chosen)} PICKS"
 
-    if market_only is not None:
-        title = f"OVER {market_only:g} {DOT} {title}"
-
-    if sport_mode == "basketball":
-        title = f"{(league_hint or 'BASKETBALL').upper()} {DOT} {title}"
-
-    elif sport_mode == "mixed":
-        title = f"FOOTBALL + BASKETBALL {DOT} {title}"
-
     lines = [
         f"{E_TICKET} <b>SPORTYTIPS {DOT} {html.escape(title)}</b>",
         (
@@ -4057,11 +3348,7 @@ def _flow_main(
         "",
         LINE,
         f"{E_MONEY} <b>Total odds: {total_odds:.2f}</b>",
-        (
-            f"{E_CHART} Estimated combined chance: <b>"
-            + (f"{chance * 100:.1f}%" if chance >= 0.001 else "under 0.1%")
-            + "</b>"
-        ),
+        f"{E_CHART} Estimated combined chance: <b>{chance * 100:.1f}%</b>",
     ]
 
     if target and not built["reached"]:
@@ -4168,15 +3455,6 @@ def _flow_main(
 
         else:
             image_title = f"{len(chosen)} Picks"
-
-        if market_only is not None:
-            image_title = f"Over {market_only:g} {image_title}"
-
-        if sport_mode == "basketball":
-            image_title = f"{(league_hint or 'Basketball').upper()} {image_title}"
-
-        elif sport_mode == "mixed":
-            image_title = f"Mixed {image_title}"
 
         png = ticket_image_lite.make_ticket_image(
             rows,
@@ -4551,138 +3829,6 @@ _orig_flow = bot.prediction_ticket_flow
 bot.prediction_ticket_flow = flow
 
 bot.MAX_DAYS_AHEAD = max(getattr(bot, "MAX_DAYS_AHEAD", 2), 3)
-
-
-# ---- main.py needs no change: the pieces below are attached to it here ----
-
-# 1) "16,000 odds" is read as 16000 everywhere main.py reads a request.
-
-_orig_parse_request = bot.parse_request
-
-
-def _parse_request_commas(text):
-    return _orig_parse_request(_comma_free(text))
-
-
-bot.parse_request = _parse_request_commas
-
-
-# 2) The AI chat is told about the goals market, big odds and "risky".
-
-_orig_ai_system_prompt = bot.ai_system_prompt
-
-AI_EXTRA = """
-
-EXTRA REQUEST PIECES (these override anything above that says otherwise)
-- Goals market (optional): "over 1.5 only", "over 2.5 only" (0.5, 1.5, 2.5, 3.5 and 4.5 work).
-  Use it when the user wants a ticket made only of that market, for example "over 1.5 acca"
-  or "over 2.5 only today". Copy the number the user says.
-- Odds can be any size the user asks for, for example "16000 odds" or "5000 odds".
-  Never lower, round or cap the number yourself, and write it as plain digits (no comma).
-- If the user says they do not mind risky legs, or wants a big or wild ticket, add "risky".
-- "weekend" is a valid window: keep it when the user says this weekend.
-- Do not refuse big odds or long tickets. In "reply" you may say that the bigger the odds,
-  the lower the chance.
-- Basketball: the bot CAN build basketball tickets (match winner, over total points and
-  positive handicaps). If the user asks for basketball, NCAA or NBA, keep that word in
-  "request", for example "ncaa 100 odds", "basketball 20 odds" or "nba 10 odds today".
-  If they want football together with basketball, add the word "mixed", for example
-  "safe 10 odds mixed basketball today". Never say basketball is not possible.
-"""
-
-
-def _ai_system_prompt_extra():
-    return _orig_ai_system_prompt() + AI_EXTRA
-
-
-bot.ai_system_prompt = _ai_system_prompt_extra
-
-
-# 3) If the AI still drops the market, the risk word, the odds or the weekend the person
-#    typed, they are put back before the ticket is built.
-
-_orig_ai_dispatch = bot.ai_dispatch
-
-_ODDS_IN_TEXT = re.compile(r"(\d+(?:\.\d+)?)\s*(?:total\s*)?odds?\b", re.I)
-
-
-def _keep_user_extras(user_text, request):
-
-    low = _comma_free(user_text).lower()
-    out = _comma_free(request).strip() or low
-
-    # the goals market (over 2.5 only, over 1.5 acca ...)
-    match = OVER_ONLY_RE.search(low)
-
-    if match and not OVER_ONLY_RE.search(out):
-        out += f" over {match.group(1)} only"
-
-    # "I don't mind risky legs"
-    if RISK_OK_RE.search(low) and not RISK_OK_RE.search(out):
-        out += " risky"
-
-    # the odds the person typed: the AI must not change them
-    asked = _ODDS_IN_TEXT.search(low)
-
-    if asked:
-
-        try:
-            wanted = float(asked.group(1))
-        except Exception:
-            wanted = 0.0
-
-        if wanted >= 1.5:
-
-            given = _ODDS_IN_TEXT.search(out)
-            same = False
-
-            if given:
-                try:
-                    same = abs(float(given.group(1)) - wanted) < 1e-9
-                except Exception:
-                    same = False
-
-            if not same:
-                out = _ODDS_IN_TEXT.sub(" ", out)
-                out = f"{out} {asked.group(1)} odds"
-
-    # this weekend
-    if re.search(r"\bweekend\b", low) and not re.search(r"\bweekend\b", out):
-
-        out = re.sub(
-            r"\b(today|tonight|tomorrow|week|\d+\s*days?)\b",
-            " ",
-            out,
-        ) + " weekend"
-
-    # basketball / NCAA / NBA, and "mixed with football"
-    found = BB_WORD_RE.search(low)
-
-    if found and not BB_WORD_RE.search(out):
-        out += " " + found.group(0)
-
-    if found and BB_MIXED_RE.search(low) and not BB_MIXED_RE.search(out):
-        out += " mixed"
-
-    return re.sub(r"\s+", " ", out).strip()
-
-
-def _ai_dispatch_extras(chat_id, text, data):
-
-    try:
-
-        if str(data.get("action", "chat")).lower() == "ticket":
-
-            data = dict(data)
-            data["request"] = _keep_user_extras(text, str(data.get("request", "")))
-
-    except Exception as exc:
-        print(f"Keeping the request details failed: {exc}")
-
-    return _orig_ai_dispatch(chat_id, text, data)
-
-
-bot.ai_dispatch = _ai_dispatch_extras
 
 
 # ============================================================

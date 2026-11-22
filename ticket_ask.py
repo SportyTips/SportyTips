@@ -359,4 +359,52 @@ def handle_text(chat_id, text):
 
 bot.handle_text = handle_text
 
+# ------------------------------------------------------------
+# basketball tickets: points only (no handicap, no "to win"), sure picks only
+# ------------------------------------------------------------
+# Kept in this file on purpose, so one file switches everything on.
+import os
+
+
+def _on(name, default):
+    return os.getenv(name, default).strip().lower() in ("1", "true", "yes", "on")
+
+
+BB_SURE_P = float(os.getenv("BB_SURE_P", "0.62"))  # 0.65 = safer, 0.58 = more games
+_BB_DROP_KINDS = set()
+
+if _on("BB_NO_HCP", "1"):
+    _BB_DROP_KINDS.add("bb_hcp")
+
+if _on("BB_NO_WINS", "1"):
+    _BB_DROP_KINDS.add("bb_win")
+
+try:
+    _prev_bb = st.basketball_candidates
+
+    def basketball_candidates(event, markets):
+        return [
+            c
+            for c in _prev_bb(event, markets)
+            if c.get("kind") not in _BB_DROP_KINDS and c.get("p", 0) >= BB_SURE_P
+        ]
+
+    st.basketball_candidates = basketball_candidates
+
+    extra = ("|handicap" if "bb_hcp" in _BB_DROP_KINDS else "") + (r"|\bto win\b" if "bb_win" in _BB_DROP_KINDS else "")
+    st._BB_LABEL_BAD = re.compile(st._BB_LABEL_BAD.pattern + extra, st._BB_LABEL_BAD.flags)
+
+    # ticket_extras lowers the bar to 52% for basketball: keep it at BB_SURE_P instead
+    try:
+        import ticket_extras as _te
+        if hasattr(_te, "BB_MIN_P"):
+            _te.BB_MIN_P = max(float(_te.BB_MIN_P), BB_SURE_P)
+    except Exception:
+        pass
+
+    print(f"OK: basketball filter on (points only, picks from {round(BB_SURE_P * 100)}%, dropping {sorted(_BB_DROP_KINDS)})")
+
+except Exception as exc:
+    print(f"NOTE: basketball filter is off: {type(exc).__name__}: {exc}")
+
 print("OK: ticket_ask.py loaded (basketball: count first, then build to your odds)")

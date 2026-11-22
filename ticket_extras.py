@@ -100,7 +100,11 @@ if hasattr(st, "_detail_order"):
 # ------------------------------------------------------------
 # 2b) "No goal scored by a substitute"
 # ------------------------------------------------------------
-SUB_RE = re.compile(r"\bsubstitut\w*", re.I)
+# "substitute", "substitution", "substituted", and also "goal scored by a sub"
+SUB_RE = re.compile(
+    r"\bsubstitut\w*|\bsubs?\b(?=[^.]*\bgoals?\b)|\bgoals?\b[^.]*\bsubs?\b",
+    re.I,
+)
 
 # A pick needs at least this chance when it is asked for on its own (the normal bar is 0.66).
 SUB_MIN_P = float(os.getenv("SUB_MIN_P", "0.50"))
@@ -359,10 +363,15 @@ def prediction_ticket_flow(chat_id, text, *args, **kwargs):
     sub_only = False
     cap_before = None
 
+    # decided first, on its own: nothing else that goes wrong may turn it into a normal ticket
+    sub_only = bool(SUB_RE.search(text)) and not st.DAILY_RE.search(text.lower())
+
+    if sub_only:
+        print(f"Ticket extras: substitute-only request: {text!r}")
+
     try:
         if not st.DAILY_RE.search(text.lower()):
             changes = _overrides(text)
-            sub_only = bool(SUB_RE.search(text))
 
             # "over 1.5 acca today" (no size): upgrades.py adds "5 picks". Use a longer acca instead.
             market_only, _risk = st._parse_extras(text)
@@ -403,4 +412,123 @@ def prediction_ticket_flow(chat_id, text, *args, **kwargs):
 
 bot.prediction_ticket_flow = prediction_ticket_flow
 
-print("OK: ticket_extras.py loaded (basketball, risky and big odds work with upgrades.py)")
+
+# ------------------------------------------------------------
+# 5) Home-screen card: "No goal by a substitute"
+# ------------------------------------------------------------
+# Added to the chat page (app.py's CHAT_EXTRAS). It opens a small window that asks for the odds
+# and the days, then sends the request for you, so the words are always exactly right.
+CARD_HTML = r"""
+<script>
+(function () {
+  function subRequest(odds, when, risky) {
+    var parts = ["goal scored by a substitution no"];
+    if (odds) parts.push(odds + " odds");
+    if (when) parts.push(when);
+    if (risky) parts.push("risky");
+    return parts.join(" ");
+  }
+  window.stSubRequest = subRequest;
+
+  var WHENS = [["tomorrow", "Tomorrow"], ["weekend", "Weekend"], ["today", "Today"], ["this week", "This week"]];
+  var state = { odds: "20", when: "tomorrow", risky: false };
+
+  function place() {
+    var edit = document.getElementById("editcard");
+    if (!edit || document.getElementById("subcard")) return;
+    var b = document.createElement("button");
+    b.type = "button";
+    b.id = "subcard";
+    b.className = "card wide redring";
+    b.innerHTML =
+      '<svg viewBox="0 0 24 24" aria-hidden="true"><circle cx="12" cy="12" r="9"/><path d="M8 12h8"/></svg>' +
+      '<div class="wtext"><b>No goal by a substitute</b><span>Goal scored by a substitution: No</span></div>';
+    edit.parentNode.insertBefore(b, edit);
+    b.addEventListener("click", openSub);
+  }
+
+  function openSub() {
+    if (typeof accountUser === "undefined" || !accountUser) { showAuth("login"); return; }
+    if (typeof canEdit === "function" && !canEdit()) { openTools("premium"); toast("This is a Premium feature."); return; }
+
+    sheet.hidden = false;
+    document.getElementById("sheettitle").textContent = "No goal by a substitute";
+    pane.scrollTop = 0;
+
+    pane.innerHTML =
+      "<h3>How many odds do you want?</h3>" +
+      '<p class="hint">I look through SportyBet for the market "Goal Scored by a Substitution" and pick the answer No for each game, until the odds you ask for are reached.</p>' +
+      '<label class="field">Total odds<input id="subodds" type="number" inputmode="decimal" min="1.5" max="100000" value="' + state.odds + '" placeholder="e.g. 20"></label>' +
+      '<div class="quick" id="subquick">' +
+      [10, 20, 50, 100].map(function (v) { return '<button class="mini" type="button" data-so="' + v + '">' + v + " odds</button>"; }).join("") +
+      "</div>" +
+      '<div class="sect" style="margin-top:6px">Which days?</div>' +
+      '<div class="quick" id="subwhen">' +
+      WHENS.map(function (w) { return '<button class="mini' + (w[0] === state.when ? " red" : "") + '" type="button" data-sw="' + w[0] + '">' + w[1] + "</button>"; }).join("") +
+      "</div>" +
+      '<label class="switch"><span><b>Allow weaker picks</b><small>Helps when there are not enough strong games</small></span><input id="subrisk" type="checkbox"' + (state.risky ? " checked" : "") + "></label>" +
+      '<p class="msg" id="submsg"></p>' +
+      '<button class="btn-block" id="subgo" type="button">Build my ticket</button>' +
+      '<p class="hint" style="margin-top:12px">Bigger odds need more games. If there are not enough on SportyBet, I tell you how many I found.</p>';
+
+    var odds = document.getElementById("subodds");
+    odds.addEventListener("input", function () { state.odds = odds.value; document.getElementById("submsg").textContent = ""; });
+    odds.addEventListener("keydown", function (e) { if (e.key === "Enter") { e.preventDefault(); document.getElementById("subgo").click(); } });
+
+    pane.querySelectorAll("[data-so]").forEach(function (b) {
+      b.addEventListener("click", function () { odds.value = b.dataset.so; state.odds = odds.value; });
+    });
+    pane.querySelectorAll("[data-sw]").forEach(function (b) {
+      b.addEventListener("click", function () {
+        state.when = b.dataset.sw;
+        pane.querySelectorAll("[data-sw]").forEach(function (x) { x.classList.toggle("red", x === b); });
+      });
+    });
+    document.getElementById("subrisk").addEventListener("change", function (e) { state.risky = e.target.checked; });
+
+    document.getElementById("subgo").addEventListener("click", function () {
+      var n = parseFloat(odds.value);
+      if (!(n >= 1.5) || n > 100000) { document.getElementById("submsg").textContent = "Enter odds from 1.5 to 100000."; return; }
+      if (typeof busy !== "undefined" && busy) { toast("Wait for your current ticket to finish."); return; }
+      closeTools();
+      send(subRequest(Number.isInteger(n) ? n : n.toFixed(1), state.when, state.risky));
+    });
+
+    setTimeout(function () { odds.focus(); }, 320);
+  }
+
+  place();
+  var hub = document.getElementById("hub");
+  if (hub) new MutationObserver(place).observe(hub, { childList: true, subtree: true });
+})();
+</script>
+"""
+
+
+def _add_card_to_site():
+    """Put the card into app.py's chat page (no change to app.py is needed)."""
+
+    import sys
+
+    for name in ("app", "__main__"):
+
+        module = sys.modules.get(name)
+
+        if module is not None and hasattr(module, "CHAT_EXTRAS"):
+
+            if "id=\"subcard\"" not in module.CHAT_EXTRAS and "stSubRequest" not in module.CHAT_EXTRAS:
+                module.CHAT_EXTRAS = module.CHAT_EXTRAS + CARD_HTML
+
+            return True
+
+    return False
+
+
+try:
+    _card_ok = _add_card_to_site()
+except Exception as exc:
+    _card_ok = False
+    print(f"Ticket extras: could not add the home-screen card: {exc}")
+
+
+print(f"OK: ticket_extras.py loaded (basketball, risky and big odds, substitute pick; home-screen card added: {_card_ok})")

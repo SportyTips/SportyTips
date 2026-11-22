@@ -131,6 +131,13 @@ try:
 except ImportError:
     upgrades = None
 
+# Ticket extras (big odds, basketball, substitute pick). Must load AFTER upgrades.
+try:
+    import ticket_extras  # noqa: F401
+    import ticket_sub_fix  # noqa: F401
+except Exception as exc:
+    print(f"NOTE: ticket extras are off: {type(exc).__name__}: {exc}")
+
 
 # ===============================================================
 # WEB OUTPUT

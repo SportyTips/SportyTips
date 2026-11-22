@@ -132,12 +132,12 @@ except ImportError:
     upgrades = None
 
 # Ticket extras (big odds, basketball, substitute pick). Must load AFTER upgrades.
-try:
-    import ticket_extras  # noqa: F401
-    import ticket_sub_fix  # noqa: F401
-    import ticket_ask  # noqa: F401
-except Exception as exc:
-    print(f"NOTE: ticket extras are off: {type(exc).__name__}: {exc}")
+# One block each, so a missing file only switches off that file.
+for _name in ("ticket_extras", "ticket_sub_fix", "ticket_ask"):
+    try:
+        importlib.import_module(_name)
+    except Exception as exc:
+        print(f"NOTE: {_name} is off: {type(exc).__name__}: {exc}")
 
 
 # ===============================================================

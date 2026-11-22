@@ -48,6 +48,9 @@ NO_RE = re.compile(r"^(no|nope|nah|stop|cancel|leave it|never ?mind)\b", re.I)
 TOTAL_RE = re.compile(r"Total odds:\s*(?:<[^>]+>)?\s*([0-9]+(?:\.[0-9]+)?)", re.I)
 WINDOW_RE = re.compile(r"\b(today|tonight|tomorrow|morning|afternoon|evening|night|midnight|weekend|week|\d+\s*days?)\b", re.I)
 
+THINGS_RE = re.compile(r"\b(games?|matches|fixtures?|list)\b", re.I)
+NOT_LIST_RE = re.compile(r"\b(odds?|picks?|ticket|acca|accumulator|code|build|make)\b|\d", re.I)
+
 SHORT_OK = 0.95  # a ticket with at least this share of the wanted odds counts as reached
 
 _PENDING = {}  # chat_id -> state
@@ -217,7 +220,15 @@ def _list(chat_id, state):
         lines.append(f"(showing the first {LIST_MAX})")
 
     lines += ["", "Now tell me the odds you want, for example <b>100 odds</b>."]
+    _set(chat_id, stage="odds", word=state["word"], phrase=state["phrase"], n=len(rows), name=state["name"])
     bot.send_message(chat_id, "\n".join(lines))
+
+
+def _list_request(chat_id, low):
+    """'list ncaa matches tomorrow': the basketball games themselves, not football."""
+    word = SPORT_RE.search(low).group(1)
+    phrase = up._window_phrase(low) or "today"
+    _list(chat_id, {"stage": "odds", "word": word, "phrase": phrase, "name": _label(word), "n": None})
 
 
 # ------------------------------------------------------------
@@ -332,11 +343,13 @@ def handle_text(chat_id, text):
     low = message.lower()
     words = low.split()
 
-    is_question = bool(
+    ask = bool(
         message and not message.startswith("/")
-        and SPORT_RE.search(low) and len(words) <= 12 and AVAIL_RE.search(low)
-        and not BUILD_RE.search(low) and not ODDS_RE.search(low)
+        and SPORT_RE.search(low) and len(words) <= 12
+        and not NOT_LIST_RE.search(low.replace("tomorrow", " "))
     )
+    is_question = ask and bool(AVAIL_RE.search(low)) and not BUILD_RE.search(low) and not ODDS_RE.search(low)
+    is_list = ask and not is_question and bool(THINGS_RE.search(low))
 
     try:
         if message and not message.startswith("/"):
@@ -347,11 +360,14 @@ def handle_text(chat_id, text):
 
             if is_question:
                 return _availability(chat_id, low)
+
+            if is_list:
+                return _list_request(chat_id, low)
     except Exception as exc:
         print(f"Ask: failed: {type(exc).__name__}: {exc}")
 
-        if is_question:
-            # a question must never turn into a ticket
+        if is_question or is_list:
+            # a question must never turn into a ticket or a football list
             return bot.send_message(chat_id, "\u274C I couldn't check the games right now. Try again in a minute.")
 
     return _prev_handle_text(chat_id, text)

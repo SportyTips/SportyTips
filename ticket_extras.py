@@ -13,6 +13,10 @@ upgrades.py wraps the ticket builder with its own rules, and three of them get i
      you ask for "over 2.5 only" every game may be used.
 The settings are changed only while one request runs and are put back afterwards.
 
+It also adds the pick "No goal scored by a substitute" (SportyBet's "goal scored by a substitute"
+market, answer No). Ask for it with the word "substitute", for example
+"goal scored by a substitute no 10 picks tomorrow". It is also offered in normal tickets.
+
 Load it AFTER upgrades.py. In app.py it goes into the same block as push_notify:
 
     try:
@@ -57,7 +61,7 @@ _prev_allowed = st._candidate_is_allowed
 
 def _candidate_is_allowed(kind, label=""):
 
-    if str(kind or "").startswith("bb_"):
+    if str(kind or "").startswith("bb_") or kind == "sub_goal":
         # same rule as football: never Under, never cards
         return not re.search(r"\bunder\b|\bcards?\b", str(label or "").lower())
 
@@ -91,6 +95,159 @@ if hasattr(st, "_detail_order"):
 
 
 # ------------------------------------------------------------
+# 2b) "No goal scored by a substitute"
+# ------------------------------------------------------------
+SUB_RE = re.compile(r"\bsubstitut\w*", re.I)
+
+# A pick needs at least this chance when it is asked for on its own (the normal bar is 0.66).
+SUB_MIN_P = float(os.getenv("SUB_MIN_P", "0.50"))
+
+SUB_MIN_ODD = st.MIN_ODD_FLOOR
+SUB_MAX_ODD = 10.0
+
+_SUB_BAD_WORDS = ("corner", "card", "booking", "1st", "2nd", "half", "first", "second", "assist", "minute")
+_SUB_SEEN = set()
+_SUB_FLAG = threading.local()  # True while a request asks for the substitute pick only
+
+st.KIND_BONUS["sub_goal"] = 0.03
+st.KIND_CAP["sub_goal"] = 0.25
+st.KIND_NAME["sub_goal"] = "No goal by a substitute"
+
+
+def substitute_candidates(event, markets):
+    """SportyBet's "goal scored by a substitute" market, answer No.
+
+    The market is found by its NAME (it has to mention a substitute and a goal), because the
+    exact wording is not known. The names seen are printed in the server log."""
+
+    home = str(event.get("homeTeamName", "Home"))
+    away = str(event.get("awayTeamName", "Away"))
+    found = []
+
+    for market in markets or []:
+
+        name = f"{market.get('desc') or ''} {market.get('name') or ''}".lower().strip()
+
+        if "substitut" not in name:
+            continue
+
+        if name not in _SUB_SEEN and len(_SUB_SEEN) < 12:
+            _SUB_SEEN.add(name)
+            print(f"Substitute market seen: {market.get('id')}: {name}")
+
+        if any(word in name for word in _SUB_BAD_WORDS):
+            continue
+
+        if not any(word in name for word in ("goal", "score", "scorer")):
+            continue
+
+        live = []
+
+        for outcome in market.get("outcomes", []):
+
+            if outcome.get("isActive") is False:
+                continue
+
+            odd = st._f(outcome.get("odds"))
+
+            if odd and odd > 1:
+                live.append((outcome, odd))
+
+        if len(live) != 2:
+            continue
+
+        answers = {st._label_of(o): (o, odd) for o, odd in live}
+
+        if "yes" not in answers or "no" not in answers:
+            continue
+
+        outcome, odd_no = answers["no"]
+        odd_yes = answers["yes"][1]
+
+        if not (SUB_MIN_ODD <= odd_no <= SUB_MAX_ODD):
+            continue
+
+        chance = (1 / odd_no) / ((1 / odd_no) + (1 / odd_yes))
+
+        h, a = home.lower(), away.lower()
+        has_home = "home" in name or (len(h) > 3 and h in name)
+        has_away = "away" in name or (len(a) > 3 and a in name)
+
+        team = ""
+
+        if has_home and not has_away:
+            team = home
+        elif has_away and not has_home:
+            team = away
+
+        found.append({
+            "kind": "sub_goal",
+            "label": "No goal scored by a substitute" + (f" ({team})" if team else ""),
+            "odd": odd_no,
+            "p": chance,
+            "market_p": chance,  # no match stats exist for this market: the price decides
+            "key": (str(market.get("id")), market.get("specifier") or "", str(outcome.get("id"))),
+            "extra": True,
+        })
+
+    found.sort(key=lambda c: -c["p"])
+
+    return found[:2]
+
+
+_prev_event_candidates = st.event_candidates
+
+
+def event_candidates(event, markets):
+
+    if getattr(_SUB_FLAG, "only", False):
+        return substitute_candidates(event, markets)
+
+    got = _prev_event_candidates(event, markets)
+
+    try:
+        got = got + substitute_candidates(event, markets)
+    except Exception as exc:
+        print(f"Substitute picks failed: {exc}")
+
+    return got
+
+
+st.event_candidates = event_candidates
+
+_prev_reason_for = st._reason_for
+
+
+def _reason_for(candidate):
+
+    if candidate.get("kind") == "sub_goal":
+        chance = round(candidate.get("p", 0) * 100)
+        return f"SportyBet's prices give 'no goal from a substitute' about {chance}%."
+
+    return _prev_reason_for(candidate)
+
+
+st._reason_for = _reason_for
+
+SUB_PROMPT = """
+
+SUBSTITUTE PICK
+- The bot can use the pick "No goal scored by a substitute". If the user asks for goals scored by a
+  substitute / substitution with the answer no, keep the words "substitute no" in "request", for example
+  "substitute no 10 picks tomorrow".
+"""
+
+_prev_prompt = getattr(bot, "ai_system_prompt", None)
+
+if _prev_prompt is not None:
+
+    def ai_system_prompt():
+        return _prev_prompt() + SUB_PROMPT
+
+    bot.ai_system_prompt = ai_system_prompt
+
+
+# ------------------------------------------------------------
 # 3) per-request settings
 # ------------------------------------------------------------
 def _overrides(text):
@@ -112,6 +269,10 @@ def _overrides(text):
 
     elif sport == "basketball":
         out["STRONG_MIN_P"] = min(getattr(up, "STRONG_MIN_P", BB_MIN_P), BB_MIN_P)
+
+    if SUB_RE.search(text):
+        # "goal scored by a substitute no": a "No" pick is rarely 66% likely, so the bar is lowered
+        out["STRONG_MIN_P"] = min(out.get("STRONG_MIN_P", getattr(up, "STRONG_MIN_P", SUB_MIN_P)), SUB_MIN_P)
 
     if market_only is not None:
         # every game may be used (not only top teams), also the tight ones
@@ -147,19 +308,27 @@ def prediction_ticket_flow(chat_id, text, *args, **kwargs):
 
     text = text or ""
     changes = {}
+    sub_only = False
+    cap_before = None
 
     try:
         if not st.DAILY_RE.search(text.lower()):
             changes = _overrides(text)
+            sub_only = bool(SUB_RE.search(text))
 
             # "over 1.5 acca today" (no size): upgrades.py adds "5 picks". Use a longer acca instead.
             market_only, _risk = st._parse_extras(text)
             typed = getattr(_LOCAL, "orig", "")
 
-            if market_only is not None and typed and not _HAS_NUMBER.search(re.sub(r"\bover\s*[0-4]\.5\b", " ", st._comma_free(typed), flags=re.I)):
+            if (market_only is not None or sub_only) and typed and not _HAS_NUMBER.search(re.sub(r"\bover\s*[0-4]\.5\b", " ", st._comma_free(typed), flags=re.I)):
                 text = re.sub(r"\s+\d+\s*picks?\s*$", "", text, flags=re.I) + f" {ACCA_DEFAULT_PICKS} picks"
     except Exception as exc:
         print(f"Ticket extras: could not read the request: {exc}")
+
+    if sub_only:
+        _SUB_FLAG.only = True
+        cap_before = st.KIND_CAP.get("sub_goal")
+        st.KIND_CAP["sub_goal"] = 10.0  # this request is made of this pick only
 
     saved = {}
 
@@ -175,6 +344,12 @@ def prediction_ticket_flow(chat_id, text, *args, **kwargs):
     finally:
         for name, value in saved.items():
             setattr(up, name, value)
+
+        if sub_only:
+            _SUB_FLAG.only = False
+
+            if cap_before is not None:
+                st.KIND_CAP["sub_goal"] = cap_before
 
 
 bot.prediction_ticket_flow = prediction_ticket_flow

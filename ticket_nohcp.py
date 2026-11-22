@@ -1,15 +1,14 @@
-"""No handicap picks, no straight win picks (football and basketball), and sure basketball picks only.
+"""Basketball: points only. No handicap, no "to win", and sure picks only.
 
-Load it AFTER ticket_extras.py (app.py loads it for you):
+Football is NOT touched (set FOOTBALL_NO_HCP=1 / FOOTBALL_NO_WINS=1 on Render if you ever want that).
 
-    football:    "Home +1.5 handicap" and plain "Team to win" picks are never used.
-                 (1UP / 2UP, "win either half", team goals, over goals and the rest stay.)
-    basketball:  handicap and "Team to win" picks are never used, so only "Over ... points" is left,
-                 and a pick needs at least BB_SURE_P (default 62%) chance. The old bar was 52%.
+Load it AFTER ticket_extras.py (app.py loads it for you).
 
-Set NO_WINS=0 on Render to allow straight wins again.
+A basketball ticket then contains only "Over ... points" picks, each with at least BB_SURE_P
+(default 62%) chance. Change it on Render: BB_SURE_P=0.65 is safer, 0.58 gives more games.
+BB_NO_WINS=0 lets "to win" picks back in.
+
 smart_ticket.py, upgrades.py and ticket_extras.py are NOT edited.
-Change the bar on Render with BB_SURE_P (for example 0.65 = safer, 0.58 = more games).
 """
 
 import os
@@ -17,43 +16,82 @@ import re
 
 import smart_ticket as st
 
-try:
-    import ticket_extras as te
-except Exception:
-    te = None
+
+def _on(name, default):
+    return os.getenv(name, default).strip().lower() in ("1", "true", "yes", "on")
+
 
 BB_SURE_P = float(os.getenv("BB_SURE_P", "0.62"))
-NO_WINS = os.getenv("NO_WINS", os.getenv("BB_ONLY_POINTS", "1")).strip().lower() in ("1", "true", "yes", "on")
+BB_NO_WINS = _on("BB_NO_WINS", "1")
+BB_NO_HCP = _on("BB_NO_HCP", "1")
+FOOTBALL_NO_HCP = _on("FOOTBALL_NO_HCP", "0")
+FOOTBALL_NO_WINS = _on("FOOTBALL_NO_WINS", "0")
 
-_HCP = re.compile(r"handicap|\bhcp\b", re.I)
-_STRAIGHT_WIN = re.compile(r"\bto win\s*$", re.I)  # "Home to win", not "to win (1UP)" or "to win either half"
+_BB_DROP_KINDS = set()
+if BB_NO_HCP:
+    _BB_DROP_KINDS.add("bb_hcp")
+if BB_NO_WINS:
+    _BB_DROP_KINDS.add("bb_win")
 
-# 1) football (and every kind a pick can have): no handicap
-_prev_allowed = st._candidate_is_allowed
-
-
-def _candidate_is_allowed(kind, label=""):
-
-    if str(kind or "").lower() in ("handicap", "bb_hcp") or _HCP.search(str(label or "")):
-        return False
-
-    if NO_WINS and (str(kind or "").lower() in ("win", "bb_win") or _STRAIGHT_WIN.search(str(label or ""))):
-        return False
-
-    return _prev_allowed(kind, label)
+# ------------------------------------------------------------
+# basketball: drop the kinds, and keep only sure picks
+# ------------------------------------------------------------
+_prev_bb = st.basketball_candidates
+_COUNT = {"seen": 0, "kept": 0}
 
 
-st._candidate_is_allowed = _candidate_is_allowed
+def basketball_candidates(event, markets):
 
-# 2) basketball picks skip that check, so the word is added to its own list of banned labels
+    kept = []
+
+    for candidate in _prev_bb(event, markets):
+
+        _COUNT["seen"] += 1
+
+        if candidate.get("kind") in _BB_DROP_KINDS:
+            continue
+
+        if candidate.get("p", 0) < BB_SURE_P:
+            continue
+
+        _COUNT["kept"] += 1
+        kept.append(candidate)
+
+    return kept
+
+
+st.basketball_candidates = basketball_candidates
+
+# the same words are also banned in the basketball label list, as a second lock
 try:
-    extra = r"|handicap" + (r"|\bto win\b" if NO_WINS else "")
+    extra = (r"|handicap" if BB_NO_HCP else "") + (r"|\bto win\b" if BB_NO_WINS else "")
     st._BB_LABEL_BAD = re.compile(st._BB_LABEL_BAD.pattern + extra, st._BB_LABEL_BAD.flags)
 except Exception as exc:
-    print(f"No-handicap: could not update the basketball list: {exc}")
+    print(f"Basketball filter: could not update the label list: {exc}")
 
-# 3) sure basketball picks only (ticket_extras reads this bar for every basketball request)
-if te is not None and hasattr(te, "BB_MIN_P"):
-    te.BB_MIN_P = max(float(te.BB_MIN_P), BB_SURE_P)
+# ------------------------------------------------------------
+# football: only when asked for on Render
+# ------------------------------------------------------------
+if FOOTBALL_NO_HCP or FOOTBALL_NO_WINS:
 
-print(f"OK: ticket_nohcp.py loaded (no handicap picks, no straight wins: {NO_WINS}, basketball picks from {round(BB_SURE_P * 100)}%)")
+    _prev_allowed = st._candidate_is_allowed
+
+    def _candidate_is_allowed(kind, label=""):
+
+        kind = str(kind or "").lower()
+        label = str(label or "")
+
+        if FOOTBALL_NO_HCP and (kind == "handicap" or re.search(r"handicap", label, re.I)):
+            return False
+
+        if FOOTBALL_NO_WINS and (kind == "win" or re.search(r"\bto win\s*$", label, re.I)):
+            return False
+
+        return _prev_allowed(kind, label)
+
+    st._candidate_is_allowed = _candidate_is_allowed
+
+print(
+    f"OK: ticket_nohcp.py loaded (basketball: points only, picks from {round(BB_SURE_P * 100)}%; "
+    f"dropping {sorted(_BB_DROP_KINDS)}; football untouched: {not (FOOTBALL_NO_HCP or FOOTBALL_NO_WINS)})"
+)

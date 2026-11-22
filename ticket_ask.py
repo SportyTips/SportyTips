@@ -317,6 +317,12 @@ def handle_text(chat_id, text):
     low = message.lower()
     words = low.split()
 
+    is_question = bool(
+        message and not message.startswith("/")
+        and SPORT_RE.search(low) and len(words) <= 12 and AVAIL_RE.search(low)
+        and not BUILD_RE.search(low) and not ODDS_RE.search(low)
+    )
+
     try:
         if message and not message.startswith("/"):
             state = _get(chat_id)
@@ -324,13 +330,14 @@ def handle_text(chat_id, text):
             if state and _follow_up(chat_id, state, message, low, words):
                 return
 
-            if (
-                SPORT_RE.search(low) and len(words) <= 12 and AVAIL_RE.search(low)
-                and not BUILD_RE.search(low) and not ODDS_RE.search(low)
-            ):
+            if is_question:
                 return _availability(chat_id, low)
     except Exception as exc:
-        print(f"Ask: failed, using the normal flow: {type(exc).__name__}: {exc}")
+        print(f"Ask: failed: {type(exc).__name__}: {exc}")
+
+        if is_question:
+            # a question must never turn into a ticket
+            return bot.send_message(chat_id, "\u274C I couldn't check the games right now. Try again in a minute.")
 
     return _prev_handle_text(chat_id, text)
 

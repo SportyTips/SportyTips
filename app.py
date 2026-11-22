@@ -133,7 +133,7 @@ except ImportError:
 
 # Ticket extras (big odds, basketball, substitute pick). Must load AFTER upgrades.
 # One block each, so a missing file only switches off that file.
-for _name in ("ticket_extras", "ticket_sub_fix", "ticket_ask"):
+for _name in ("ticket_extras", "ticket_sub_fix", "ticket_nohcp", "ticket_ask"):
     try:
         importlib.import_module(_name)
     except Exception as exc:
@@ -872,7 +872,7 @@ OFFLINE_PAGE = """<!DOCTYPE html>
 <meta name="viewport" content="width=device-width, initial-scale=1">
 <title>SportyTips offline</title>
 <style>
-body{margin:0;min-height:100vh;display:grid;place-items:center;background:#04111f;color:#fff;
+body{margin:0;min-height:100vh;display:grid;place-items:center;background:#0a0a0b;color:#fff;
 font-family:-apple-system,BlinkMacSystemFont,"Segoe UI",Roboto,Arial,sans-serif;text-align:center;padding:24px}
 .logo{width:64px;height:64px;border-radius:18px;background:#ff1f1f;display:grid;place-items:center;
 font-size:34px;font-weight:800;margin:0 auto 16px}
@@ -897,8 +897,8 @@ def pwa_manifest():
         "scope": "/",
         "display": "standalone",
         "orientation": "portrait",
-        "background_color": "#04111f",
-        "theme_color": "#04111f",
+        "background_color": "#0a0a0b",
+        "theme_color": "#0a0a0b",
         "icons": [
             {"src": "/icons/icon-192.png", "sizes": "192x192", "type": "image/png", "purpose": "any"},
             {"src": "/icons/icon-512.png", "sizes": "512x512", "type": "image/png", "purpose": "any"},
@@ -959,7 +959,7 @@ CHAT_EXTRAS = r"""
   .code-copy.done { background: #16a765; }
   .content strong.is-code { font-size: 20px; letter-spacing: .04em; }
 
-  .install-bar { position: fixed; left: 12px; right: 12px; bottom: calc(84px + env(safe-area-inset-bottom)); z-index: 60; max-width: 560px; margin: 0 auto; background: #04111f; color: #fff; border: 1px solid rgba(255,255,255,.18); border-radius: 20px; padding: 12px 12px 12px 14px; display: flex; align-items: center; gap: 12px; box-shadow: 0 14px 40px rgba(0,0,0,.45); font-family: inherit; }
+  .install-bar { position: fixed; left: 12px; right: 12px; bottom: calc(84px + env(safe-area-inset-bottom)); z-index: 60; max-width: 560px; margin: 0 auto; background: #0a0a0b; color: #fff; border: 1px solid rgba(255,255,255,.18); border-radius: 20px; padding: 12px 12px 12px 14px; display: flex; align-items: center; gap: 12px; box-shadow: 0 14px 40px rgba(0,0,0,.45); font-family: inherit; }
   .install-bar[hidden] { display: none; }
   .install-bar .ib-logo { width: 38px; height: 38px; border-radius: 11px; background: #ff1f1f; display: grid; place-items: center; font-weight: 800; font-size: 21px; flex: none; }
   .install-bar .ib-text { flex: 1; min-width: 0; font-size: 14px; line-height: 1.3; }
@@ -1101,6 +1101,135 @@ CHAT_EXTRAS = r"""
 """
 
 
+HOME_THEME = r"""
+<style id="st-home-theme">
+/* SportyTips home redesign: true black dark mode, no card outlines, Home and Chat tabs only */
+:root { --navy: #0a0a0b; --card: #f3f4f6; }
+html[data-theme="dark"] {
+--bg: #000; --surface: #111113; --card: #18181b; --ink: #f4f4f5; --gray: #a1a1a6; --muted: #7d7d83;
+--line: #27272a; --bubble: #1c1c1f; --bar: #1a1a1d; --navy: #0a0a0b; --red-soft: #5a2328;
+}
+html[data-theme="dark"] .pill:not(.red) { background: #2a2a2e; }
+.ticket { border-color: rgba(255,255,255,.08); }
+.hview { background: #0a0a0b; }
+.hview .hx { color: #0a0a0b; }
+.sheet-back { background: rgba(0,0,0,.6); }
+.modal-back { background: rgba(0,0,0,.72); }
+.btn-ghost { background: rgba(0,0,0,.35); }
+.note { background: var(--bar); color: var(--ink); }
+
+/* removed from the home screen */
+#editcard, #recordcard, .tb[data-go="hist"], .tn[data-go="hist"] { display: none !important; }
+
+/* home screen */
+#hub { padding: 20px 16px 28px; }
+.hub-eyebrow { margin: 0 0 2px; color: var(--gray); font-size: 15px; font-weight: 600; }
+#hub .hub-hi { font-size: 30px; line-height: 1.1; margin: 0 0 6px; }
+#hub .hub-sub { font-size: 15px; margin: 0 0 16px; }
+#hub .planstrip { background: var(--card); border-radius: 14px; font-size: 13px; padding: 9px 12px 9px 14px; margin: 0 0 14px; color: var(--gray); }
+#hub .cards { gap: 12px; }
+#hub .card { background: var(--card); border: 0; border-radius: 22px; padding: 18px 16px; box-shadow: none; min-height: 140px; }
+#hub .card:active { transform: scale(.985); border: 0; }
+@media (hover: hover) { #hub .card:hover { border: 0; filter: brightness(1.05); } }
+#hub .card > svg { width: 44px; height: 44px; padding: 11px; border-radius: 14px; background: rgba(255,31,31,.12); stroke: var(--red); margin: 0 0 14px; }
+#hub .card b { font-size: 17px; }
+#hub .card span { font-size: 13.5px; margin-top: 4px; }
+
+#hub .card.hot { grid-column: 1 / -1; display: grid; grid-template-columns: auto 1fr auto; align-items: center; column-gap: 14px; min-height: 108px; padding: 20px 18px; color: #fff; background: linear-gradient(135deg, #ff2b2b 0%, #cf111b 100%); }
+#hub .card.hot::before { display: none; }
+#hub .card.hot > svg { background: rgba(255,255,255,.18); stroke: #fff; margin: 0; width: 50px; height: 50px; padding: 12px; }
+#hub .card.hot .ctext b { font-size: 21px; }
+#hub .card.hot .ctext span { color: rgba(255,255,255,.88); font-size: 14px; }
+#hub .card.hot .tag { display: block; font-size: 11px; font-weight: 800; letter-spacing: .08em; text-transform: uppercase; color: rgba(255,255,255,.8); margin-bottom: 3px; }
+#hub .card.hot .go { font-style: normal; background: #fff; color: #cf111b; font-weight: 800; font-size: 14px; padding: 10px 18px; border-radius: 999px; }
+
+#hub #topcard { grid-column: 1 / -1; display: flex; align-items: center; gap: 14px; min-height: 0; }
+#hub #topcard > svg { margin: 0; flex: none; }
+#hub #topcard .flags { font-size: 15px; letter-spacing: 2px; margin-top: 8px; }
+#hub .sv { background: var(--card); }
+
+
+/* gentle motion: the home screen rises in, the Daily card shines now and then */
+@keyframes st-rise { from { opacity: 0; transform: translateY(14px); } to { opacity: 1; transform: none; } }
+@keyframes st-shine { 0% { transform: translateX(-130%) skewX(-18deg); } 55%, 100% { transform: translateX(330%) skewX(-18deg); } }
+#hub .hub-eyebrow, #hub .hub-hi, #hub .hub-sub, #hub .planstrip, #hub .cards > .card { animation: st-rise .55s cubic-bezier(.2,.8,.2,1) backwards; }
+#hub .hub-hi { animation-delay: .05s; }
+#hub .hub-sub { animation-delay: .1s; }
+#hub .planstrip { animation-delay: .14s; }
+#hub .cards > .card:nth-child(1) { animation-delay: .18s; }
+#hub .cards > .card:nth-child(2) { animation-delay: .26s; }
+#hub .cards > .card:nth-child(3) { animation-delay: .34s; }
+#hub .cards > .card:nth-child(4) { animation-delay: .42s; }
+#hub .card.hot::after { content: ""; position: absolute; top: 0; bottom: 0; left: 0; width: 38%; background: linear-gradient(100deg, transparent, rgba(255,255,255,.24), transparent); transform: translateX(-130%) skewX(-18deg); animation: st-shine 5s ease-in-out 1.4s infinite; pointer-events: none; }
+#hub .card { transition: transform .15s ease, filter .15s ease; }
+@media (prefers-reduced-motion: reduce) { #hub *, #hub .card.hot::after { animation: none !important; } }
+
+@media (min-width: 640px) { #hub .cards { grid-template-columns: repeat(2, minmax(0, 1fr)); } }
+@media (max-width: 359px) { #hub .card.hot { grid-template-columns: auto 1fr; } #hub .card.hot .go { display: none; } }
+</style>
+
+<script>
+(function () {
+  /* the browser bar follows the real colours (black in dark mode, no blue) */
+  function meta() {
+    var m = document.querySelector('meta[name="theme-color"]');
+    if (m) m.setAttribute("content", document.documentElement.getAttribute("data-theme") === "dark" ? "#000000" : "#0a0a0b");
+  }
+  var original = window.applyTheme;
+  if (typeof original === "function") {
+    window.applyTheme = function (t) { original(t); meta(); };
+  }
+  meta();
+})();
+
+(function () {
+  var hub = document.getElementById("hub");
+  var grid = document.getElementById("cards");
+  if (!hub || !grid) return;
+
+  /* greeting: small line on top, big question under it */
+  var hi = document.getElementById("hubhi");
+  if (hi && !document.getElementById("hubeye")) {
+    var first = (hi.textContent || "").split(".")[0].trim() || "Welcome";
+    var eye = document.createElement("p");
+    eye.id = "hubeye";
+    eye.className = "hub-eyebrow";
+    eye.textContent = first;
+    hi.parentNode.insertBefore(eye, hi);
+    hi.textContent = "What should we build?";
+  }
+
+  /* Daily 2 odds becomes the big card on top */
+  var kids = Array.prototype.slice.call(grid.children);
+  var hot = kids.filter(function (c) { return c.classList.contains("hot"); })[0];
+  var top = document.getElementById("topcard");
+  var cups = document.getElementById("cupscard");
+  var straight = kids.filter(function (c) { return c !== hot && /straight win/i.test(c.textContent); })[0];
+
+  if (hot && !hot.querySelector(".ctext")) {
+    var svg = hot.querySelector("svg");
+    var b = hot.querySelector("b");
+    var s = hot.querySelector("span");
+    var wrap = document.createElement("div");
+    wrap.className = "ctext";
+    wrap.innerHTML = '<small class="tag">Free every day</small><b></b><span></span>';
+    wrap.querySelector("b").textContent = b ? b.textContent : "Daily 2 odds";
+    wrap.querySelector("span").textContent = s ? s.textContent : "One very sure ticket";
+    var go = document.createElement("em");
+    go.className = "go";
+    go.textContent = "Open";
+    hot.textContent = "";
+    if (svg) hot.appendChild(svg);
+    hot.appendChild(wrap);
+    hot.appendChild(go);
+  }
+
+  [hot, top, cups, straight].forEach(function (el) { if (el) grid.appendChild(el); });
+})();
+</script>
+"""
+
+
 # ===============================================================
 # PAGES
 # ===============================================================
@@ -1151,9 +1280,9 @@ def chat_page():
     page = _add_pwa_head(page)
 
     if "</body>" in page:
-        page = page.replace("</body>", CHAT_EXTRAS + "</body>", 1)
+        page = page.replace("</body>", CHAT_EXTRAS + HOME_THEME + "</body>", 1)
     else:
-        page += CHAT_EXTRAS
+        page += CHAT_EXTRAS + HOME_THEME
 
     return Response(
         page,

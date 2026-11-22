@@ -135,6 +135,7 @@ except ImportError:
 try:
     import ticket_extras  # noqa: F401
     import ticket_sub_fix  # noqa: F401
+    import ticket_ask  # noqa: F401
 except Exception as exc:
     print(f"NOTE: ticket extras are off: {type(exc).__name__}: {exc}")
 

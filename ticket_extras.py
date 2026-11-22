@@ -13,9 +13,9 @@ upgrades.py wraps the ticket builder with its own rules, and three of them get i
      you ask for "over 2.5 only" every game may be used.
 The settings are changed only while one request runs and are put back afterwards.
 
-It also adds the pick "No goal scored by a substitute" (SportyBet's "goal scored by a substitute"
-market, answer No). Ask for it with the word "substitute", for example
-"goal scored by a substitute no 10 picks tomorrow". It is also offered in normal tickets.
+It also adds the pick "No goal scored by a substitute" (SportyBet's "Goal Scored by a Substitution"
+market, answer No). Ask for it with the word "substitute" or "substitution", for example
+"goal scored by a substitution no 10 picks tomorrow". It is also offered in normal tickets.
 
 Load it AFTER upgrades.py. In app.py it goes into the same block as push_notify:
 
@@ -80,6 +80,9 @@ if hasattr(st, "_detail_order"):
 
     def _detail_order(events, limit=None):
 
+        if getattr(_SUB_FLAG, "only", False):
+            limit = max(int(limit or 0), SUB_DETAIL)
+
         if not limit:
             return _prev_detail_order(events)
 
@@ -101,6 +104,11 @@ SUB_RE = re.compile(r"\bsubstitut\w*", re.I)
 
 # A pick needs at least this chance when it is asked for on its own (the normal bar is 0.66).
 SUB_MIN_P = float(os.getenv("SUB_MIN_P", "0.50"))
+
+# This market only exists on each game's own page, so a request for it reads more games than usual.
+SUB_DETAIL = int(os.getenv("SUB_DETAIL", "150"))
+
+_SUB_STATS = {"events": set()}  # games where the market was found (shown if a ticket cannot be built)
 
 SUB_MIN_ODD = st.MIN_ODD_FLOOR
 SUB_MAX_ODD = 10.0
@@ -180,6 +188,8 @@ def substitute_candidates(event, markets):
         elif has_away and not has_home:
             team = away
 
+        _SUB_STATS["events"].add(event.get("eventId"))
+
         found.append({
             "kind": "sub_goal",
             "label": "No goal scored by a substitute" + (f" ({team})" if team else ""),
@@ -236,6 +246,44 @@ SUBSTITUTE PICK
   substitute / substitution with the answer no, keep the words "substitute no" in "request", for example
   "substitute no 10 picks tomorrow".
 """
+
+# If the AI chat rewrites the request and drops the word "substitute", it is put back.
+_prev_ai_dispatch = getattr(bot, "ai_dispatch", None)
+
+if _prev_ai_dispatch is not None:
+
+    def ai_dispatch(chat_id, text, data):
+
+        try:
+            if str(data.get("action", "chat")).lower() == "ticket" and SUB_RE.search(str(text or "")):
+
+                request = str(data.get("request", "") or "")
+
+                if not SUB_RE.search(request):
+                    data = dict(data)
+                    data["request"] = (request + " substitute no").strip()
+
+        except Exception as exc:
+            print(f"Ticket extras: could not keep the substitute request: {exc}")
+
+        return _prev_ai_dispatch(chat_id, text, data)
+
+    bot.ai_dispatch = ai_dispatch
+
+# When a substitute ticket cannot be built, the message says how many games had the market.
+_prev_what_text = getattr(st, "_what_text", None)
+
+if _prev_what_text is not None:
+
+    def _what_text(sport_mode, market_only):
+
+        if getattr(_SUB_FLAG, "only", False):
+            n = len(_SUB_STATS["events"])
+            return f"'No goal scored by a substitute' picks (SportyBet showed that market on {n} of the games I read)"
+
+        return _prev_what_text(sport_mode, market_only)
+
+    st._what_text = _what_text
 
 _prev_prompt = getattr(bot, "ai_system_prompt", None)
 
@@ -327,6 +375,7 @@ def prediction_ticket_flow(chat_id, text, *args, **kwargs):
 
     if sub_only:
         _SUB_FLAG.only = True
+        _SUB_STATS["events"].clear()
         cap_before = st.KIND_CAP.get("sub_goal")
         st.KIND_CAP["sub_goal"] = 10.0  # this request is made of this pick only
 

@@ -17,12 +17,11 @@ Load it AFTER upgrades.py, ticket_extras.py and ticket_sub_fix.py (app.py block)
     except Exception as exc:
         print(f"NOTE: ticket extras are off: {type(exc).__name__}: {exc}")
 
-Works for: ncaa, college basketball, nba, wnba, basketball. Football and the old
+Works for: ncaa, college basketball, nba, euroleague, basketball. Football and the old
 "are there any midnight games?" flow are not touched.
 
-The games are counted with the same SportyBet reader upgrades.py uses. A game counts as NCAA when
-SportyBet's sport / category / league name contains "ncaa" or "college". The server log prints what
-SportyBet called them ("Ask: sports seen ..."), so a wrong count is easy to fix.
+The games are counted from the same SportyBet basketball list, with the same league check,
+that the ticket builder uses (smart_ticket._bb_events), so the count matches what it can build from.
 """
 
 import re
@@ -32,12 +31,14 @@ from datetime import datetime, timezone
 from html import escape
 
 import main as bot
+import smart_ticket as st
+import sportybet_provider as sp
 import upgrades as up
 
 PENDING_SECONDS = 15 * 60  # how long the bot waits for your answer
 LIST_MAX = 60
 
-SPORT_RE = re.compile(r"\b(ncaab?|college basketball|wnba|nba|basketball)\b", re.I)
+SPORT_RE = re.compile(r"\b(ncaab?|college basketball|euro\s*league|nba|basketball)\b", re.I)
 AVAIL_RE = re.compile(r"^(are|is|any|do|does|got|have|how many|what|which)\b|\bany\b|\?\s*$", re.I)
 BUILD_RE = re.compile(r"\b(build|ticket|make|give|odds?|picks?|safe|acca|accumulator|code)\b", re.I)
 ODDS_RE = re.compile(r"(\d+(?:\.\d+)?)\s*odds?\b", re.I)
@@ -54,61 +55,75 @@ _LOCK = threading.Lock()
 
 
 # ------------------------------------------------------------
-# which games are basketball / NCAA
+# which games are basketball / NCAA (the same source and the same league check the ticket builder uses)
 # ------------------------------------------------------------
-def _names(event):
-    sport = event.get("sport") or {}
-    category = sport.get("category") or {}
-    tournament = category.get("tournament") or {}
-    return " | ".join(str(x or "").lower() for x in (sport.get("name"), category.get("name"), tournament.get("name")))
-
-
-def _is_sport(event, word):
-    names = _names(event)
-    w = word.lower()
-
-    if w.startswith("ncaa") or "college" in w:
-        return "ncaa" in names or "college" in names
-
-    if w == "wnba":
-        return "wnba" in names
-
-    if w == "nba":
-        return re.search(r"\bnba\b", names) is not None
-
-    return "basketball" in names
-
-
 def _label(word):
     w = word.lower()
     if w.startswith("ncaa"):
         return "NCAA"
-    if w in ("nba", "wnba"):
-        return w.upper()
+    if w == "nba":
+        return "NBA"
+    if "euro" in w:
+        return "Euroleague"
     if "college" in w:
         return "college basketball"
     return "basketball"
 
 
-def _games(phrase, word):
-    """(request, [(kickoff, event), ...]) for the sport and the window named in phrase."""
-    req, rows = up._games_for(phrase)
+def _league_text(event):
+    """League and country name, as the ticket builder reads them."""
+    try:
+        league = (sp.sporty_fixture(event).get("league") or {})
+        return f"{league.get('name', '')} {league.get('country', '')}"
+    except Exception:
+        sport = event.get("sport") or {}
+        category = sport.get("category") or {}
+        tournament = category.get("tournament") or {}
+        return f"{category.get('name', '')} {tournament.get('name', '')}"
 
-    if req is None:
+
+def _games(phrase, word):
+    """(request, [(kickoff, event), ...], how many basketball games in all) for the window in phrase."""
+    provider = getattr(bot, "SPORTYBET_PROVIDER", None)
+
+    if provider is None:
         return None, [], 0
 
+    up.CTX.availability = True  # only checking what exists: no 1-hour buffer
     try:
-        seen = {}
-        for _kick, event in rows:
-            key = _names(event).split(" | ")[0]
-            seen[key] = seen.get(key, 0) + 1
-        print(f"Ask: sports seen in '{req['label']}': {dict(sorted(seen.items(), key=lambda i: -i[1])[:6])}")
-    except Exception:
-        pass
+        req = bot.parse_request(phrase)
+    finally:
+        up.CTX.availability = False
 
-    kept = [(k, e) for k, e in rows if _is_sport(e, word)]
+    _sport, league = st._parse_sport(word)
+    pattern = st.BB_LEAGUES.get(league) if league else None
 
-    return req, kept, len(rows)
+    rows = []
+    total = 0
+
+    for event in st._bb_events(provider):
+        ms = event.get("estimateStartTime")
+
+        if not ms:
+            continue
+
+        kickoff = datetime.fromtimestamp(ms / 1000, tz=timezone.utc)
+
+        if not (req["start"] <= kickoff <= req["end"]):
+            continue
+
+        total += 1
+
+        if pattern and not pattern.search(_league_text(event)):
+            continue
+
+        rows.append((kickoff, event))
+
+    rows.sort(key=lambda r: r[0])
+
+    print(f"Ask: '{req['label']}': {total} basketball games, {len(rows)} for {word!r}")
+
+    return req, rows, total
 
 
 def _set(chat_id, **state):
@@ -151,7 +166,7 @@ def _availability(chat_id, low):
     when = escape(str(req["label"]))
 
     if not rows:
-        extra = f" (SportyBet has {total} other games in that time)" if total else ""
+        extra = f" (SportyBet has {total} other basketball games in that time)" if total else ""
         return bot.send_message(
             chat_id,
             f"No, I can't see any {name} games for {when} right now{extra}. "

@@ -86,7 +86,7 @@ RULES_OFF = True
 MIN_ODD_FLOOR = 1.12
 ALLOW_DOUBLE_CHANCE = True
 DATA_BONUS = 0.12
-USE_AI_REVIEW = os.getenv("USE_AI_REVIEW", "0").strip().lower() in ("1", "true", "yes", "on") # TURNED OFF FOR STATS
+USE_AI_REVIEW = os.getenv("USE_AI_REVIEW", "1").strip().lower() in ("1", "true", "yes", "on") # TURNED ON FOR DETAILED ANALYSIS
 WEB_SEARCHES = int(os.getenv("WEB_SEARCHES", "6"))
 MAX_DROPS = 4
 AI_TIMEOUT = int(os.getenv("AI_TIMEOUT", "50"))
@@ -338,7 +338,6 @@ def event_candidates(event, markets):
             add("corners", f"Over {line:g} corners", over, _single(over), (mid, spec, over_id), line=line)
             continue
 
-        # SHOTS ON TARGET & TOTAL SHOTS
         if "shot" in name and spec.startswith("total="):
             line = _f(spec.replace("total=", ""))
             if line is None or (line * 2) % 1 != 0: continue
@@ -625,7 +624,6 @@ def study(groups, notify=None):
                 facts = fd.get_facts(fixture)
                 if facts: _study_cache[event_id] = (time.time(), facts)
             
-            # CRITICAL FIX: If facts is still None, create empty default facts so it never falls back to SportyBet
             if not facts:
                 facts = {
                     "home": event.get("homeTeamName", "Home"),
@@ -1122,7 +1120,23 @@ def _ai_json(prompt, system):
         if parsed: return parsed
     return None
 
-REVIEW_SYSTEM = "You are the football analyst behind SportyTips."
+REVIEW_SYSTEM = """
+You are the expert football analyst behind SportyTips. 
+You receive a list of sports picks with some basic stats (goals per game, corners, shots).
+Write a detailed, 2-3 sentence analysis for each pick, exactly like this example:
+"Both sides hit 2+ in 9/10 recent, and all 7 recent meetings went over 1.5. Zurich lost 1-2 in a friendly but scoring has held in league play."
+
+Rules:
+- Use the stats provided in the prompt, but expand on them using your general football knowledge.
+- Do NOT invent fake stats like "10/10 recent", but you CAN say things like "Both teams have been strong offensively" or "Recent meetings have been high-scoring".
+- Do not use SportyBet odds as the reason.
+- Keep it to 2-3 sentences maximum.
+- Mark "drop" only if the football information clearly hurts the selection.
+
+Reply ONLY with JSON:
+{"picks":[{"i":0,"reason":"...","flag":"keep"}]}
+"""
+
 def ai_review(chosen, local_now):
     lines = []
     for i, candidate in enumerate(chosen):

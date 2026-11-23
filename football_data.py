@@ -274,3 +274,22 @@ def reason_for(candidate, facts, home=None, away=None):
         return f"Based on recent stats: {h} scores {hs['goals_scored']:.2f} per game, {a} scores {as_['goals_scored']:.2f}."
     
     return f"Stats based on recent games for {h} and {a}."
+
+# ============================================================
+# DIAGNOSTICS (Required by sportapi_data.py)
+# ============================================================
+
+def diag_summary():
+    """
+    Internal diagnostics only.
+    """
+    return {
+        "cache_version": CACHE_VERSION,
+        "redis_enabled": False,
+        "memory_entries": len(_facts_cache),
+        "fixture_entries": 0,
+        "prediction_entries": 0,
+        "persistent_store": "sqlite",
+        "facts_ttl": FACTS_CACHE_SECONDS,
+        "fixture_ttl": FIXTURE_CACHE_SECONDS,
+    }

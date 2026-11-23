@@ -139,7 +139,7 @@ ALLOW_DOUBLE_CHANCE = True
 # Football-data bonus used by selection optimizer.
 DATA_BONUS = 0.12
 
-USE_AI_REVIEW = os.getenv("USE_AI_REVIEW", "1").strip().lower() in (
+USE_AI_REVIEW = os.getenv("USE_AI_REVIEW", "0").strip().lower() in (
     "1", "true", "yes", "on",
 )
 

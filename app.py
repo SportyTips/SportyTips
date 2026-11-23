@@ -36,6 +36,8 @@ import queue
 import re
 import secrets
 import sqlite3
+
+import chat_jobs
 import threading
 import time
 from datetime import datetime, timedelta, timezone
@@ -847,7 +849,7 @@ SERVICE_WORKER = r"""
    It only helps the browser treat the site as an installable app and shows a
    small offline page when there is no internet. It never touches /api/ requests,
    login or payments, so nothing can get stuck. */
-const CACHE = "sportytips-shell-v1";
+const CACHE = "sportytips-shell-v2";
 
 self.addEventListener("install", function (event) {
   event.waitUntil(
@@ -865,6 +867,31 @@ self.addEventListener("activate", function (event) {
           .map(function (k) { return caches.delete(k); }));
       })
       .then(function () { return self.clients.claim(); })
+  );
+});
+
+self.addEventListener("push", function (event) {
+  var d = {};
+  try { d = event.data ? event.data.json() : {}; } catch (e) {}
+  event.waitUntil(self.registration.showNotification(d.title || "SportyTips", {
+    body: d.body || "",
+    icon: "/icons/icon-192.png",
+    badge: "/icons/icon-192.png",
+    tag: d.tag || undefined,
+    data: { url: d.url || "/chat" }
+  }));
+});
+
+self.addEventListener("notificationclick", function (event) {
+  event.notification.close();
+  var url = (event.notification.data && event.notification.data.url) || "/chat";
+  event.waitUntil(
+    self.clients.matchAll({ type: "window", includeUncontrolled: true }).then(function (list) {
+      for (var i = 0; i < list.length; i++) {
+        if ("focus" in list[i]) return list[i].focus();
+      }
+      return self.clients.openWindow(url);
+    })
   );
 });
 
@@ -1269,6 +1296,307 @@ body.typing-now .composer { padding-bottom: calc(10px + env(safe-area-inset-bott
     flushQuote();
     return out.join("");
   };
+})();
+</script>
+
+<style id="st-push-ui">
+.notifycard { display: flex; align-items: center; gap: 12px; background: var(--card); border-radius: 18px; padding: 14px; margin: 0 0 14px; }
+.notifycard svg { width: 40px; height: 40px; padding: 10px; border-radius: 13px; background: rgba(255,31,31,.12); stroke: var(--red); fill: none; stroke-width: 1.8; stroke-linecap: round; stroke-linejoin: round; flex: none; }
+.notifycard .nt { flex: 1; min-width: 0; }
+.notifycard .nt b { display: block; font-size: 15px; }
+.notifycard .nt span { display: block; color: var(--gray); font-size: 13px; margin-top: 2px; }
+.notifycard .nx { border: 0; background: none; color: var(--muted); font-size: 22px; padding: 4px 6px; cursor: pointer; }
+.nkind { display: flex; align-items: center; justify-content: space-between; gap: 12px; padding: 10px 0; border-bottom: 1px solid var(--line); font-size: 15px; }
+.nkind input { width: 22px; height: 22px; accent-color: var(--red); flex: none; }
+</style>
+
+<script>
+/* ===== Reconnect after the app was minimised, and push notifications ===== */
+(function () {
+  var KEY = "st_job";
+  var NETWORK = "I could not reach the server. Please check your connection and try again.";
+
+  function saveJob(id, received) { try { localStorage.setItem(KEY, JSON.stringify({ id: id, received: received, t: Date.now() })); } catch (e) {} }
+  function clearJob() { try { localStorage.removeItem(KEY); } catch (e) {} window.__stJob = null; }
+  function sleep(ms) { return new Promise(function (r) { setTimeout(r, ms); }); }
+
+  /* tell the server when the app goes to the background, so it can send a notification instead */
+  function sendState(hidden) {
+    var id = window.__stJob;
+    if (!id || !navigator.sendBeacon) return;
+    try { navigator.sendBeacon("/api/chat/state", new Blob([JSON.stringify({ job: id, hidden: hidden })], { type: "application/json" })); } catch (e) {}
+  }
+  document.addEventListener("visibilitychange", function () { sendState(document.visibilityState === "hidden"); });
+  window.addEventListener("pagehide", function () { sendState(true); });
+
+  function whenVisible() {
+    return new Promise(function (resolve) {
+      if (document.visibilityState === "visible") return resolve();
+      function check() {
+        if (document.visibilityState === "visible") { document.removeEventListener("visibilitychange", check); resolve(); }
+      }
+      document.addEventListener("visibilitychange", check);
+    });
+  }
+
+  function closeNotice(id) {
+    try {
+      navigator.serviceWorker.getRegistration().then(function (reg) {
+        if (reg && reg.getNotifications) reg.getNotifications({ tag: "job-" + id }).then(function (list) { list.forEach(function (n) { n.close(); }); });
+      });
+    } catch (e) {}
+  }
+
+  /* reads lines from one connection and shows them; st.received counts the lines already shown */
+  async function consume(res, st) {
+    var reader = res.body.getReader();
+    var dec = new TextDecoder();
+    var buf = "";
+    while (true) {
+      var r = await reader.read();
+      if (r.done) break;
+      buf += dec.decode(r.value, { stream: true });
+      var i;
+      while ((i = buf.indexOf("\n")) >= 0) {
+        var line = buf.slice(0, i).trim();
+        buf = buf.slice(i + 1);
+        if (!line) continue;
+        var item;
+        try { item = JSON.parse(line); } catch (e) { continue; }
+        if (item.type === "end") { st.finished = true; continue; }
+        removeTyping();
+        addItem(item);
+        st.received++;
+        if (st.id) saveJob(st.id, st.received);
+        addTyping();
+      }
+    }
+  }
+
+  /* keeps reading the same job; if the connection is cut it reconnects from the last line shown */
+  async function follow(st, first) {
+    var res = first;
+    for (var attempt = 0; attempt < 10 && !st.finished; attempt++) {
+      try {
+        if (!res) {
+          await whenVisible();
+          res = await fetch("/api/chat/resume?job=" + encodeURIComponent(st.id) + "&from=" + st.received, { credentials: "include" });
+          if (res.status === 404) { removeTyping(); addBot({ reply: "I lost that ticket while the app was closed. Please ask again." }); clearJob(); return; }
+          if (res.status === 401) { removeTyping(); clearJob(); handleLoggedOut(); return; }
+          if (!res.ok) throw new Error("not ok");
+        }
+        await consume(res, st);
+      } catch (e) { /* cut connection: try again below */ }
+      res = null;
+      if (!st.finished) await sleep(Math.min(1500 * (attempt + 1), 5000));
+    }
+    removeTyping();
+    if (st.finished) { closeNotice(st.id); clearJob(); }
+    else { addBot({ reply: NETWORK }); clearJob(); }
+  }
+
+  window.runStream = async function (path, body) {
+    var st = { id: null, received: 0, finished: false };
+    var res;
+    try {
+      res = await fetch(path, { method: "POST", credentials: "include", headers: { "Content-Type": "application/json" }, body: JSON.stringify(body) });
+    } catch (e) {
+      removeTyping();
+      addBot({ reply: NETWORK });
+      return;
+    }
+    if (!res.ok) {
+      var d = await res.json().catch(function () { return {}; });
+      removeTyping();
+      var row = addBot({ reply: d.error || "Server error. Try again." });
+      if (res.status === 401 && d.login_required) handleLoggedOut();
+      else if (d.upgrade) addUpgradeBtn(row);
+      return;
+    }
+    st.id = res.headers.get("X-Job-Id");
+    window.__stJob = st.id;
+    if (st.id) saveJob(st.id, 0);
+    try { await follow(st, res); } finally { window.__stJob = null; }
+  };
+
+  /* the page itself was closed or reloaded while a ticket was being built: pick it up again */
+  async function resumeStored() {
+    var raw = null;
+    try { raw = JSON.parse(localStorage.getItem(KEY) || "null"); } catch (e) {}
+    if (!raw || !raw.id || Date.now() - raw.t > 25 * 60 * 1000) { clearJob(); return; }
+    for (var i = 0; i < 40 && !accountUser; i++) await sleep(250);
+    if (!accountUser || busy) return;
+    busy = true;
+    go("chat");
+    var empty = document.getElementById("chatempty");
+    if (empty) empty.remove();
+    addTyping();
+    var st = { id: raw.id, received: raw.received || 0, finished: false };
+    window.__stJob = st.id;
+    try { await follow(st, null); } finally { window.__stJob = null; busy = false; }
+    refreshAccount();
+  }
+  window.addEventListener("load", function () { setTimeout(resumeStored, 600); });
+
+  /* ---------- notifications ---------- */
+  var cfg = null;
+  var ios = /iphone|ipad|ipod/i.test(navigator.userAgent);
+  var standalone = (window.matchMedia && matchMedia("(display-mode: standalone)").matches) || window.navigator.standalone === true;
+  var supported = "serviceWorker" in navigator && "PushManager" in window && "Notification" in window;
+
+  function key64(s) {
+    var raw = atob((s + "=".repeat((4 - (s.length % 4)) % 4)).replace(/-/g, "+").replace(/_/g, "/"));
+    var out = new Uint8Array(raw.length);
+    for (var i = 0; i < raw.length; i++) out[i] = raw.charCodeAt(i);
+    return out;
+  }
+  async function getCfg() {
+    if (cfg) return cfg;
+    try { cfg = await (await fetch("/api/push/key")).json(); } catch (e) { cfg = { enabled: false }; }
+    return cfg;
+  }
+  async function post(path, body) {
+    var r = await fetch(path, { method: "POST", credentials: "include", headers: { "Content-Type": "application/json" }, body: JSON.stringify(body || {}) });
+    var d = await r.json().catch(function () { return {}; });
+    if (!r.ok) throw new Error(d.error || "Something went wrong.");
+    return d;
+  }
+  async function currentSub() {
+    try { return await (await navigator.serviceWorker.ready).pushManager.getSubscription(); } catch (e) { return null; }
+  }
+  async function turnOn() {
+    var c = await getCfg();
+    if (!c.enabled) throw new Error("Notifications are not switched on for this server yet.");
+    if (!supported) throw new Error(ios && !standalone ? "On iPhone, first add SportyTips to your Home Screen (Share, then Add to Home Screen)." : "This browser cannot show notifications.");
+    var perm = Notification.permission === "granted" ? "granted" : await Notification.requestPermission();
+    if (perm !== "granted") throw new Error("Notifications are blocked. Allow them for SportyTips in your phone settings.");
+    var reg = await navigator.serviceWorker.ready;
+    var sub = await reg.pushManager.getSubscription();
+    if (!sub) sub = await reg.pushManager.subscribe({ userVisibleOnly: true, applicationServerKey: key64(c.key) });
+    await post("/api/push/subscribe", { subscription: sub.toJSON() });
+    return sub;
+  }
+  async function turnOff() {
+    var sub = await currentSub();
+    if (!sub) return;
+    try { await post("/api/push/unsubscribe", { endpoint: sub.endpoint }); } catch (e) {}
+    try { await sub.unsubscribe(); } catch (e) {}
+  }
+
+  /* already allowed on this phone: just make sure this account is linked to it */
+  async function quietSync() {
+    try {
+      if (!supported || Notification.permission !== "granted" || !accountUser) return;
+      var c = await getCfg();
+      if (!c.enabled) return;
+      var sub = await currentSub();
+      if (sub) await post("/api/push/subscribe", { subscription: sub.toJSON() });
+    } catch (e) {}
+  }
+
+  /* a small card on the home screen */
+  var NOTIFY_NO = "st_push_no";
+  async function refreshCard() {
+    var old = document.getElementById("notifycard");
+    var hub = document.getElementById("hub");
+    var cards = document.getElementById("cards");
+    if (!hub || !cards || !accountUser) { if (old) old.remove(); return; }
+    var c = await getCfg();
+    var sub = c.enabled && supported ? await currentSub() : null;
+    var hide = !c.enabled || sub || localStorage.getItem(NOTIFY_NO) === "1" || (supported && Notification.permission === "denied");
+    if (hide) { if (old) old.remove(); return; }
+    if (old) return;
+
+    var need = !supported || (ios && !standalone);
+    var el = document.createElement("div");
+    el.id = "notifycard";
+    el.className = "notifycard";
+    el.innerHTML =
+      '<svg viewBox="0 0 24 24" aria-hidden="true"><path d="M18 16v-5a6 6 0 0 0-12 0v5l-2 2h16z"/><path d="M10 21h4"/></svg>' +
+      '<div class="nt"><b>Get notified</b><span>' +
+      (need && ios ? "Add SportyTips to your Home Screen (Share, then Add to Home Screen) to get a message when your ticket is ready." : "We will tell you the moment your ticket is ready.") +
+      "</span></div>" +
+      (need ? "" : '<button class="mini red" type="button" id="notifygo">Turn on</button>') +
+      '<button class="nx" type="button" id="notifyx" aria-label="Hide">&times;</button>';
+    cards.parentNode.insertBefore(el, cards);
+
+    document.getElementById("notifyx").onclick = function () { try { localStorage.setItem(NOTIFY_NO, "1"); } catch (e) {} el.remove(); };
+    var go = document.getElementById("notifygo");
+    if (go) go.onclick = async function () {
+      go.disabled = true;
+      try { await turnOn(); el.remove(); toast("Notifications are on"); }
+      catch (e) { go.disabled = false; toast(e.message); }
+    };
+  }
+
+  /* a section in Settings: on/off, a test message and a switch for each kind */
+  async function renderSettingsNotify() {
+    var pane = document.getElementById("pane");
+    var before = document.getElementById("sec-appearance");
+    if (!pane || !before || document.getElementById("sec-notify")) return;
+
+    var wrap = document.createElement("div");
+    wrap.id = "sec-notify";
+    wrap.innerHTML = '<div class="sect">Notifications</div><div class="switch"><span><b>Push notifications</b><small id="nstatus">Checking...</small></span><button class="mini" type="button" id="nbtn" hidden></button></div><div id="nkinds"></div><div id="nextra"></div>';
+    before.parentNode.insertBefore(wrap, before);
+
+    var c = await getCfg();
+    var status = document.getElementById("nstatus");
+    var btn = document.getElementById("nbtn");
+
+    async function paint() {
+      if (!document.getElementById("sec-notify")) return;
+      var kinds = document.getElementById("nkinds");
+      var extra = document.getElementById("nextra");
+      kinds.innerHTML = ""; extra.innerHTML = "";
+      if (!c.enabled) { status.textContent = "Not switched on for this server yet."; btn.hidden = true; return; }
+      var sub = supported ? await currentSub() : null;
+      btn.hidden = false;
+      if (!supported || (ios && !standalone)) {
+        status.textContent = ios ? "On iPhone, add SportyTips to your Home Screen first." : "This browser cannot show notifications.";
+        btn.hidden = true;
+        return;
+      }
+      if (!sub) { status.textContent = "Off on this device"; btn.textContent = "Turn on"; btn.onclick = on; return; }
+      status.textContent = "On for this device";
+      btn.textContent = "Turn off";
+      btn.onclick = off;
+      try {
+        var d = await (await fetch("/api/push/prefs?endpoint=" + encodeURIComponent(sub.endpoint), { credentials: "include" })).json();
+        Object.keys(d.kinds || {}).forEach(function (k) {
+          var row = document.createElement("label");
+          row.className = "nkind";
+          row.innerHTML = "<span></span><input type=\"checkbox\">";
+          row.firstChild.textContent = d.kinds[k];
+          var box = row.lastChild;
+          box.checked = d.prefs[k] !== false;
+          box.onchange = function () {
+            d.prefs[k] = box.checked;
+            post("/api/push/prefs", { endpoint: sub.endpoint, prefs: d.prefs }).catch(function () { toast("Could not save that."); });
+          };
+          kinds.appendChild(row);
+        });
+        extra.innerHTML = '<button class="mini" type="button" id="ntest" style="margin-top:10px">Send me a test</button>';
+        document.getElementById("ntest").onclick = function () {
+          post("/api/push/test").then(function (r) { toast(r.ok ? "Test sent. Check your notifications." : "No device found."); }).catch(function (e) { toast(e.message); });
+        };
+      } catch (e) {}
+    }
+    async function on() { btn.disabled = true; try { await turnOn(); } catch (e) { toast(e.message); } btn.disabled = false; paint(); }
+    async function off() { btn.disabled = true; await turnOff(); btn.disabled = false; paint(); }
+    paint();
+  }
+  var pane = document.getElementById("pane");
+  if (pane) new MutationObserver(function () { renderSettingsNotify(); }).observe(pane, { childList: true });
+
+  /* show the card when the home screen opens */
+  var originalGo = window.go;
+  if (typeof originalGo === "function") {
+    window.go = function (v) { originalGo(v); if (v === "hub") refreshCard(); };
+  }
+  window.addEventListener("load", function () {
+    setTimeout(function () { quietSync(); refreshCard(); }, 1500);
+  });
 })();
 </script>
 """
@@ -2233,30 +2561,16 @@ def health_football():
 # STREAM RESPONSE
 # ===============================================================
 
-def _stream_response(q):
-
-    def stream():
-
-        while True:
-
-            try:
-                item = q.get(timeout=15)
-
-            except queue.Empty:
-                yield "\n"
-                continue
-
-            if item is None:
-                break
-
-            yield json.dumps(item) + "\n"
+def _stream_response(job, start=0):
+    """Sends a chat job to the browser. The job id travels in a header so the page can reconnect."""
 
     return Response(
-        stream(),
+        job.stream(start),
         mimetype="application/x-ndjson",
         headers={
             "Cache-Control": "no-cache",
             "X-Accel-Buffering": "no",
+            "X-Job-Id": job.id,
         },
     )
 
@@ -2276,15 +2590,18 @@ def _start_chat_turn(sid, text):
     if not _is_free_request(text) and not _is_premium(user):
         return jsonify(error=PREMIUM_MESSAGE, upgrade=True), 402
 
-    q = queue.Queue()
+    job = chat_jobs.new_job(user["id"], text)
+
+    if push_notify is not None:
+        job.on_done = push_notify.on_job_done
 
     threading.Thread(
         target=run_turn,
-        args=(sid, text, q),
+        args=(sid, text, job),
         daemon=True,
     ).start()
 
-    return _stream_response(q)
+    return _stream_response(job)
 
 
 # ===============================================================
@@ -2303,6 +2620,56 @@ def chat():
         return jsonify(error="Empty message."), 400
 
     return _start_chat_turn(sid, text)
+
+
+# ===============================================================
+# RECONNECT AFTER THE APP WAS MINIMISED + PUSH NOTIFICATIONS
+# ===============================================================
+
+@app.get("/api/chat/resume")
+def chat_resume():
+
+    user = current_user()
+
+    if user is None:
+        return jsonify(error="Please log in to continue.", login_required=True), 401
+
+    job = chat_jobs.get_job(request.args.get("job", ""), user["id"])
+
+    if job is None:
+        return jsonify(error="That ticket is no longer available. Please ask again.", expired=True), 404
+
+    try:
+        start = int(request.args.get("from", "0"))
+    except ValueError:
+        start = 0
+
+    return _stream_response(job, start)
+
+
+@app.post("/api/chat/state")
+def chat_state():
+    """The page says whether the app is on screen (sent with sendBeacon when it is minimised)."""
+
+    user = current_user()
+    data = request.get_json(silent=True, force=True) or {}
+
+    if user is not None:
+        job = chat_jobs.get_job(data.get("job", ""), user["id"])
+
+        if job is not None:
+            job.hidden = bool(data.get("hidden"))
+
+    return ("", 204)
+
+
+try:
+    import push_notify as push_notify  # real push notifications (needs pywebpush and VAPID keys)
+
+    push_notify.init(app, _db, current_user, lambda u: u["identifier"] in ADMIN_EMAILS, bot.LOCAL_TZ)
+except Exception as exc:
+    push_notify = None
+    print(f"NOTE: push notifications are off: {type(exc).__name__}: {exc}")
 
 
 # ===============================================================

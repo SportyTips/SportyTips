@@ -1,6 +1,7 @@
 """SportyTips - Telegram football bot (v4: bulk odds, AI chat, safe mode)."""
 
 import json
+import sportapi_data
 import math
 import os
 import re

@@ -674,3 +674,23 @@ def _football_win_probability(facts, side):
     poisson = _poisson_home_win(lambdas.get("home"), lambdas.get("away")) if side == "home" else _poisson_away_win(lambdas.get("home"), lambdas.get("away"))
     h2h_rate = (h2h.get(f"{side}_wins", 0) / h2h["played"]) if h2h.get("played") else None
     return _blend([form, venue_rate, poisson, h2h_rate], [0.38, 0.32, 0.25, 0.05])
+
+
+# ============================================================
+# DIAGNOSTICS (Fixed for sportapi_data.py hook)
+# ============================================================
+
+def diag_summary():
+    """
+    Internal diagnostics only.
+    """
+    return {
+        "cache_version": CACHE_VERSION,
+        "redis_enabled": _redis_enabled(),
+        "memory_entries": len(_facts_cache),
+        "fixture_entries": len(_fixture_index),
+        "prediction_entries": len(_prediction_cache),
+        "persistent_store": "upstash" if _redis_enabled() else "sqlite",
+        "facts_ttl": FACTS_CACHE_SECONDS,
+        "fixture_ttl": FIXTURE_CACHE_SECONDS,
+    }

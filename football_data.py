@@ -132,6 +132,7 @@ def get_facts(fixture):
     home_team, home = _fd4_team(fixture, "home")
     away_team, away = _fd4_team(fixture, "away")
     home_id, away_id = home_team.get("id"), away_team.get("id")
+    fixture_id = fixture.get("id")
 
     if not home_id or not away_id:
         return None
@@ -140,65 +141,79 @@ def get_facts(fixture):
     cached = _cache_get(cache_key)
     if cached: return cached
 
-    # Fetch the last 5 matches for both teams using our Google Sheet cache
-    h_recent = sd.sp_team_results(home_id)
-    a_recent = sd.sp_team_results(away_id)
+    try:
+        h_recent = sd.sp_team_results(home_id) if home_id else []
+        a_recent = sd.sp_team_results(away_id) if away_id else []
 
-    def parse_matches(matches, team_id):
-        goals_scored = 0
-        goals_conceded = 0
-        played = len(matches)
-        
-        # Default averages if the team has no history yet
-        if played == 0:
-            return {"goals_scored": 1.2, "goals_conceded": 1.2, "corners": 4.5, "shots_on_target": 4.0, "total_shots": 10.0}
-
-        for m in matches:
-            is_home = m.get("homeTeam", {}).get("id") == team_id or m.get("home_id") == team_id
-            hs = m.get("home_score") or m.get("score", {}).get("fullTime", {}).get("home") or 0
-            aws = m.get("away_score") or m.get("score", {}).get("fullTime", {}).get("away") or 0
+        def parse_matches(matches, team_id):
+            goals_scored = 0
+            goals_conceded = 0
+            played = len(matches)
             
-            if is_home:
-                goals_scored += hs
-                goals_conceded += aws
-            else:
-                goals_scored += aws
-                goals_conceded += hs
+            if played == 0:
+                return {"goals_scored": 1.2, "goals_conceded": 1.2, "corners": 4.5, "shots_on_target": 4.0, "total_shots": 10.0}
 
-        return {
-            "goals_scored": goals_scored / played,
-            "goals_conceded": goals_conceded / played,
-            # SportAPI free plan doesn't give corners/shots per match, so we estimate based on league averages
-            "corners": 4.8, 
-            "shots_on_target": 4.2, 
-            "total_shots": 11.0
+            for m in matches:
+                is_home = m.get("homeTeam", {}).get("id") == team_id or m.get("home_id") == team_id
+                hs = m.get("home_score") or m.get("score", {}).get("fullTime", {}).get("home") or 0
+                aws = m.get("away_score") or m.get("score", {}).get("fullTime", {}).get("away") or 0
+                
+                if is_home:
+                    goals_scored += hs
+                    goals_conceded += aws
+                else:
+                    goals_scored += aws
+                    goals_conceded += hs
+
+            return {
+                "goals_scored": goals_scored / played,
+                "goals_conceded": goals_conceded / played,
+                "corners": 4.8, 
+                "shots_on_target": 4.2, 
+                "total_shots": 11.0
+            }
+
+        h_stats = parse_matches(h_recent, home_id)
+        a_stats = parse_matches(a_recent, away_id)
+
+        facts = {
+            "home": home, "away": away, "home_id": home_id, "away_id": away_id,
+            "stats": {
+                "home": h_stats, "away": a_stats,
+                "match": {
+                    "corners": h_stats["corners"] + a_stats["corners"],
+                    "shots_on_target": h_stats["shots_on_target"] + a_stats["shots_on_target"],
+                    "total_shots": h_stats["total_shots"] + a_stats["total_shots"]
+                }
+            },
+            "lambda": {
+                "home": (h_stats["goals_scored"] + a_stats["goals_conceded"]) / 2,
+                "away": (a_stats["goals_scored"] + h_stats["goals_conceded"]) / 2
+            },
+            "recent": {"home": {"played": len(h_recent)}, "away": {"played": len(a_recent)}},
+            "venue": {"home": {}, "away": {}},
+            "h2h": {"played": 0},
+            "fixture_id": fixture_id
         }
 
-    h_stats = parse_matches(h_recent, home_id)
-    a_stats = parse_matches(a_recent, away_id)
+        _cache_set(cache_key, facts, FACTS_CACHE_SECONDS)
+        return facts
 
-    facts = {
-        "home": home, "away": away, "home_id": home_id, "away_id": away_id,
-        "stats": {
-            "home": h_stats, "away": a_stats,
-            "match": {
-                "corners": h_stats["corners"] + a_stats["corners"],
-                "shots_on_target": h_stats["shots_on_target"] + a_stats["shots_on_target"],
-                "total_shots": h_stats["total_shots"] + a_stats["total_shots"]
-            }
-        },
-        "lambda": {
-            "home": (h_stats["goals_scored"] + a_stats["goals_conceded"]) / 2,
-            "away": (a_stats["goals_scored"] + h_stats["goals_conceded"]) / 2
-        },
-        "recent": {"home": {"played": len(h_recent)}, "away": {"played": len(a_recent)}},
-        "venue": {"home": {}, "away": {}},
-        "h2h": {"played": 0},
-        "fixture_id": fixture.get("id")
-    }
-
-    _cache_set(cache_key, facts, FACTS_CACHE_SECONDS)
-    return facts
+    except Exception as exc:
+        print(f"Stats failed for {home} vs {away}, using defaults. Error: {exc}")
+        return {
+            "home": home, "away": away, "home_id": home_id, "away_id": away_id,
+            "stats": {
+                "home": {"goals_scored": 1.2, "goals_conceded": 1.2, "corners": 4.5, "shots_on_target": 4.0, "total_shots": 10.0},
+                "away": {"goals_scored": 1.2, "goals_conceded": 1.2, "corners": 4.5, "shots_on_target": 4.0, "total_shots": 10.0},
+                "match": {"corners": 9.0, "shots_on_target": 8.0, "total_shots": 20.0}
+            },
+            "lambda": {"home": 1.2, "away": 1.2},
+            "recent": {"home": {"played": 0}, "away": {"played": 0}},
+            "venue": {"home": {}, "away": {}},
+            "h2h": {"played": 0},
+            "fixture_id": fixture_id
+        }
 
 # ============================================================
 # PROBABILITY & REASONING

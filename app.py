@@ -1174,10 +1174,11 @@ html[data-theme="dark"] .pill:not(.red) { background: #2a2a2e; }
 #hub .card { transition: transform .15s ease, filter .15s ease; }
 @media (prefers-reduced-motion: reduce) { #hub *, #hub .card.hot::after { animation: none !important; } }
 
-/* removed: small print under the message box and on the home screen, the chance badge under tickets, Saved tickets in Settings */
+/* removed: small print under the message box and on the home screen, the chance badge under tickets, Saved tickets in Settings and on the home screen */
 .composer .legal, #hub .hub-legal { display: none !important; }
 [data-badge] { display: none !important; }
 #sec-saved, #sec-saved + .hint, #savedlist, #savedlist + .switch { display: none !important; }
+#hsaved { display: none !important; }
 
 /* message box sits right above the tab bar (the tab bar already keeps clear of the phone's bottom edge) */
 .composer { padding-bottom: 8px; }

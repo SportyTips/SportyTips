@@ -143,6 +143,7 @@ def get_facts(fixture):
     if cached: return cached
 
     # Fetch Stats
+    print(f"DEBUG FETCH: Fetching stats for {home} (ID: {home_id}) and {away} (ID: {away_id})")
     h_stats_raw = sd._api_get(f"/teams/{home_id}/stats")
     a_stats_raw = sd._api_get(f"/teams/{away_id}/stats")
     
@@ -153,8 +154,14 @@ def get_facts(fixture):
     print(a_stats_raw)
 
     def parse_stats(raw):
-        if not raw or "data" not in raw:
+        if not raw:
+            print(f"DEBUG ERROR: SportAPI returned None for team stats!")
             return {"goals_scored": 1.2, "goals_conceded": 1.2, "corners": 4.5, "shots_on_target": 4.0, "total_shots": 10.0}
+        
+        if "data" not in raw:
+            print(f"DEBUG ERROR: SportAPI returned data, but no 'data' key. Got: {raw}")
+            return {"goals_scored": 1.2, "goals_conceded": 1.2, "corners": 4.5, "shots_on_target": 4.0, "total_shots": 10.0}
+            
         stats = raw["data"]
         played = max(1, stats.get("played", 1))
         return {
@@ -335,13 +342,9 @@ def reason_for(candidate, facts, home=None, away=None):
     return f"Stats based on recent games for {h} and {a}."
 
 # ============================================================
-# DIAGNOSTICS (Required by sportapi_data.py)
+# DIAGNOSTICS
 # ============================================================
-
 def diag_summary():
-    """
-    Internal diagnostics only.
-    """
     return {
         "cache_version": CACHE_VERSION,
         "redis_enabled": False,

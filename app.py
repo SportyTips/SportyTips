@@ -1,5 +1,4 @@
-"""Web frontend for SportyTips.
-"""
+"""Web frontend for SportyTips."""
 
 import base64
 import functools
@@ -51,8 +50,6 @@ try:
     print("OK: smart_ticket.py loaded successfully")
 except Exception as exc:
     print("FAILED: smart_ticket.py failed to load:", str(exc))
-
-# We delete launcher.py and upgrades.py from here to clean up the code.
 
 # ===============================================================
 # WEB OUTPUT
@@ -374,14 +371,22 @@ def chat():
 def health(): return jsonify(status="ok")
 
 # ===============================================================
-# DEBUG ROUTE
+# DEBUG ROUTE (SHOWS EXACT SPORTAPI RESPONSE)
 # ===============================================================
 @app.route('/debug-sportapi/<int:team_id>')
 def debug_sportapi(team_id):
     import sportapi_data as sd
     import json
+    import urllib.request
+    
     try:
-        result = sd._api_get(f"/teams/{team_id}/stats")
-        return f"<pre>{json.dumps(result, indent=2)}</pre>"
+        url = f"https://sportapi.ai/api/teams/{team_id}/stats"
+        req = urllib.request.Request(url, headers={
+            "X-Api-Key": sd.API_KEY,
+            "Accept": "application/json"
+        })
+        with urllib.request.urlopen(req, timeout=15) as resp:
+            raw = resp.read().decode("utf-8")
+            return f"<pre>{raw}</pre>"
     except Exception as e:
-        return f"Error: {str(e)}"
+        return f"Error: {str(e)} | Key starts with: {sd.API_KEY[:15] if sd.API_KEY else 'MISSING'}"

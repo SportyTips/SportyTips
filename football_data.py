@@ -154,7 +154,6 @@ def get_facts(fixture):
             return {"goals_scored": 1.2, "goals_conceded": 1.2, "corners": 4.5, "shots_on_target": 4.0, "total_shots": 10.0}
 
         for m in matches:
-            # Determine if this team was home or away
             is_home = m.get("homeTeam", {}).get("id") == team_id or m.get("home_id") == team_id
             hs = m.get("home_score") or m.get("score", {}).get("fullTime", {}).get("home") or 0
             aws = m.get("away_score") or m.get("score", {}).get("fullTime", {}).get("away") or 0
@@ -312,9 +311,9 @@ def reason_for(candidate, facts, home=None, away=None):
     if "btts" in text:
         return f"Expected goals: {h} ({facts['lambda']['home']:.2f}) vs {a} ({facts['lambda']['away']:.2f}). Both teams are projected to score."
 
-    if "win" in text:
-        return f"Based on recent stats: {h} scores {hs['goals_scored']:.2f} per game, {a} scores {as_['goals_scored']:.2f}."
-    
+    if "win" in text or "1up" in text or "2up" in text or "either half" in text:
+        return f"Based on recent stats: {h} scores {hs['goals_scored']:.2f} per game and concedes {hs['goals_conceded']:.2f}. {a} scores {as_['goals_scored']:.2f} per game and concedes {as_['goals_conceded']:.2f}."
+
     return f"Stats based on recent games for {h} and {a}."
 
 # ============================================================

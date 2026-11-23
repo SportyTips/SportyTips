@@ -241,7 +241,6 @@ def run_turn(sid, text, q):
     _ctx.q = q
     try:
         with RUN_LOCK:
-            # Force the request to go to smart_ticket.py so it uses SportAPI stats
             if SMART_TICKET_MODULE is not None:
                 SMART_TICKET_MODULE.flow(sid, text)
             else:
@@ -257,8 +256,7 @@ def run_turn(sid, text, q):
 # PAGES & PWA
 # ===============================================================
 @app.get("/")
-def home_page():
-    return redirect("/chat")
+def home_page(): return redirect("/chat")
 
 @app.get("/chat")
 def chat_page():
@@ -371,7 +369,7 @@ def chat():
 def health(): return jsonify(status="ok")
 
 # ===============================================================
-# DEBUG ROUTE (SHOWS EXACT SPORTAPI RESPONSE)
+# DEBUG ROUTE (TEAM PROFILE)
 # ===============================================================
 @app.route('/debug-sportapi/<int:team_id>')
 def debug_sportapi(team_id):
@@ -380,7 +378,7 @@ def debug_sportapi(team_id):
     import urllib.request
     
     try:
-        url = f"https://sportapi.ai/api/teams/{team_id}/stats"
+        url = f"https://sportapi.ai/api/teams/{team_id}"
         req = urllib.request.Request(url, headers={
             "X-Api-Key": sd.API_KEY,
             "Accept": "application/json"

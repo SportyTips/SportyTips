@@ -133,7 +133,7 @@ except ImportError:
 
 # Ticket extras (big odds, basketball, substitute pick). Must load AFTER upgrades.
 # One block each, so a missing file only switches off that file.
-for _name in ("ticket_extras", "ticket_sub_fix", "ticket_nohcp", "ticket_ask", "ticket_style"):
+for _name in ("ticket_extras", "ticket_sub_fix", "ticket_nohcp", "ticket_ask"):
     try:
         importlib.import_module(_name)
     except Exception as exc:
@@ -218,15 +218,6 @@ def _corners_title(text):
         return text
 
 
-def _ticket_style(text):
-    """New ticket layout (ticket_style.py). Any problem keeps the old layout."""
-    try:
-        import ticket_style
-        return ticket_style.restyle(text)
-    except Exception:
-        return text
-
-
 def web_send_message(chat_id, text):
     kept = [
         line
@@ -248,7 +239,6 @@ def web_send_message(chat_id, text):
 
     cleaned = _add_football_note(cleaned)
     cleaned = _corners_title(cleaned)
-    cleaned = _ticket_style(cleaned)
 
     _emit({"type": "text", "html": _rebrand(cleaned)})
 
@@ -1174,19 +1164,6 @@ html[data-theme="dark"] .pill:not(.red) { background: #2a2a2e; }
 #hub .card { transition: transform .15s ease, filter .15s ease; }
 @media (prefers-reduced-motion: reduce) { #hub *, #hub .card.hot::after { animation: none !important; } }
 
-/* removed: small print under the message box and on the home screen, the chance badge under tickets, Saved tickets in Settings and on the home screen */
-.composer .legal, #hub .hub-legal { display: none !important; }
-[data-badge] { display: none !important; }
-#sec-saved, #sec-saved + .hint, #savedlist, #savedlist + .switch { display: none !important; }
-#hsaved { display: none !important; }
-
-/* message box sits right above the tab bar (the tab bar already keeps clear of the phone's bottom edge) */
-.composer { padding-bottom: 8px; }
-body.typing-now .composer { padding-bottom: calc(10px + env(safe-area-inset-bottom)); }
-
-/* quoted reason under each pick */
-.content blockquote { margin: 6px 0 14px; padding: 2px 0 2px 14px; border-left: 3px solid var(--line); line-height: 1.5; font-size: 16px; }
-
 @media (min-width: 640px) { #hub .cards { grid-template-columns: repeat(2, minmax(0, 1fr)); } }
 @media (max-width: 359px) { #hub .card.hot { grid-template-columns: auto 1fr; } #hub .card.hot .go { display: none; } }
 </style>
@@ -1248,27 +1225,6 @@ body.typing-now .composer { padding-bottom: calc(10px + env(safe-area-inset-bott
   }
 
   [hot, top, cups, straight].forEach(function (el) { if (el) grid.appendChild(el); });
-})();
-</script>
-
-<script>
-/* lines that start with "> " are shown as a quote block */
-(function () {
-  var orig = window.md;
-  if (typeof orig !== "function") return;
-  window.md = function (text) {
-    var out = [], buf = [], quote = [];
-    function flushText() { if (buf.length) { out.push(orig(buf.join("\n"))); buf = []; } }
-    function flushQuote() { if (quote.length) { out.push("<blockquote>" + orig(quote.join("\n")) + "</blockquote>"); quote = []; } }
-    String(text).split("\n").forEach(function (line) {
-      var m = line.match(/^>\s?(.*)$/);
-      if (m) { flushText(); quote.push(m[1]); }
-      else { flushQuote(); buf.push(line); }
-    });
-    flushText();
-    flushQuote();
-    return out.join("");
-  };
 })();
 </script>
 """

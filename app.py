@@ -1299,16 +1299,6 @@ body.typing-now .composer { padding-bottom: calc(10px + env(safe-area-inset-bott
 })();
 </script>
 
-<style id="st-push-ui">
-.notifycard { display: flex; align-items: center; gap: 12px; background: var(--card); border-radius: 18px; padding: 14px; margin: 0 0 14px; }
-.notifycard svg { width: 40px; height: 40px; padding: 10px; border-radius: 13px; background: rgba(255,31,31,.12); stroke: var(--red); fill: none; stroke-width: 1.8; stroke-linecap: round; stroke-linejoin: round; flex: none; }
-.notifycard .nt { flex: 1; min-width: 0; }
-.notifycard .nt b { display: block; font-size: 15px; }
-.notifycard .nt span { display: block; color: var(--gray); font-size: 13px; margin-top: 2px; }
-.notifycard .nx { border: 0; background: none; color: var(--muted); font-size: 22px; padding: 4px 6px; cursor: pointer; }
-.nkind { display: flex; align-items: center; justify-content: space-between; gap: 12px; padding: 10px 0; border-bottom: 1px solid var(--line); font-size: 15px; }
-.nkind input { width: 22px; height: 22px; accent-color: var(--red); flex: none; }
-</style>
 
 <script>
 /* ===== Reconnect after the app was minimised, and push notifications ===== */
@@ -1438,11 +1428,13 @@ body.typing-now .composer { padding-bottom: calc(10px + env(safe-area-inset-bott
   }
   window.addEventListener("load", function () { setTimeout(resumeStored, 600); });
 
-  /* ---------- notifications ---------- */
+  /* ---------- notifications ----------
+     Users see nothing of ours: only their phone's own "Allow notifications?" question,
+     asked once, when they first ask for a ticket. */
   var cfg = null;
-  var ios = /iphone|ipad|ipod/i.test(navigator.userAgent);
-  var standalone = (window.matchMedia && matchMedia("(display-mode: standalone)").matches) || window.navigator.standalone === true;
   var supported = "serviceWorker" in navigator && "PushManager" in window && "Notification" in window;
+  var ASKED = "st_push_asked";
+  var synced = false;
 
   function key64(s) {
     var raw = atob((s + "=".repeat((4 - (s.length % 4)) % 4)).replace(/-/g, "+").replace(/_/g, "/"));
@@ -1450,152 +1442,47 @@ body.typing-now .composer { padding-bottom: calc(10px + env(safe-area-inset-bott
     for (var i = 0; i < raw.length; i++) out[i] = raw.charCodeAt(i);
     return out;
   }
-  async function getCfg() {
-    if (cfg) return cfg;
+  async function loadCfg() {
     try { cfg = await (await fetch("/api/push/key")).json(); } catch (e) { cfg = { enabled: false }; }
-    return cfg;
   }
-  async function post(path, body) {
-    var r = await fetch(path, { method: "POST", credentials: "include", headers: { "Content-Type": "application/json" }, body: JSON.stringify(body || {}) });
-    var d = await r.json().catch(function () { return {}; });
-    if (!r.ok) throw new Error(d.error || "Something went wrong.");
-    return d;
-  }
-  async function currentSub() {
-    try { return await (await navigator.serviceWorker.ready).pushManager.getSubscription(); } catch (e) { return null; }
-  }
-  async function turnOn() {
-    var c = await getCfg();
-    if (!c.enabled) throw new Error("Notifications are not switched on for this server yet.");
-    if (!supported) throw new Error(ios && !standalone ? "On iPhone, first add SportyTips to your Home Screen (Share, then Add to Home Screen)." : "This browser cannot show notifications.");
-    var perm = Notification.permission === "granted" ? "granted" : await Notification.requestPermission();
-    if (perm !== "granted") throw new Error("Notifications are blocked. Allow them for SportyTips in your phone settings.");
+  async function linkDevice() {
     var reg = await navigator.serviceWorker.ready;
     var sub = await reg.pushManager.getSubscription();
-    if (!sub) sub = await reg.pushManager.subscribe({ userVisibleOnly: true, applicationServerKey: key64(c.key) });
-    await post("/api/push/subscribe", { subscription: sub.toJSON() });
-    return sub;
-  }
-  async function turnOff() {
-    var sub = await currentSub();
-    if (!sub) return;
-    try { await post("/api/push/unsubscribe", { endpoint: sub.endpoint }); } catch (e) {}
-    try { await sub.unsubscribe(); } catch (e) {}
+    if (!sub) sub = await reg.pushManager.subscribe({ userVisibleOnly: true, applicationServerKey: key64(cfg.key) });
+    var r = await fetch("/api/push/subscribe", { method: "POST", credentials: "include", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ subscription: sub.toJSON() }) });
+    if (!r.ok) throw new Error("not saved");
   }
 
-  /* already allowed on this phone: just make sure this account is linked to it */
-  async function quietSync() {
+  /* runs straight from the user's tap (phones only allow the question after a tap) */
+  function askNow() {
     try {
-      if (!supported || Notification.permission !== "granted" || !accountUser) return;
-      var c = await getCfg();
-      if (!c.enabled) return;
-      var sub = await currentSub();
-      if (sub) await post("/api/push/subscribe", { subscription: sub.toJSON() });
+      if (!cfg || !cfg.enabled || !supported || !accountUser) return;
+      if (Notification.permission === "granted") {
+        if (!synced) { synced = true; linkDevice().catch(function () { synced = false; }); }
+        return;
+      }
+      if (Notification.permission !== "default") return;
+      var last = Number(localStorage.getItem(ASKED)) || 0;
+      if (Date.now() - last < 3 * 24 * 3600 * 1000) return;
+      localStorage.setItem(ASKED, String(Date.now()));
+      Notification.requestPermission().then(function (p) {
+        if (p === "granted") linkDevice().catch(function () {});
+      }).catch(function () {});
     } catch (e) {}
   }
 
-  /* a small card on the home screen */
-  var NOTIFY_NO = "st_push_no";
-  async function refreshCard() {
-    var old = document.getElementById("notifycard");
-    var hub = document.getElementById("hub");
-    var cards = document.getElementById("cards");
-    if (!hub || !cards || !accountUser) { if (old) old.remove(); return; }
-    var c = await getCfg();
-    var sub = c.enabled && supported ? await currentSub() : null;
-    var hide = !c.enabled || sub || localStorage.getItem(NOTIFY_NO) === "1" || (supported && Notification.permission === "denied");
-    if (hide) { if (old) old.remove(); return; }
-    if (old) return;
-
-    var need = !supported || (ios && !standalone);
-    var el = document.createElement("div");
-    el.id = "notifycard";
-    el.className = "notifycard";
-    el.innerHTML =
-      '<svg viewBox="0 0 24 24" aria-hidden="true"><path d="M18 16v-5a6 6 0 0 0-12 0v5l-2 2h16z"/><path d="M10 21h4"/></svg>' +
-      '<div class="nt"><b>Get notified</b><span>' +
-      (need && ios ? "Add SportyTips to your Home Screen (Share, then Add to Home Screen) to get a message when your ticket is ready." : "We will tell you the moment your ticket is ready.") +
-      "</span></div>" +
-      (need ? "" : '<button class="mini red" type="button" id="notifygo">Turn on</button>') +
-      '<button class="nx" type="button" id="notifyx" aria-label="Hide">&times;</button>';
-    cards.parentNode.insertBefore(el, cards);
-
-    document.getElementById("notifyx").onclick = function () { try { localStorage.setItem(NOTIFY_NO, "1"); } catch (e) {} el.remove(); };
-    var go = document.getElementById("notifygo");
-    if (go) go.onclick = async function () {
-      go.disabled = true;
-      try { await turnOn(); el.remove(); toast("Notifications are on"); }
-      catch (e) { go.disabled = false; toast(e.message); }
-    };
+  var originalSend = window.send;
+  if (typeof originalSend === "function") {
+    window.send = function () { askNow(); return originalSend.apply(this, arguments); };
   }
 
-  /* a section in Settings: on/off, a test message and a switch for each kind */
-  async function renderSettingsNotify() {
-    var pane = document.getElementById("pane");
-    var before = document.getElementById("sec-appearance");
-    if (!pane || !before || document.getElementById("sec-notify")) return;
-
-    var wrap = document.createElement("div");
-    wrap.id = "sec-notify";
-    wrap.innerHTML = '<div class="sect">Notifications</div><div class="switch"><span><b>Push notifications</b><small id="nstatus">Checking...</small></span><button class="mini" type="button" id="nbtn" hidden></button></div><div id="nkinds"></div><div id="nextra"></div>';
-    before.parentNode.insertBefore(wrap, before);
-
-    var c = await getCfg();
-    var status = document.getElementById("nstatus");
-    var btn = document.getElementById("nbtn");
-
-    async function paint() {
-      if (!document.getElementById("sec-notify")) return;
-      var kinds = document.getElementById("nkinds");
-      var extra = document.getElementById("nextra");
-      kinds.innerHTML = ""; extra.innerHTML = "";
-      if (!c.enabled) { status.textContent = "Not switched on for this server yet."; btn.hidden = true; return; }
-      var sub = supported ? await currentSub() : null;
-      btn.hidden = false;
-      if (!supported || (ios && !standalone)) {
-        status.textContent = ios ? "On iPhone, add SportyTips to your Home Screen first." : "This browser cannot show notifications.";
-        btn.hidden = true;
-        return;
-      }
-      if (!sub) { status.textContent = "Off on this device"; btn.textContent = "Turn on"; btn.onclick = on; return; }
-      status.textContent = "On for this device";
-      btn.textContent = "Turn off";
-      btn.onclick = off;
-      try {
-        var d = await (await fetch("/api/push/prefs?endpoint=" + encodeURIComponent(sub.endpoint), { credentials: "include" })).json();
-        Object.keys(d.kinds || {}).forEach(function (k) {
-          var row = document.createElement("label");
-          row.className = "nkind";
-          row.innerHTML = "<span></span><input type=\"checkbox\">";
-          row.firstChild.textContent = d.kinds[k];
-          var box = row.lastChild;
-          box.checked = d.prefs[k] !== false;
-          box.onchange = function () {
-            d.prefs[k] = box.checked;
-            post("/api/push/prefs", { endpoint: sub.endpoint, prefs: d.prefs }).catch(function () { toast("Could not save that."); });
-          };
-          kinds.appendChild(row);
-        });
-        extra.innerHTML = '<button class="mini" type="button" id="ntest" style="margin-top:10px">Send me a test</button>';
-        document.getElementById("ntest").onclick = function () {
-          post("/api/push/test").then(function (r) { toast(r.ok ? "Test sent. Check your notifications." : "No device found."); }).catch(function (e) { toast(e.message); });
-        };
-      } catch (e) {}
-    }
-    async function on() { btn.disabled = true; try { await turnOn(); } catch (e) { toast(e.message); } btn.disabled = false; paint(); }
-    async function off() { btn.disabled = true; await turnOff(); btn.disabled = false; paint(); }
-    paint();
-  }
-  var pane = document.getElementById("pane");
-  if (pane) new MutationObserver(function () { renderSettingsNotify(); }).observe(pane, { childList: true });
-
-  /* show the card when the home screen opens */
-  var originalGo = window.go;
-  if (typeof originalGo === "function") {
-    window.go = function (v) { originalGo(v); if (v === "hub") refreshCard(); };
-  }
   window.addEventListener("load", function () {
-    setTimeout(function () { quietSync(); refreshCard(); }, 1500);
+    loadCfg().then(function () {
+      setTimeout(function () {
+        /* already allowed on this phone: link it to whoever is logged in now */
+        try { if (supported && cfg.enabled && accountUser && Notification.permission === "granted") askNow(); } catch (e) {}
+      }, 1500);
+    });
   });
 })();
 </script>
